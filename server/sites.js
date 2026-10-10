@@ -114,7 +114,11 @@ export function runDiscovery(brokerId, { force = false } = {}) {
   const b = q.get('SELECT * FROM brokers WHERE id = ? AND custom = 1', brokerId);
   if (!b || running.has(b.id)) return Promise.resolve(null);
   if (!DISCOVERY) { q.run(`UPDATE brokers SET discovery_status = 'skipped' WHERE id = ? AND discovery_status = 'pending'`, b.id); setTimeout(() => tick(), 10); return Promise.resolve(null); }
-  if (!force && b.contact_source === 'admin') return Promise.resolve(null);                // contact saisi par l'équipe : on n'y touche plus
+  if (!force && b.contact_source === 'admin') {                                             // contact saisi par l'équipe : on n'y touche plus
+    // Recherche forcée interrompue par un redémarrage : l'état « en recherche » bloquerait l'envoi pour toujours.
+    if (b.discovery_status === 'pending') { q.run(`UPDATE brokers SET discovery_status = 'found' WHERE id = ? AND discovery_status = 'pending'`, b.id); setTimeout(() => tick(), 10); }
+    return Promise.resolve(null);
+  }
   running.add(b.id);
   q.run(`UPDATE brokers SET discovery_status = 'pending' WHERE id = ?`, b.id);
   return discoverContact(b.domain)

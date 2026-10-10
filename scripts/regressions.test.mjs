@@ -393,6 +393,29 @@ try {
   }
   step('découverte : site en HTTP seul et accueil illisible explorés jusqu’aux mentions légales');
 
+  /* ---------- 13. Reprise au démarrage d'une recherche forcée sur un contact saisi par l'équipe ---------- */
+  // Un redémarrage pendant une recherche forcée laissait le site « en recherche » : la reprise ignorait les contacts saisis
+  // par l'équipe sans lever cet état, et une demande vers un site « en recherche » ne part jamais.
+  {
+    const R1 = await start('resume-1');
+    const M = await member(R1, { launch: false });
+    const site = await R1.call('POST', '/sites', { url: 'https://annuaire-repris.fr/fiche/lea' }, M.cookie);
+    assert.equal(site.status, 201);
+    await settle(R1);
+    const rdb = R1.sql();
+    rdb.prepare(`UPDATE brokers SET discovery_status = 'pending', contact_source = 'admin', contact_email = 'dpo@annuaire-repris.fr' WHERE id = ?`).run(site.data.broker.id);
+    rdb.prepare(`UPDATE requests SET status = 'queued', sent_at = NULL, due_at = NULL WHERE id = ?`).run(site.data.request_id);
+    rdb.close(); await R1.stop();
+    const R2 = await start('resume-2', { SITE_DISCOVERY: 'on' }, { db: R1.db });   // même base, recherche active
+    await settle(R2);
+    const r2db = R2.sql();
+    assert.notEqual(r2db.prepare('SELECT discovery_status FROM brokers WHERE id = ?').get(site.data.broker.id).discovery_status, 'pending', 'plus « en recherche »');
+    assert.equal(r2db.prepare('SELECT status FROM requests WHERE id = ?').get(site.data.request_id).status, 'sent', 'la demande part vers le contact de l’équipe');
+    assert.equal(r2db.prepare('SELECT to_addr FROM mails WHERE request_id = ? ORDER BY id DESC LIMIT 1').get(site.data.request_id).to_addr, 'dpo@annuaire-repris.fr');
+    r2db.close(); await R2.stop();
+  }
+  step('reprise au démarrage : un contact saisi par l’équipe ne reste pas bloqué « en recherche »');
+
   console.log(`✔ Régressions validées (${passed} groupes de vérifications).`);
 } catch (e) {
   console.error('✘ Échec :', e.message);
