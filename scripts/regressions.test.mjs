@@ -215,6 +215,31 @@ try {
   }
   step('changement d’offre : Individuel refusé tant que le dossier compte plus d’une personne ; Stripe actif → message explicite (409)');
 
+  /* ---------- 6. Suppression d'un compte : l'abonnement est toujours résilié ---------- */
+  // Un abonnement « paiement en attente » n'était pas résilié (Stripe continue de prélever un compte supprimé), et
+  // une résiliation Stripe en échec n'empêchait pas la suppression : le client était prélevé sans compte pour l'arrêter.
+  {
+    const P = await member(S, { launch: false });
+    await S.call('POST', `/admin/users/${P.id}/subscription`, { status: 'past_due' }, ADM);
+    let r = await S.call('DELETE', '/account', { password: STRONG }, P.cookie);
+    assert.equal(r.status, 200);
+    assert.equal(db.prepare('SELECT subscription_status FROM users WHERE id = ?').get(P.id).subscription_status, 'canceled', 'abonnement en attente de paiement résilié');
+    const Q = await member(S, { launch: false });
+    await S.call('POST', `/admin/users/${Q.id}/subscription`, { status: 'past_due' }, ADM);
+    r = await S.call('DELETE', `/admin/users/${Q.id}`, {}, ADM); assert.equal(r.status, 200);
+    assert.equal(db.prepare('SELECT subscription_status FROM users WHERE id = ?').get(Q.id).subscription_status, 'canceled');
+    // Stripe injoignable ou refus (clé factice) : rien n'est supprimé, l'abonné peut réessayer.
+    const T = await ST.call('POST', '/auth/signup', { email: 'stripe-sup@exemple.fr', password: STRONG, plan: 'individuel' });
+    ST.sql().prepare(`UPDATE users SET subscription_status = 'past_due', billing_mode = 'stripe', stripe_customer_id = 'cus_y', stripe_subscription_id = 'sub_y' WHERE email = 'stripe-sup@exemple.fr'`).run();
+    r = await ST.call('DELETE', '/account', { password: STRONG }, T.cookie);
+    assert.equal(r.status, 502, JSON.stringify(r.data)); assert.match(r.data.error, /pas été supprimé/);
+    assert.equal((await ST.call('GET', '/me', undefined, T.cookie)).data.user?.email, 'stripe-sup@exemple.fr', 'compte et session intacts');
+    const STA = await adminOf(ST);
+    r = await ST.call('DELETE', `/admin/users/${T.data.user.id}`, {}, STA);
+    assert.equal(r.status, 502); assert.equal(ST.sql().prepare('SELECT deleted_at FROM users WHERE id = ?').get(T.data.user.id).deleted_at, null);
+  }
+  step('suppression : abonnement en attente de paiement résilié ; échec de la résiliation Stripe → rien n’est supprimé (502)');
+
   console.log(`✔ Régressions validées (${passed} groupes de vérifications).`);
 } catch (e) {
   console.error('✘ Échec :', e.message);

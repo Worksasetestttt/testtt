@@ -326,7 +326,12 @@ api.get('/export', requireAuth, rateLimit({ max: 10 }), (req, res) => {
 api.delete('/account', requireAuth, rateLimit({ max: 5 }), wrap(async (req, res) => {
   const u = fresh(req);
   if (typeof req.body.password !== 'string' || !(await verifyPassword(req.body.password, u.password_hash))) return bad(res, 'Mot de passe incorrect.');
-  if (u.subscription_status === 'active') { try { await cancelSubscription(u); } catch (e) { console.error(`[billing] résiliation à la suppression (${req.id}) :`, e.message); } }
+  // Abonnement en cours ou en attente de paiement : résilié avant toute suppression. Si Stripe ne confirme pas, rien
+  // n'est supprimé : sans compte, plus personne ne pourrait arrêter les prélèvements.
+  if (['active', 'past_due'].includes(u.subscription_status)) {
+    try { await cancelSubscription(u); }
+    catch (e) { console.error(`[billing] résiliation à la suppression (${req.id}) :`, e.message); return bad(res, 'La résiliation de l’abonnement n’a pas pu être confirmée : le compte n’a pas été supprimé. Réessayez dans quelques instants.', 502); }
+  }
   db.exec('BEGIN');
   try {
     q.run('DELETE FROM requests WHERE user_id = ?', u.id); q.run('DELETE FROM profiles WHERE user_id = ?', u.id); q.run('DELETE FROM events WHERE user_id = ?', u.id);

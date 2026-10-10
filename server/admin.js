@@ -390,7 +390,11 @@ admin.delete('/users/:id', wrap(async (req, res) => {
   if (u.id === req.user.id) return bad(res, 'Supprimez votre propre compte depuis vos paramètres, pas depuis l’administration.');
   if (u.deleted_at) return bad(res, 'Ce compte est déjà supprimé.');
   if (u.role === 'admin' && q.get(`SELECT COUNT(*) AS c FROM users WHERE role = 'admin' AND deleted_at IS NULL`).c <= 1) return bad(res, 'Il doit rester au moins un administrateur.');
-  if (u.subscription_status === 'active') { try { await cancelSubscription(u); } catch {} }
+  // Comme la suppression par l'abonné : abonnement actif ou impayé résilié d'abord, rien n'est supprimé si Stripe échoue.
+  if (['active', 'past_due'].includes(u.subscription_status)) {
+    try { await cancelSubscription(u); }
+    catch (e) { console.error(`[admin] résiliation Stripe impossible à la suppression (${req.id}) :`, e.message); return bad(res, 'Stripe n’a pas confirmé la résiliation : le compte n’a pas été supprimé. Réessayez dans quelques instants.', 502); }
+  }
   db.exec('BEGIN');
   try {
     q.run('DELETE FROM requests WHERE user_id = ?', u.id); q.run('DELETE FROM profiles WHERE user_id = ?', u.id); q.run('DELETE FROM events WHERE user_id = ?', u.id);
