@@ -15,7 +15,7 @@ const arr = (v, max = 10) => (Array.isArray(v) ? v : String(v ?? '').split(/[\n,
 const publicUser = (u) => ({
   id: u.id, email: u.email, role: u.role, plan: u.plan, billing: u.billing,
   subscription_status: u.subscription_status, subscription_ends_at: u.subscription_ends_at, billing_mode: u.billing_mode,
-  mandate_signed_at: u.mandate_signed_at, mandate_name: u.mandate_name, mandate_revoked_at: u.mandate_revoked_at, created_at: u.created_at,
+  mandate_signed_at: u.mandate_signed_at, mandate_name: u.mandate_name, mandate_version: u.mandate_version, mandate_revoked_at: u.mandate_revoked_at, created_at: u.created_at,
 });
 const parseProfile = (p) => ({ ...p, emails: JSON.parse(p.emails), phones: JSON.parse(p.phones), addresses: JSON.parse(p.addresses), aliases: JSON.parse(p.aliases) });
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
