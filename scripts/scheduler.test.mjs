@@ -1,5 +1,6 @@
 // Tests du planificateur et des flux qui l'alimentent, un groupe par correctif :
 //   1. recherche du contact d'un site pendant laquelle l'équipe saisit l'adresse ;
+//   2. courtier ajouté au registre (brokers.json ou administration) : demandes pour les abonnés existants ;
 // Chaque groupe démarre ses serveurs (port libre, base temporaire, jamais data/). SCHED_ONLY=2,4 ne lance que ces groupes.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -177,6 +178,73 @@ try {
     step('recherche du contact : une adresse saisie par l’équipe pendant la recherche n’est ni écrasée ni suivie d’un avis');
   }
 
+  /* ---------- 2. Courtier ajouté au registre : demandes pour les abonnés existants ---------- */
+  // autoLaunch ne traitait que les profils sans aucune demande : un courtier ajouté à brokers.json (ou créé dans
+  // l'administration) ne recevait jamais de demande pour les abonnés déjà suivis.
+  if (want(2)) {
+    const copy = copyRepo('registre');
+    const R1 = await start('registre-1', {}, { cwd: copy });
+    const A = await member(R1), C = await member(R1), B = await member(R1), D = await member(R1);
+    await settle(R1);
+    const ADM1 = await adminOf(R1);
+    // C : résilié, accès payé jusqu'à une date future (éligible). B : résilié, accès terminé. D : suspendu.
+    assert.equal((await R1.call('POST', `/admin/users/${C.id}/subscription`, { status: 'canceled', ends_at: new Date(Date.now() + 20 * DAY).toISOString() }, ADM1)).status, 200);
+    assert.equal((await R1.call('POST', `/admin/users/${B.id}/subscription`, { status: 'canceled', ends_at: ago(DAY) }, ADM1)).status, 200);
+    assert.equal((await R1.call('POST', `/admin/users/${D.id}/suspend`, { reason: 'test de suspension' }, ADM1)).status, 200);
+    await R1.stop();
+    const reg = path.join(copy, 'server', 'brokers.json');
+    const list = JSON.parse(fs.readFileSync(reg, 'utf8'));
+    list.push({ slug: 'courtier-ajoute', name: 'Courtier Ajouté', domain: 'courtier-ajoute.fr', category: 'Annuaire', jurisdiction: 'FR', legal_basis: 'rgpd', sensitivity: 2, recheck_days: 60 });
+    fs.writeFileSync(reg, JSON.stringify(list, null, 2));
+    const R2 = await start('registre-2', {}, { cwd: copy, db: R1.db });
+    await settle(R2);
+    const db = R2.sql();
+    const added = db.prepare(`SELECT id FROM brokers WHERE slug = 'courtier-ajoute'`).get().id;
+    const reqsFor = (u, broker) => db.prepare('SELECT cycle, status FROM requests WHERE user_id = ? AND broker_id = ? ORDER BY cycle').all(u.id, broker).map((x) => ({ ...x }));
+    const dups = () => db.prepare('SELECT COUNT(*) AS c FROM (SELECT 1 FROM requests GROUP BY profile_id, broker_id, cycle HAVING COUNT(*) > 1)').get().c;
+    assert.deepEqual(reqsFor(A, added), [{ cycle: 1, status: 'sent' }], 'abonné existant : une demande de cycle 1, envoyée');
+    assert.deepEqual(reqsFor(C, added), [{ cycle: 1, status: 'sent' }], 'résilié avec accès jusqu’à une date future : éligible');
+    assert.deepEqual(reqsFor(B, added), [], 'accès terminé : aucune demande');
+    assert.deepEqual(reqsFor(D, added), [], 'compte suspendu : aucune demande');
+    const countA = db.prepare('SELECT COUNT(*) AS c FROM requests WHERE user_id = ?').get(A.id).c;
+    await settle(R2);
+    assert.equal(db.prepare('SELECT COUNT(*) AS c FROM requests WHERE user_id = ?').get(A.id).c, countA, 'aucune demande de plus au passage suivant');
+    assert.equal(dups(), 0, 'aucun doublon');
+    // Courtier créé dans l'administration, sans redémarrage.
+    const ADM2 = await adminOf(R2);
+    let r = await R2.call('POST', '/admin/brokers', { slug: 'annuaire-cree', name: 'Annuaire Créé', domain: 'annuaire-cree.fr', category: 'Annuaire', jurisdiction: 'FR', legal_basis: 'rgpd', sensitivity: 2, recheck_days: 60, contact_email: 'dpo@annuaire-cree.fr' }, ADM2);
+    assert.equal(r.status, 201);
+    const created = r.data.broker.id;
+    await settle(R2);
+    assert.deepEqual(reqsFor(A, created), [{ cycle: 1, status: 'sent' }], 'courtier créé dans l’administration : demande envoyée');
+    // De nouveau éligibles (abonnement réactivé, suspension levée) : les courtiers ajoutés entre-temps sont rattrapés.
+    assert.equal((await R2.call('POST', `/admin/users/${B.id}/subscription`, { status: 'active', plan: 'individuel' }, ADM2)).status, 200);
+    await settle(R2);
+    assert.equal(reqsFor(B, added).length, 1, 'abonnement réactivé : courtier du registre rattrapé'); assert.equal(reqsFor(B, created).length, 1, 'courtier créé rattrapé');
+    assert.equal(reqsFor(D, added).length, 0, 'toujours suspendu');
+    assert.equal((await R2.call('POST', `/admin/users/${D.id}/unsuspend`, {}, ADM2)).status, 200);
+    await settle(R2);
+    assert.equal(reqsFor(D, added).length, 1, 'suspension levée : courtier du registre rattrapé'); assert.equal(reqsFor(D, created).length, 1);
+    assert.equal(dups(), 0, 'aucun doublon');
+    const journal = db.prepare(`SELECT message FROM events WHERE user_id = ? AND type = 'launch' ORDER BY id DESC LIMIT 1`).get(A.id).message;
+    assert.match(journal, /^1 demande préparée /, 'journal au singulier pour une seule demande');
+    // Lancement simultané (autre instance) : pendant que le serveur lance le profil de A, une autre connexion tient le
+    // verrou d'écriture et crée la même demande. L'insertion du serveur, vérifiée dans l'instruction même, n'en ajoute pas
+    // une seconde.
+    r = await R2.call('POST', '/admin/brokers', { slug: 'annuaire-concurrent', name: 'Annuaire Concurrent', domain: 'annuaire-concurrent.fr', category: 'Annuaire', jurisdiction: 'FR', legal_basis: 'rgpd', sensitivity: 2, recheck_days: 60, contact_email: 'dpo@annuaire-concurrent.fr' }, ADM2);
+    const rival = r.data.broker.id;
+    const other = R2.sql();
+    other.exec('BEGIN IMMEDIATE');
+    const launching = R2.call('POST', '/requests/launch', {}, A.cookie);
+    await wait(400);   // le serveur a lu les demandes du profil et attend le verrou
+    other.prepare(`INSERT INTO requests (id, user_id, profile_id, broker_id, cycle, status, token, created_at) VALUES ('concurrente', ?, ?, ?, 1, 'queued', 'C0C0C0C0C0', ?)`).run(A.id, A.pid, rival, new Date().toISOString());
+    other.exec('COMMIT'); other.close();
+    r = await launching;
+    assert.equal(r.status, 200, JSON.stringify(r.data)); assert.equal(r.data.created, 0, 'demande déjà créée par l’autre connexion');
+    assert.equal(db.prepare('SELECT COUNT(*) AS c FROM requests WHERE profile_id = ? AND broker_id = ?').get(A.pid, rival).c, 1, 'pas de doublon');
+    db.close(); await R2.stop();
+  }
+  if (want(2)) step('courtier ajouté au registre (brokers.json ou administration) : une demande de cycle 1 par profil éligible, sans doublon, rattrapage des profils redevenus éligibles');
 
 
 

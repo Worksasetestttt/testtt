@@ -44,14 +44,23 @@ const canMail = (b) => !!b && b.active === 1 && !(b.custom === 1 && b.discovery_
   && (mailMode !== 'smtp' || b.contact_verified === 1 || ALLOW_UNVERIFIED || (AUTO_SITE && b.custom === 1 && b.contact_source === 'site'));
 const backoffDate = (attempts) => new Date(Date.now() + Math.min(24 * 60, 2 ** attempts) * 60000).toISOString(); // 2, 4, 8… min, plafond 24 h
 const errMsg = (e) => String(e?.message || e).slice(0, 300);
+// Nouvelle demande (cycle afterCycle + 1, 1 pour un premier envoi) à un courtier, sauf si ce profil a déjà une demande
+// plus récente pour lui. La condition est vérifiée dans l'instruction même : deux lancements simultanés (deux instances
+// sur la même base) ne créent jamais deux fois la même demande. Cela suppose que la transaction appelante commence par
+// une écriture (cette insertion, ou une mise à jour) : elle attend alors le verrou d'écriture et lit l'état validé par
+// l'autre instance. Une lecture préalable dans la transaction (newToken) figerait un instantané périmé.
 // source_url : adresse de la fiche signalée par l'abonné, reprise d'un cycle à l'autre (citée dans le courrier).
-const insertRequest = (user_id, profile_id, broker_id, cycle, source_url = null) =>
-  q.run(`INSERT INTO requests (id, user_id, profile_id, broker_id, cycle, status, token, created_at, source_url) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?)`, crypto.randomUUID(), user_id, profile_id, broker_id, cycle, newToken(), now(), source_url);
+// Renvoie 1 si la demande a été créée, 0 sinon.
+const insertNext = (user_id, profile_id, broker_id, afterCycle, source_url = null, token = newToken()) => Number(q.run(
+  `INSERT INTO requests (id, user_id, profile_id, broker_id, cycle, status, token, created_at, source_url)
+   SELECT ?, ?, ?, ?, ?, 'queued', ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM requests WHERE profile_id = ? AND broker_id = ? AND cycle > ?)`,
+  crypto.randomUUID(), user_id, profile_id, broker_id, afterCycle + 1, token, now(), source_url, profile_id, broker_id, afterCycle).changes);
 const revokedStop = (r) => r.status === 'refused' && /^Mandat révoqué/.test(r.note || '');
 
 // Crée (si besoin) les demandes d’un profil complet. Idempotent : un courtier qui a déjà une demande vivante n’en reçoit
-// pas de seconde ; une demande abandonnée par révocation du mandat est relancée dans un nouveau cycle (après re-signature),
-// y compris pour un site que l'abonné avait ajouté (les autres sites ajoutés ne concernent que leurs propres profils).
+// pas de seconde ; un courtier actif du registre sans demande (nouveau profil, courtier ajouté) en reçoit une de cycle 1 ;
+// une demande abandonnée par révocation du mandat est relancée dans un nouveau cycle (après re-signature), y compris pour
+// un site que l'abonné avait ajouté (les autres sites ajoutés ne concernent que leurs propres profils).
 export function launchProfile(user, profile) {
   if (!isEligible(user)) return { created: 0, reason: 'Mandat non signé ou abonnement inactif.' };
   if (!profile || profile.user_id !== user.id) return { created: 0, reason: 'Profil introuvable.' };
@@ -59,16 +68,11 @@ export function launchProfile(user, profile) {
   const brokers = q.all('SELECT id, custom FROM brokers WHERE active = 1 AND (custom = 0 OR id IN (SELECT broker_id FROM requests WHERE profile_id = ?)) ORDER BY id', profile.id);
   const latest = new Map();
   for (const r of q.all('SELECT broker_id, cycle, status, note, source_url FROM requests WHERE profile_id = ? ORDER BY cycle, created_at', profile.id)) latest.set(r.broker_id, r);
+  // Jetons tirés avant la transaction : sa première instruction est une insertion (voir insertNext).
+  const todo = brokers.map((b) => ({ b, last: latest.get(b.id) })).filter(({ b, last }) => (last ? revokedStop(last) : !b.custom)).map((x) => ({ ...x, token: newToken() }));
   let created = 0;
-  tx(() => {
-    for (const b of brokers) {
-      const last = latest.get(b.id);
-      if (last ? !revokedStop(last) : b.custom) continue;
-      insertRequest(user.id, profile.id, b.id, last ? last.cycle + 1 : 1, last?.source_url || null);
-      created += 1;
-    }
-  });
-  if (created) logEvent(user.id, 'launch', `${created} demandes préparées pour ${profile.first_name} ${profile.last_name} (${brokers.filter((b) => !b.custom).length} courtiers surveillés).`, { profile_id: profile.id });
+  if (todo.length) tx(() => { for (const { b, last, token } of todo) created += insertNext(user.id, profile.id, b.id, last ? last.cycle : 0, last?.source_url || null, token); });
+  if (created) logEvent(user.id, 'launch', `${created} demande${created > 1 ? 's' : ''} préparée${created > 1 ? 's' : ''} pour ${profile.first_name} ${profile.last_name} (${brokers.filter((b) => !b.custom).length} courtiers surveillés).`, { profile_id: profile.id });
   return { created };
 }
 
@@ -150,12 +154,11 @@ function rechecks() {
       if (!broker || !broker.active) { q.run('UPDATE requests SET next_check_at = NULL WHERE id = ?', r.id); continue; } // courtier retiré du registre : plus de vérification
       if (!isEligible(user)) { q.run('UPDATE requests SET next_check_at = ? WHERE id = ?', addDays(t, 1), r.id); continue; } // abonnement inactif : on réessaie demain
       // Un seul cycle à la fois par courtier et profil : pas de doublon si une demande plus récente existe déjà.
-      const newer = q.get('SELECT id FROM requests WHERE profile_id = ? AND broker_id = ? AND cycle > ?', r.profile_id, r.broker_id, r.cycle);
-      tx(() => {
+      const created = tx(() => {
         q.run('UPDATE requests SET next_check_at = NULL WHERE id = ?', r.id);
-        if (!newer) insertRequest(r.user_id, r.profile_id, r.broker_id, r.cycle + 1, r.source_url);   // la fiche signalée reste citée
+        return insertNext(r.user_id, r.profile_id, r.broker_id, r.cycle, r.source_url);   // la fiche signalée reste citée
       });
-      if (!newer) logEvent(user.id, 'recheck', r.status === 'refused' ? `Nouvelle demande à ${broker.name} (cycle ${r.cycle + 1}) après son refus.` : `Nouvelle vérification chez ${broker.name} (cycle ${r.cycle + 1}) : une demande est renvoyée.`, { profile_id: r.profile_id });
+      if (created) logEvent(user.id, 'recheck', r.status === 'refused' ? `Nouvelle demande à ${broker.name} (cycle ${r.cycle + 1}) après son refus.` : `Nouvelle vérification chez ${broker.name} (cycle ${r.cycle + 1}) : une demande est renvoyée.`, { profile_id: r.profile_id });
     } catch (e) { console.error('[scheduler] revérification', r.id, e); }
   }
 }
@@ -229,11 +232,39 @@ export function expireKeySubscriptions(at = now()) {
   return expired;
 }
 
-function autoLaunch() {
-  const profiles = q.all(`SELECT p.* FROM profiles p JOIN users u ON u.id = p.user_id WHERE u.deleted_at IS NULL AND u.mandate_signed_at IS NOT NULL AND u.mandate_revoked_at IS NULL AND u.subscription_status = 'active' AND p.first_name <> '' AND p.last_name <> '' AND NOT EXISTS (SELECT 1 FROM requests r WHERE r.profile_id = p.id)`);
-  for (const p of profiles) {
-    try { launchProfile(q.get('SELECT * FROM users WHERE id = ?', p.user_id), p); } catch (e) { console.error('[scheduler] lancement', p.id, e); }
+// Lancement automatique des profils éligibles (même règle que isEligible, écrite en SQL ; launchProfile la revérifie).
+// · À chaque passage, requête légère : les profils sans aucune demande (nouveau dossier).
+// · Au démarrage, quand le registre change (courtier ajouté dans brokers.json ou par l'administration, réactivé), sur
+//   demande (requestFullScan : abonnement réactivé, suspension levée…) et toutes les 10 minutes : les profils à qui il
+//   manque une demande pour un courtier actif du registre (custom = 0). Cette recherche coûte une lecture d'index
+//   (idx_requests_broker) par courtier et par profil, environ 0,6 s pour 20 000 profils : elle n'a donc pas lieu à chaque
+//   passage, et se fait par tranches de profils pour laisser passer les requêtes HTTP.
+// Aucun doublon : launchProfile n'insère qu'une demande absente (insertNext).
+const SCAN_EVERY_MS = 10 * 60000, SCAN_CHUNK = 1000;
+const ELIGIBLE_SQL = `u.deleted_at IS NULL AND u.mandate_signed_at IS NOT NULL AND u.mandate_revoked_at IS NULL
+  AND (u.suspended_at IS NULL OR (u.suspended_until IS NOT NULL AND u.suspended_until <= :at))
+  AND ((u.subscription_status = 'active' AND (u.billing_mode IS NOT 'key' OR u.subscription_ends_at > :at)) OR (u.subscription_status = 'canceled' AND u.subscription_ends_at > :at))
+  AND p.first_name <> '' AND p.last_name <> ''`;
+const MISSING_SQL = 'EXISTS (SELECT 1 FROM brokers b WHERE b.active = 1 AND b.custom = 0 AND NOT EXISTS (SELECT 1 FROM requests r WHERE r.profile_id = p.id AND r.broker_id = b.id))';
+let scannedRegistry = null, scannedAt = 0, scanWanted = false;
+// Demande une recherche complète au prochain passage (un profil a pu redevenir éligible).
+export const requestFullScan = () => { scanWanted = true; };
+async function autoLaunch() {
+  const at = now();
+  const launch = (p) => { try { launchProfile(q.get('SELECT * FROM users WHERE id = ?', p.user_id), p); } catch (e) { console.error('[scheduler] lancement', p.id, e); } };
+  const registry = q.get('SELECT group_concat(id) AS ids FROM (SELECT id FROM brokers WHERE active = 1 AND custom = 0 ORDER BY id)').ids || '';
+  if (!scanWanted && registry === scannedRegistry && Date.now() - scannedAt < SCAN_EVERY_MS) {
+    for (const p of q.all(`SELECT p.* FROM profiles p JOIN users u ON u.id = p.user_id WHERE ${ELIGIBLE_SQL} AND NOT EXISTS (SELECT 1 FROM requests r WHERE r.profile_id = p.id)`, { at })) launch(p);
+    return;
   }
+  scanWanted = false;
+  const last = q.get('SELECT MAX(rowid) AS m FROM profiles').m || 0;
+  for (let lo = 0; lo < last && !stopped; lo += SCAN_CHUNK) {
+    for (const p of q.all(`SELECT p.* FROM profiles p JOIN users u ON u.id = p.user_id WHERE p.rowid > :lo AND p.rowid <= :hi AND ${ELIGIBLE_SQL} AND ${MISSING_SQL}`, { at, lo, hi: lo + SCAN_CHUNK })) launch(p);
+    beat = Date.now();
+    await new Promise((r) => setImmediate(r));
+  }
+  if (!stopped) { scannedRegistry = registry; scannedAt = Date.now(); }   // registre modifié pendant la recherche : elle reprend au passage suivant
 }
 
 // Un seul passage à la fois : un tick demandé pendant un passage en cours est fusionné (un nouveau passage suit).
@@ -251,7 +282,7 @@ export function tick() {
     do {
       again = false;
       beat = Date.now();
-      try { expireKeySubscriptions(); autoLaunch(); await sendQueued(); await followUps(); rechecks(); if (DEMO) await simulateReplies(); }
+      try { expireKeySubscriptions(); await autoLaunch(); await sendQueued(); await followUps(); rechecks(); if (DEMO) await simulateReplies(); }
       catch (e) { console.error('[scheduler]', e); }
       lastTick = now();
       beat = Date.now();

@@ -188,6 +188,7 @@ CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
 CREATE INDEX IF NOT EXISTS idx_requests_broker ON requests(profile_id, broker_id, cycle);
 CREATE INDEX IF NOT EXISTS idx_requests_due ON requests(due_at);
 CREATE INDEX IF NOT EXISTS idx_requests_next_check ON requests(next_check_at);
+CREATE INDEX IF NOT EXISTS idx_brokers_registry ON brokers(id) WHERE custom = 0 AND active = 1;
 CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_mails_request ON mails(request_id);
 CREATE INDEX IF NOT EXISTS idx_mails_user ON mails(user_id);
