@@ -14,7 +14,7 @@
 //     (sent, in_progress, action_required) : jamais à une demande en file, en erreur, effacée ou refusée (applyOutcome).
 import crypto from 'node:crypto';
 import { q, now, addDays, addMonths, logEvent, tx, newToken } from './db.js';
-import { sendMail, mailMode, REPLY_TO } from './mailer.js';
+import { sendMail, mailMode, REPLY_TO, SEND_TIMEOUT_MS } from './mailer.js';
 import { removalRequest, followUp, actionRequiredMail } from './templates.js';
 
 const truthy = (v) => /^(1|true|yes)$/i.test(v || '');
@@ -100,9 +100,28 @@ function recordFailure(r, user, broker, e, kind) {
   if (attempts === 1) logEvent(user.id, 'error', `${kind === 'initial' ? 'Envoi' : 'Relance'} à ${broker.name} différé${kind === 'initial' ? '' : 'e'} : le courrier n’a pas pu partir. Nouvel essai automatique.`, { profile_id: r.profile_id, request_id: r.id });
 }
 
+// Réservation d'une demande avant l'envoi de son courrier (demande ou relance) : deux instances sur la même base, ou deux
+// passages, ne l'envoient jamais ensemble. Elle est prise par un UPDATE conditionnel (atomique : une seule instance le
+// réussit) et levée après l'envoi ou l'échec, sans statut visible. Une réservation plus vieille que CLAIM_TTL_MS (instance
+// arrêtée en plein envoi) peut être reprise : si le courrier était déjà parti (enregistré dans mails pendant cette
+// réservation, même objet, sans erreur), il n'est pas renvoyé et la demande est seulement mise à jour.
+const CLAIM_TTL_MS = Math.max(15 * 60000, 4 * SEND_TIMEOUT_MS);
+const claimStale = () => new Date(Date.now() - CLAIM_TTL_MS).toISOString();
+// Renvoie { at, prev } (prev : réservation périmée reprise, ou null) ou null si la demande est réservée ailleurs ou ne
+// remplit plus la condition `cond` (statut changé, recul en cours).
+function claim(id, cond, ...params) {
+  const prev = q.get('SELECT claimed_at FROM requests WHERE id = ?', id)?.claimed_at || null;
+  const stale = claimStale();
+  if (prev && prev >= stale) return null;
+  const at = now();
+  return q.run(`UPDATE requests SET claimed_at = ? WHERE id = ? AND ${cond} AND (claimed_at IS NULL OR claimed_at < ?)`, at, id, ...params, stale).changes ? { at, prev } : null;
+}
+const release = (id, c) => q.run('UPDATE requests SET claimed_at = NULL WHERE id = ? AND claimed_at = ?', id, c.at);
+const sentDuring = (id, subject, since) => (since ? q.get('SELECT created_at FROM mails WHERE request_id = ? AND subject = ? AND error IS NULL AND created_at >= ? ORDER BY id LIMIT 1', id, subject, since) || null : null);
+
 async function sendQueued() {
   const t = now();
-  const rows = q.all(`SELECT * FROM requests WHERE status = 'queued' AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ORDER BY created_at LIMIT ?`, t, BATCH);
+  const rows = q.all(`SELECT * FROM requests WHERE status = 'queued' AND (next_attempt_at IS NULL OR next_attempt_at <= ?) AND (claimed_at IS NULL OR claimed_at < ?) ORDER BY created_at LIMIT ?`, t, claimStale(), BATCH);
   let sent = 0;
   for (const r of rows) {
     if (stopped) break;   // arrêt du serveur : on s’interrompt entre deux courriers
@@ -115,12 +134,18 @@ async function sendQueued() {
       const broker = q.get('SELECT * FROM brokers WHERE id = ?', r.broker_id);
       if (!isEligible(user) || !profile || !canMail(broker)) continue;
       const mail = removalRequest({ profile, broker, user, ref: ref(r), mandateDate: user.mandate_signed_at, url: r.source_url });
-      try {
-        await sendMail({ to: broker.contact_email, subject: mail.subject, text: mail.text, headers: { 'X-Oubli-Ref': ref(r) }, request_id: r.id, user_id: user.id });
-      } catch (e) { recordFailure(r, user, broker, e, 'initial'); continue; }
-      const at = now();
+      const c = claim(r.id, `status = 'queued' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)`, now());
+      if (!c) continue;   // réservée par une autre instance
+      const prior = sentDuring(r.id, mail.subject, c.prev);   // reprise après une panne : courrier déjà parti ?
+      if (!prior) {
+        try {
+          await sendMail({ to: broker.contact_email, subject: mail.subject, text: mail.text, headers: { 'X-Oubli-Ref': ref(r) }, request_id: r.id, user_id: user.id });
+        } catch (e) { recordFailure(r, user, broker, e, 'initial'); release(r.id, c); continue; }
+      }
+      const at = prior ? prior.created_at : now();
       const due = broker.legal_basis === 'ccpa' ? addDays(at, 45) : addMonths(at, 1); // art. 12 §3 RGPD : un mois ; CCPA : 45 jours
-      q.run(`UPDATE requests SET status = 'sent', sent_at = ?, due_at = ?, attempts = 0, next_attempt_at = NULL, last_error = NULL WHERE id = ? AND status = 'queued'`, at, due, r.id);
+      q.run(`UPDATE requests SET status = 'sent', sent_at = ?, due_at = ?, attempts = 0, next_attempt_at = NULL, last_error = NULL, claimed_at = NULL WHERE id = ? AND status = 'queued'`, at, due, r.id);
+      release(r.id, c);   // statut changé pendant l'envoi (mandat révoqué…) : la réservation est levée quand même
       logEvent(user.id, 'sent', `Demande d’effacement envoyée à ${broker.name} (${broker.legal_basis === 'ccpa' ? 'CCPA' : 'art. 17 RGPD'}).`, { profile_id: r.profile_id, request_id: r.id });
       sent += 1;
     } catch (e) { console.error('[scheduler] envoi', r.id, e); }
@@ -130,7 +155,7 @@ async function sendQueued() {
 
 async function followUps() {
   const t = now();
-  const rows = q.all(`SELECT * FROM requests WHERE status IN ('sent', 'in_progress') AND followup_sent_at IS NULL AND due_at IS NOT NULL AND due_at <= ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ORDER BY due_at LIMIT ?`, t, t, BATCH);
+  const rows = q.all(`SELECT * FROM requests WHERE status IN ('sent', 'in_progress') AND followup_sent_at IS NULL AND due_at IS NOT NULL AND due_at <= ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?) AND (claimed_at IS NULL OR claimed_at < ?) ORDER BY due_at LIMIT ?`, t, t, claimStale(), BATCH);
   for (const r of rows) {
     if (stopped) break;
     beat = Date.now();
@@ -144,10 +169,16 @@ async function followUps() {
       const broker = q.get('SELECT * FROM brokers WHERE id = ?', r.broker_id);
       if (!isEligible(user) || !profile || !canMail(broker)) continue;
       const mail = followUp({ broker, ref: ref(r), sentAt: r.sent_at, profile });
-      try {
-        await sendMail({ to: broker.contact_email, subject: mail.subject, text: mail.text, headers: { 'X-Oubli-Ref': ref(r) }, request_id: r.id, user_id: user.id });
-      } catch (e) { recordFailure(r, user, broker, e, 'followup'); continue; }
-      q.run(`UPDATE requests SET status = 'in_progress', followup_sent_at = ?, attempts = 0, next_attempt_at = NULL, last_error = NULL, note = 'Relance envoyée à l’échéance légale.' WHERE id = ? AND status IN ('sent', 'in_progress') AND followup_sent_at IS NULL`, now(), r.id);
+      const c = claim(r.id, `status IN ('sent', 'in_progress') AND followup_sent_at IS NULL AND (next_attempt_at IS NULL OR next_attempt_at <= ?)`, now());
+      if (!c) continue;   // réservée par une autre instance
+      const prior = sentDuring(r.id, mail.subject, c.prev);
+      if (!prior) {
+        try {
+          await sendMail({ to: broker.contact_email, subject: mail.subject, text: mail.text, headers: { 'X-Oubli-Ref': ref(r) }, request_id: r.id, user_id: user.id });
+        } catch (e) { recordFailure(r, user, broker, e, 'followup'); release(r.id, c); continue; }
+      }
+      q.run(`UPDATE requests SET status = 'in_progress', followup_sent_at = ?, attempts = 0, next_attempt_at = NULL, last_error = NULL, claimed_at = NULL, note = 'Relance envoyée à l’échéance légale.' WHERE id = ? AND status IN ('sent', 'in_progress') AND followup_sent_at IS NULL`, prior ? prior.created_at : now(), r.id);
+      release(r.id, c);
       logEvent(user.id, 'followup', `Relance envoyée à ${broker.name} : délai légal dépassé sans réponse.`, { profile_id: r.profile_id, request_id: r.id });
     } catch (e) { console.error('[scheduler] relance', r.id, e); }
   }
@@ -178,11 +209,13 @@ function rechecks() {
 // en file entre-temps). Renvoie le nombre de demandes arrêtées.
 export function stopRemovedBrokerRequests(brokerId = null) {
   const one = brokerId != null;
+  // Une demande en cours d'envoi (réservée) n'est pas touchée : son courrier part, ou elle est close au passage suivant.
+  const stale = claimStale();
   const rows = q.all(`SELECT r.id, r.user_id, r.profile_id, b.name, b.custom FROM requests r JOIN brokers b ON b.id = r.broker_id
-    WHERE b.active = 0 AND r.status IN ('queued', 'error')${one ? ' AND b.id = ?' : ` LIMIT ${BATCH}`}`, ...(one ? [brokerId] : []));
+    WHERE b.active = 0 AND r.status IN ('queued', 'error') AND (r.claimed_at IS NULL OR r.claimed_at < ?)${one ? ' AND b.id = ?' : ` LIMIT ${BATCH}`}`, stale, ...(one ? [brokerId] : []));
   let n = 0;
   for (const r of rows) {
-    if (!q.run(`UPDATE requests SET status = 'refused', note = ?, next_check_at = NULL, next_attempt_at = NULL WHERE id = ? AND status IN ('queued', 'error')`, BROKER_STOP_NOTE, r.id).changes) continue;
+    if (!q.run(`UPDATE requests SET status = 'refused', note = ?, next_check_at = NULL, next_attempt_at = NULL WHERE id = ? AND status IN ('queued', 'error') AND (claimed_at IS NULL OR claimed_at < ?)`, BROKER_STOP_NOTE, r.id, stale).changes) continue;
     n += 1;
     logEvent(r.user_id, 'stopped', r.custom
       ? `Site ${r.name} retiré du service par notre équipe : la demande ne lui a pas été envoyée. Ce n’est pas un refus ; une nouvelle demande partira s’il est rétabli.`

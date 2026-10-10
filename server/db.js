@@ -161,6 +161,8 @@ ensureColumn('requests', 'source_url', 'TEXT');         // page où figure la fi
 ensureColumn('requests', 'review_at', 'TEXT');
 ensureColumn('requests', 'review_outcome', 'TEXT');     // done | refused (lecture automatique de la réponse)
 ensureColumn('requests', 'review_from', 'TEXT');        // adresse de l'expéditeur
+// Réservation d'une demande pendant l'envoi de son courrier (scheduler.js, claim) : une seule instance l'envoie.
+ensureColumn('requests', 'claimed_at', 'TEXT');
 // Rapport mensuel par e-mail (reports.js) : activé par défaut, désactivable dans les paramètres.
 ensureColumn('users', 'monthly_report', 'INTEGER NOT NULL DEFAULT 1');
 ensureColumn('users', 'last_report_at', 'TEXT');

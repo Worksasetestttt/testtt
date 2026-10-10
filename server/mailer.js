@@ -9,7 +9,7 @@ import { q, now } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OUTBOX = path.resolve(process.env.OUTBOX_DIR || path.join(__dirname, '..', 'data', 'outbox'));
-const SEND_TIMEOUT_MS = Math.max(1000, Number(process.env.MAIL_TIMEOUT_MS) || 30000);
+export const SEND_TIMEOUT_MS = Math.max(1000, Number(process.env.MAIL_TIMEOUT_MS) || 30000);
 // Adresse nue (pas de nom affiché, pas de caractères spéciaux d’en-tête).
 const ADDRESS = /^[^\s@<>,;:"'()[\]\\]+@[^\s@<>,;:"'()[\]\\]+\.[a-z0-9-]{2,}$/i;
 

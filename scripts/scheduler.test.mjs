@@ -3,6 +3,7 @@
 //   2. courtier ajouté au registre (brokers.json ou administration) : demandes pour les abonnés existants ;
 //   3. courtier désactivé puis réactivé : demandes jamais envoyées arrêtées, puis relancées ;
 //   4. réponses entrantes d'un expéditeur qui n'est ni le courtier ni son contact vérifié ;
+//   5. envoi en double : deux instances sur la même base, reprise après une panne entre l'envoi et la mise à jour.
 // Chaque groupe démarre ses serveurs (port libre, base temporaire, jamais data/). SCHED_ONLY=2,4 ne lance que ces groupes.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -229,7 +230,7 @@ try {
     assert.equal(reqsFor(D, added).length, 1, 'suspension levée : courtier du registre rattrapé'); assert.equal(reqsFor(D, created).length, 1);
     assert.equal(dups(), 0, 'aucun doublon');
     const journal = db.prepare(`SELECT message FROM events WHERE user_id = ? AND type = 'launch' ORDER BY id DESC LIMIT 1`).get(A.id).message;
-    assert.match(journal, /^1 demande préparée /, 'journal au singulier pour une seule demande');
+    assert.match(journal, /^1\sdemande\spréparée\s/, 'journal au singulier pour une seule demande');
     // Lancement simultané (autre instance) : pendant que le serveur lance le profil de A, une autre connexion tient le
     // verrou d'écriture et crée la même demande. L'insertion du serveur, vérifiée dans l'instruction même, n'en ajoute pas
     // une seconde.
@@ -279,15 +280,15 @@ try {
     for (const row of [rowX, rowW]) { assert.equal(row.status, 'stopped'); assert.equal(row.stop_reason, 'broker'); assert.equal(row.complaint, false); }
     assert.equal(dash.counters.stopped, 2); assert.equal(dash.counters.refused, 0, 'pas un refus');
     const csv = (await S.call('GET', '/requests.csv', undefined, M.cookie)).text;
-    assert.equal(csv.match(/Arrêtée \(courtier retiré du registre\)/g)?.length, 2, 'CSV : arrêtées, cause indiquée');
+    assert.equal(csv.match(/Arrêtée\s\(courtier\sretiré\sdu\sregistre\)/g)?.length, 2, 'CSV : arrêtées, cause indiquée');
     assert.ok(!/Refusée|mandat révoqué/.test(csv), 'CSV : ni refus ni mandat révoqué');
     assert.equal((await S.call('GET', `/requests/${mx.id}/complaint`, undefined, M.cookie)).status, 400, 'aucune plainte proposée');
     assert.equal((await S.call('GET', '/admin/brokers', undefined, ADM)).data.brokers.find((b) => b.id === X.id).refused, 0, 'administration : pas compté comme un refus');
-    assert.ok(dash.events.some((e) => e.request_id === mx.id && /retiré de notre registre/.test(e.message)), 'journal : arrêt expliqué');
+    assert.ok(dash.events.some((e) => e.request_id === mx.id && /retiré\sde\snotre\sregistre/.test(e.message)), 'journal : arrêt expliqué');
     db.prepare('UPDATE users SET created_at = ?, last_report_at = NULL WHERE id = ?').run(ago(31 * DAY), M.id);
     r = await S.call('POST', '/admin/reports/run', {}, ADM); assert.ok(r.data.sent >= 1);
     const report = db.prepare(`SELECT body FROM mails WHERE user_id = ? AND subject LIKE 'Votre rapport mensuel%' ORDER BY id DESC LIMIT 1`).get(M.id).body;
-    assert.match(report, /2 demandes arrêtées/); assert.match(report, /retirés de notre registre/); assert.doesNotMatch(report, /refus/i);
+    assert.match(report, /2\sdemandes\sarrêtées/); assert.match(report, /retirés\sde\snotre\sregistre/); assert.doesNotMatch(report, /refus/i);
     await S.call('POST', '/admin/tick', {}, ADM);
     assert.equal(reqRow(mx.id).status, 'refused', 'pas de nouveau cycle tant que le courtier est retiré');
     assert.equal(db.prepare('SELECT COUNT(*) AS c FROM requests WHERE broker_id = ? AND user_id = ?').get(X.id, M.id).c, 1);
@@ -413,6 +414,115 @@ try {
   }
   if (want(4)) step('réponses entrantes : effacement ou refus appliqués seulement depuis le domaine du courtier ou son contact vérifié ; sinon « en cours » et « à vérifier » dans l’administration');
 
+  /* ---------- 5. Envoi en double : réservation atomique avant l'envoi ---------- */
+  // Deux instances sur la même base envoyaient la même demande ; après une panne entre l'envoi et la mise à jour, le
+  // courrier repartait. La demande est réservée (claimed_at) avant l'envoi ; une réservation périmée est reprise, et un
+  // courrier déjà parti pendant cette réservation n'est pas renvoyé.
+  if (want(5)) {
+    if (!db.prepare('PRAGMA table_info(requests)').all().some((c) => c.name === 'claimed_at')) db.exec('ALTER TABLE requests ADD COLUMN claimed_at TEXT');
+    const Q = await member(S);
+    await settle(S);
+    const [x1, x2, x3] = db.prepare(`SELECT id FROM requests WHERE user_id = ? AND status = 'sent' ORDER BY created_at LIMIT 3`).all(Q.id);
+    const mails = (id) => db.prepare(`SELECT id, created_at FROM mails WHERE request_id = ? AND subject LIKE 'Demande d%' AND error IS NULL ORDER BY id`).all(id);
+    const requeue = db.prepare(`UPDATE requests SET status = 'queued', sent_at = NULL, due_at = NULL, claimed_at = ? WHERE id = ?`);
+    // x1 : panne après l'envoi (courrier enregistré pendant une réservation périmée, demande restée en file).
+    requeue.run(ago(2 * HOUR), x1.id);
+    const m1 = mails(x1.id)[0];
+    db.prepare('UPDATE mails SET created_at = ? WHERE id = ?').run(ago(2 * HOUR - 60000), m1.id);
+    // x2 : panne avant l'envoi (réservation périmée, aucun courrier depuis) ; x3 : réservée par une autre instance à l'instant.
+    requeue.run(ago(2 * HOUR), x2.id);
+    db.prepare('UPDATE mails SET created_at = ? WHERE request_id = ?').run(ago(3 * HOUR), x2.id);
+    requeue.run(ago(60000), x3.id);
+    await S.call('POST', '/admin/tick', {}, ADM);
+    let row = reqRow(x1.id);
+    assert.equal(row.status, 'sent', 'reprise : demande marquée envoyée'); assert.equal(mails(x1.id).length, 1, 'courrier non renvoyé');
+    assert.equal(row.sent_at, db.prepare('SELECT created_at FROM mails WHERE id = ?').get(m1.id).created_at, 'date d’envoi : celle du courrier parti');
+    assert.equal(row.claimed_at, null, 'réservation levée');
+    assert.equal(reqRow(x2.id).status, 'sent'); assert.equal(mails(x2.id).length, 2, 'envoi repris après une réservation périmée');
+    assert.equal(reqRow(x3.id).status, 'queued', 'réservée ailleurs : pas d’envoi'); assert.equal(mails(x3.id).length, 1);
+    db.prepare('UPDATE requests SET claimed_at = ? WHERE id = ?').run(ago(2 * HOUR), x3.id);
+    db.prepare('UPDATE mails SET created_at = ? WHERE request_id = ?').run(ago(3 * HOUR), x3.id);
+    await S.call('POST', '/admin/tick', {}, ADM);
+    assert.equal(reqRow(x3.id).status, 'sent'); assert.equal(mails(x3.id).length, 2);
+    // Relances : même réservation. x4 : relance partie juste avant une panne ; x5 : relance en cours sur une autre instance.
+    const [x4, x5] = db.prepare(`SELECT id, token FROM requests WHERE user_id = ? AND status = 'sent' ORDER BY created_at LIMIT 2 OFFSET 3`).all(Q.id);
+    const relances = (id) => db.prepare(`SELECT created_at FROM mails WHERE request_id = ? AND subject LIKE 'Relance%' AND error IS NULL`).all(id);
+    const overdue = db.prepare('UPDATE requests SET due_at = ?, claimed_at = ? WHERE id = ?');
+    overdue.run(ago(DAY), ago(2 * HOUR), x4.id); overdue.run(ago(DAY), ago(60000), x5.id);
+    const sentAt = ago(2 * HOUR - 60000);
+    db.prepare(`INSERT INTO mails (request_id, user_id, to_addr, subject, body, mode, message_id, created_at) VALUES (?, ?, 'dpo@courtier.fr', ?, 'relance', 'outbox', '<x4@oubli.local>', ?)`).run(x4.id, Q.id, `Relance — demande d’effacement sans réponse [OUBLI-${x4.token}]`, sentAt);
+    await S.call('POST', '/admin/tick', {}, ADM);
+    row = reqRow(x4.id);
+    assert.equal(row.status, 'in_progress'); assert.equal(row.followup_sent_at, sentAt, 'relance déjà partie : enregistrée, pas renvoyée'); assert.equal(relances(x4.id).length, 1);
+    assert.equal(reqRow(x5.id).status, 'sent', 'relance réservée ailleurs : pas d’envoi'); assert.equal(relances(x5.id).length, 0);
+    // Renvoi demandé par l'équipe après une panne : le courrier parti pendant l'ancienne réservation ne dispense pas du renvoi.
+    const [x6] = db.prepare(`SELECT id FROM requests WHERE user_id = ? AND status = 'sent' ORDER BY created_at LIMIT 1 OFFSET 5`).all(Q.id);
+    requeue.run(ago(2 * HOUR), x6.id);
+    db.prepare('UPDATE mails SET created_at = ? WHERE request_id = ?').run(ago(2 * HOUR - 60000), x6.id);
+    assert.equal((await S.call('POST', `/admin/requests/${x6.id}/resend`, {}, ADM)).status, 200);
+    await S.call('POST', '/admin/tick', {}, ADM);
+    assert.equal(reqRow(x6.id).status, 'sent'); assert.equal(mails(x6.id).length, 2, 'renvoi effectué');
+    // Échec d'envoi : la réservation est levée, l'essai suivant part à l'échéance du recul.
+    const bad = await S.call('POST', '/sites', { url: 'https://annuaire-injoignable.fr/fiche/lea' }, Q.cookie);
+    await settle(S);
+    db.prepare(`UPDATE brokers SET contact_email = 'adresse-invalide' WHERE id = ?`).run(bad.data.broker.id);
+    requeue.run(null, bad.data.request_id);
+    await S.call('POST', '/admin/tick', {}, ADM);
+    row = reqRow(bad.data.request_id);
+    assert.equal(row.status, 'queued'); assert.ok(row.attempts >= 1); assert.equal(row.claimed_at, null, 'réservation levée après l’échec');
+    const tries = row.attempts;
+    db.prepare('UPDATE requests SET next_attempt_at = ? WHERE id = ?').run(ago(1000), bad.data.request_id);
+    await S.call('POST', '/admin/tick', {}, ADM);
+    assert.equal(reqRow(bad.data.request_id).attempts, tries + 1, 'nouvel essai après le recul');
+    // Désactivation pendant un envoi : la demande réservée n'est pas arrêtée (son courrier part), puis l'est si l'envoi échoue.
+    const site = await S.call('POST', '/sites', { url: 'https://annuaire-en-cours.fr/fiche/lea' }, Q.cookie);
+    await settle(S);
+    requeue.run(ago(30000), site.data.request_id);
+    assert.equal((await S.call('DELETE', `/admin/brokers/${site.data.broker.id}`, {}, ADM)).data.stopped, 0, 'demande en cours d’envoi : pas arrêtée');
+    assert.equal(reqRow(site.data.request_id).status, 'queued');
+    db.prepare('UPDATE requests SET claimed_at = NULL WHERE id = ?').run(site.data.request_id);   // l'envoi a échoué et la réservation est levée
+    await S.call('POST', '/admin/tick', {}, ADM);
+    assert.equal(reqRow(site.data.request_id).status, 'refused', 'arrêtée au passage suivant'); assert.match(reqRow(site.data.request_id).note, /^Courtier retiré/);
+    // Réservation prise par une autre instance entre la lecture de la demande et son UPDATE : pendant que le serveur
+    // attend le verrou d'écriture (tenu ici), l'autre connexion réserve la demande ; la condition de l'UPDATE l'emporte.
+    const [y] = db.prepare(`SELECT id FROM requests WHERE user_id = ? AND status = 'sent' ORDER BY created_at LIMIT 1 OFFSET 6`).all(Q.id);
+    requeue.run(null, y.id);
+    const before = mails(y.id).length;
+    const other = S.sql();
+    other.exec('BEGIN IMMEDIATE');
+    const ticking = S.call('POST', '/admin/tick', {}, ADM);
+    await wait(400);
+    other.prepare('UPDATE requests SET claimed_at = ? WHERE id = ?').run(new Date().toISOString(), y.id);
+    other.exec('COMMIT'); other.close();
+    assert.equal((await ticking).status, 200);
+    assert.equal(reqRow(y.id).status, 'queued', 'réservée entre-temps par l’autre instance : pas d’envoi'); assert.equal(mails(y.id).length, before);
+    db.prepare('UPDATE requests SET claimed_at = NULL WHERE id = ?').run(y.id);   // l'autre instance a levé sa réservation
+    await S.call('POST', '/admin/tick', {}, ADM);
+    assert.equal(reqRow(y.id).status, 'sent'); assert.equal(mails(y.id).length, before + 1);
+    // Deux instances sur la même base, SMTP lent (400 ms par courrier) : chaque demande ne part qu'une fois.
+    const slow = slowSmtp(400);
+    await new Promise((res) => slow.server.listen(0, '127.0.0.1', res));
+    const dbPath = path.join(tmp, 'deux-instances.sqlite');
+    const env = { SMTP_URL: `smtp://127.0.0.1:${slow.server.address().port}`, ALLOW_UNVERIFIED_CONTACTS: 'true', SEND_BATCH: '4', MAIL_TIMEOUT_MS: '5000' };
+    const I1 = await start('instance-1', env, { db: dbPath });
+    const I2 = await start('instance-2', env, { db: dbPath });
+    try {
+      const U = await member(I1, { launch: false });
+      const A1 = await adminOf(I1), A2 = await adminOf(I2);
+      assert.equal((await I1.call('POST', '/requests/launch', {}, U.cookie)).status, 200);   // lance aussi un passage sur I1
+      await Promise.all([I2.call('POST', '/admin/tick', {}, A2), I1.call('POST', '/admin/tick', {}, A1), wait(30).then(() => I2.call('POST', '/admin/tick', {}, A2))]);
+      const idb = I1.sql();
+      const dup = idb.prepare(`SELECT request_id, COUNT(*) AS n FROM mails WHERE request_id IS NOT NULL AND error IS NULL GROUP BY request_id HAVING n > 1`).all();
+      const sentN = idb.prepare(`SELECT COUNT(*) AS c FROM requests WHERE user_id = ? AND status = 'sent'`).get(U.id).c;
+      const mailedN = idb.prepare(`SELECT COUNT(*) AS c FROM mails WHERE user_id = ? AND request_id IS NOT NULL AND error IS NULL`).get(U.id).c;
+      const allOk = idb.prepare('SELECT COUNT(*) AS c FROM mails WHERE error IS NULL').get().c;   // courriers de bienvenue compris
+      idb.close();
+      assert.deepEqual(dup.map((x) => ({ ...x })), [], 'aucune demande envoyée deux fois');
+      assert.ok(sentN >= 4, `les deux instances ont envoyé (${sentN})`); assert.equal(mailedN, sentN, 'un courrier par demande envoyée');
+      assert.equal(slow.count(), allOk, 'le serveur SMTP n’a reçu chaque courrier qu’une fois');
+    } finally { await I1.stop(); await I2.stop(); slow.close(); }
+  }
+  if (want(5)) step('envoi en double : réservation atomique (deux instances, SMTP lent), reprise d’une réservation périmée sans renvoyer un courrier déjà parti');
 
   if (db) db.close();
   console.log(`✔ Planificateur validé (${passed} groupes de vérifications).`);
