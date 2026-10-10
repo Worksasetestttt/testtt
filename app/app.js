@@ -68,7 +68,7 @@
   function loadMe() {
     return api('/me').then(function (d) { state.user = d.user || null; state.profiles = d.profiles || []; state.impersonation = d.impersonation || null; return !!d.user; }).catch(function () { state.user = null; state.profiles = []; state.impersonation = null; return false; });
   }
-  function resetSession() { state.user = null; state.impersonation = null; state.profiles = []; state.dash = null; state.profileId = null; sigs = {}; }
+  function resetSession() { state.user = null; state.impersonation = null; state.profiles = []; state.dash = null; state.profileId = null; sigs = {}; dashTag = null; }
   function setChrome() {
     var on = !!state.user;
     nav.hidden = !on; topUser.hidden = !on;
@@ -713,16 +713,29 @@
   }
   /* Requête du tableau de bord : une seule à la fois (sauf demande explicite), la plus récente l'emporte. En cas d'échec,
      nouvel essai espacé (12 s, 24 s… 1 min au plus) et indicateur « hors ligne », au lieu d'une erreur toutes les 6 s. */
-  var dashSeq = 0, dashBusy = false, fails = 0, retryAt = 0;
+  /* Réponse conditionnelle : le serveur renvoie 304 sans corps quand rien n'a changé depuis le dernier ETag reçu. */
+  var dashSeq = 0, dashBusy = false, fails = 0, retryAt = 0, dashTag = null;
+  function fetchDash(pid) {
+    var h = {}; if (dashTag && state.dash) h['If-None-Match'] = dashTag;
+    return fetch('/api/dashboard' + pid, { credentials: 'same-origin', headers: h }).then(function (r) {
+      if (r.status === 304) return null;
+      return r.text().then(function (t) {
+        var d; try { d = t ? JSON.parse(t) : {}; } catch (e) { d = { error: 'Réponse invalide du serveur.' }; }
+        if (!r.ok) { var err = new Error(d.error || ('Erreur ' + r.status)); err.status = r.status; throw err; }
+        dashTag = r.headers.get('ETag'); return d;
+      });
+    });
+  }
   function loadDash(focusSel, force) {
     if (dashBusy && !force) return Promise.resolve();
     var seq = ++dashSeq, pid = state.profileId ? '?profile_id=' + encodeURIComponent(state.profileId) : '';
     dashBusy = true;
-    return api('/dashboard' + pid).then(function (d) {
+    return fetchDash(pid).then(function (d) {
       if (seq !== dashSeq) return;
       if (fails) announce('Connexion rétablie.');
       fails = 0; retryAt = 0; setLive('ok', 'En direct');
       var err = $('#dash-error'); if (err) err.remove();
+      if (!d) { if (focusSel) paintDash(focusSel); return; }   // 304 : rien de neuf
       state.dash = d; state.user = d.user; state.profiles = d.profiles; state.profileId = d.profile_id; paintDash(focusSel);
     }).catch(function (e) {
       if (seq !== dashSeq) return;
