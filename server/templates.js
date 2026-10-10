@@ -254,6 +254,23 @@ L’équipe Oubli`),
   };
 }
 
+// Confirmation de l’adresse d’un administrateur (ADMIN_EMAILS, en production) : sans clic, aucun accès n’est accordé.
+export function adminVerifyMail({ token }) {
+  return {
+    subject: 'Confirmez votre adresse pour l’accès administrateur Oubli',
+    text: frTypo(`Bonjour,
+
+Cette adresse figure parmi les administrateurs d’Oubli. Pour activer l’accès administrateur de votre compte, confirmez que vous recevez bien ce message en ouvrant ce lien :
+${APP_URL}/app/#verify?token=${encodeURIComponent(token)}
+
+Le lien est valable 24 heures et ne sert qu’une fois.
+
+Vous n’avez pas créé de compte Oubli ? N’ouvrez pas ce lien : sans confirmation, aucun accès administrateur n’est accordé. Prévenez l’équipe qui gère ce service.
+
+L’équipe Oubli`),
+  };
+}
+
 export function mandateText({ user, profile, signedAt }) {
   return `MANDAT DE REPRÉSENTATION — version ${MANDATE_VERSION}
 

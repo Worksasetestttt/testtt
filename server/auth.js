@@ -31,6 +31,7 @@ ensureColumn('sessions', 'return_session_id', 'TEXT');
 ensureColumn('users', 'suspended_at', 'TEXT');
 ensureColumn('users', 'suspended_until', 'TEXT');
 ensureColumn('users', 'suspended_reason', 'TEXT');
+ensureColumn('users', 'email_verified_at', 'TEXT');   // boîte prouvée : lien de confirmation ou réinitialisation par e-mail
 // Adresses (nom@domaine) et domaines (@domaine) refusés à l'inscription.
 db.exec('CREATE TABLE IF NOT EXISTS blocked_emails (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL UNIQUE, reason TEXT, created_by TEXT, created_at TEXT NOT NULL)');
 
@@ -199,9 +200,14 @@ export function requireAdmin(req, res, next) {
 
 /* ---------- Administrateurs ---------- */
 export const isAdminEmail = (email) => (process.env.ADMIN_EMAILS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean).includes(String(email ?? '').toLowerCase());
-// Promotion automatique à la connexion si l'adresse figure dans ADMIN_EMAILS ; jamais de rétrogradation automatique.
+// Promotion automatique si l'adresse figure dans ADMIN_EMAILS ; jamais de rétrogradation automatique.
+// En production (ou ADMIN_EMAIL_VERIFICATION=on), seulement une fois la boîte prouvée : lien de confirmation (account.js)
+// ou réinitialisation du mot de passe par e-mail. Sinon, quiconque inscrit le premier une adresse listée mais pas encore
+// utilisée (ou libérée par la suppression d'un compte) deviendrait administrateur.
+export const ADMIN_VERIFY = process.env.ADMIN_EMAIL_VERIFICATION ? process.env.ADMIN_EMAIL_VERIFICATION === 'on' : PROD;
+export const adminPending = (user) => !!(user && user.role !== 'admin' && ADMIN_VERIFY && !user.email_verified_at && isAdminEmail(user.email));
 export function promoteIfAdmin(user) {
-  if (user && user.role !== 'admin' && isAdminEmail(user.email)) {
+  if (user && user.role !== 'admin' && isAdminEmail(user.email) && (!ADMIN_VERIFY || user.email_verified_at)) {
     q.run(`UPDATE users SET role = 'admin' WHERE id = ?`, user.id);
     user.role = 'admin';
   }

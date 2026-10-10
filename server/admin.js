@@ -382,7 +382,7 @@ admin.post('/users/:id/email', wrap(async (req, res) => {
   if (email === u.email) return bad(res, 'C’est déjà l’adresse du compte.');
   if (isBlockedEmail(email)) return bad(res, 'Cette adresse est dans la liste de blocage.');
   if (q.get('SELECT id FROM users WHERE email = ?', email)) return bad(res, 'Un compte existe déjà avec cette adresse.', 409);
-  q.run('UPDATE users SET email = ? WHERE id = ?', email, u.id);
+  q.run('UPDATE users SET email = ?, email_verified_at = NULL WHERE id = ?', email, u.id);   // nouvelle adresse : pas encore prouvée
   logEvent(u.id, 'account', `Adresse de connexion remplacée par ${email} par l’équipe Oubli.`);
   audit(req, 'user.email', u.id, { from: u.email, to: email });
   // L'ancienne adresse est prévenue : c'est la seule défense si le changement n'a pas été demandé par l'abonné.

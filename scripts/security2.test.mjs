@@ -155,6 +155,39 @@ try {
   assert.equal(r.data.status, 'already', 'pas de doublon pour le site de Marie');
   step('sites ajoutés : deux noms d’hôte au même slug restent deux courtiers, chacun avec son contact');
 
+  /* ---------- 7. Production : une adresse de ADMIN_EMAILS n'ouvre l'administration qu'après confirmation ---------- */
+  // Sans preuve, quiconque inscrivait le premier une adresse listée (pas encore utilisée, ou libérée par la suppression
+  // d'un compte) devenait administrateur. En production, la boîte se prouve par le lien de confirmation ou par une
+  // réinitialisation du mot de passe.
+  {
+    const s = await startServer('prod-admin', { NODE_ENV: 'production', ADMIN_EMAILS: 'chef@test.fr,second@test.fr' });
+    const outbox = path.join(tmp, 'prod-admin', 'outbox'), PW = 'Corde-a-linge-78!';
+    const mails = (addr, re) => (fs.existsSync(outbox) ? fs.readdirSync(outbox).filter((f) => f.endsWith(`-${addr}.eml`)).sort().map((f) => fs.readFileSync(path.join(outbox, f), 'utf8')).filter((b) => re.test(b)) : []);
+    const tokenIn = (body, route) => (body.match(new RegExp(`#${route}\\?token=([A-Za-z0-9_-]{43})`)) || [])[1];
+    let r = await call(s, 'POST', '/auth/signup', { email: 'chef@test.fr', password: PW });
+    assert.equal(r.status, 201); assert.equal(r.data.user.role, 'user', 'aucun accès administrateur à l’inscription'); assert.equal(r.data.admin_verification, true);
+    const chef = r.cookie;
+    assert.equal((await call(s, 'GET', '/admin/stats', undefined, { cookie: chef })).status, 403);
+    await wait(300);
+    let sent = mails('chef@test.fr', /Confirmez votre adresse/);
+    assert.equal(sent.length, 1); const token = tokenIn(sent[0], 'verify'); assert.ok(token, 'lien de confirmation envoyé');
+    r = await call(s, 'POST', '/auth/login', { email: 'chef@test.fr', password: PW });
+    assert.equal(r.status, 200); assert.equal(r.data.admin_verification, true); await wait(300);
+    assert.equal(mails('chef@test.fr', /Confirmez votre adresse/).length, 1, 'pas de second lien tant que le premier est valable');
+    assert.equal((await call(s, 'POST', '/auth/verify', { token: 'x'.repeat(43) })).data.code, 'invalid');
+    r = await call(s, 'POST', '/auth/verify', { token }); assert.equal(r.status, 200); assert.equal(r.data.admin, true);
+    assert.equal((await call(s, 'GET', '/admin/stats', undefined, { cookie: chef })).status, 200, 'administrateur après confirmation');
+    assert.equal((await call(s, 'POST', '/auth/verify', { token })).data.code, 'used', 'lien à usage unique');
+    r = await call(s, 'POST', '/auth/signup', { email: 'intrus@test.fr', password: PW });
+    assert.equal(r.data.user.role, 'user'); assert.equal(r.data.admin_verification, undefined, 'adresse non listée : aucun lien');
+    r = await call(s, 'POST', '/auth/signup', { email: 'second@test.fr', password: PW }); assert.equal(r.data.user.role, 'user');
+    await call(s, 'POST', '/auth/forgot', { email: 'second@test.fr' }); await wait(600);
+    sent = mails('second@test.fr', /Réinitialisation/); assert.equal(sent.length, 1);
+    r = await call(s, 'POST', '/auth/reset', { token: tokenIn(sent[0], 'reset'), password: 'Autre-phrase-solide-42' });
+    assert.equal(r.status, 200); assert.equal(r.data.user.role, 'admin', 'boîte prouvée par la réinitialisation');
+  }
+  step('production : une adresse de ADMIN_EMAILS n’ouvre l’administration qu’après confirmation de la boîte (lien ou réinitialisation)');
+
   for (const s of servers) assert.ok(!/TypeError|RangeError|→ 500/.test(s.err), `erreurs serveur :\n${s.err}`);
   console.log(`✔ Sécurité (seconde série) validée (${passed} groupes de vérifications).`);
 } catch (e) {

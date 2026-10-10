@@ -177,6 +177,35 @@
     return '<div class="sheet"><div class="sheet__body auth__state"><h2 id="auth-state-h" tabindex="-1">' + title + '</h2><p>' + esc(text) + '</p>' +
       (dead ? '<a class="btn btn--block" href="#forgot">Recevoir un nouveau lien</a>' : '<a class="btn btn--outline btn--block" href="#login">Retour à la connexion</a>') + '</div></div>';
   }
+  /* ---------- confirmation de l'adresse d'un administrateur (#verify?token=…) ---------- */
+  /* En production, une adresse de ADMIN_EMAILS n'ouvre l'administration qu'après ce lien (server/account.js). */
+  views.verify = function (q) {
+    var pending = RESET_TOKEN.test(q.token || '');
+    return '<section class="auth"><div class="auth__mark">' + MARK + '</div><h1>Confirmation de l’adresse</h1><div id="verify-box">' +
+      (pending ? '<div class="sheet"><div class="sheet__body auth__state"><p><span class="spinner"></span> Vérification du lien…</p></div></div>' : verifyState(q.done ? 'used' : 'invalid')) +
+      '</div><p class="switch"><a class="auth__link" href="#' + (state.user ? home() : 'login') + '">' + (state.user ? 'Retour à l’application' : 'Retour à la connexion') + '</a></p></section>';
+  };
+  var VERIFY_STATES = {
+    admin: ['Accès administrateur activé', 'Votre adresse est confirmée' + NBSP + ': l’administration est maintenant accessible depuis votre compte.'],
+    done: ['Adresse confirmée', 'Votre adresse e-mail est confirmée.'],
+    used: ['Adresse déjà confirmée', 'Ce lien a déjà servi' + NBSP + ': votre adresse est confirmée.'],
+    expired: ['Ce lien a expiré', 'Un lien de confirmation est valable 24' + NBSP + 'heures. Reconnectez-vous' + NBSP + ': un nouveau lien vous sera envoyé.'],
+    invalid: ['Ce lien n’est pas valable', 'Il est incomplet ou a été remplacé par un lien plus récent' + NBSP + ': utilisez le dernier e-mail reçu.'],
+  };
+  function verifyState(code) {
+    var s = VERIFY_STATES[code] || VERIFY_STATES.invalid;
+    var cta = code === 'admin' ? '<a class="btn btn--block" href="#' + (state.user ? 'admin' : 'login') + '">' + (state.user ? 'Ouvrir l’administration' : 'Se connecter') + '</a>'
+      : /^(expired|invalid)$/.test(code) && !state.user ? '<a class="btn btn--outline btn--block" href="#login">Se connecter</a>' : '';
+    return '<div class="sheet"><div class="sheet__body auth__state"><h2 id="auth-state-h" tabindex="-1">' + s[0] + '</h2><p>' + s[1] + '</p>' + cta + '</div></div>';
+  }
+  function runVerify(q) {
+    if (!RESET_TOKEN.test(q.token || '')) return;
+    api('/auth/verify', { body: { token: q.token } }).then(function (r) {
+      history.replaceState(null, '', location.pathname + location.search + '#verify?done=1');   // le jeton sort de l'adresse et de l'historique
+      return (state.user ? loadMe() : Promise.resolve()).then(function () { if (state.user) setChrome(); var box = $('#verify-box'); if (box) swapState(box, verifyState(r.admin ? 'admin' : 'done')); });   // setChrome : lien « Admin » de l'en-tête
+    }).catch(function (err) { var box = $('#verify-box'); if (box) swapState(box, verifyState(/^(invalid|expired|used)$/.test(err.code || '') ? err.code : 'invalid')); });
+  }
+
   /* Remplace le contenu d'une zone (formulaire → état) : le focus va au titre, le message suit en annonce polie. */
   function swapState(box, html) {
     box.innerHTML = html;
@@ -884,7 +913,7 @@
     if (route === 'billing-success') { toast('Paiement confirmé. Les demandes partent automatiquement.'); location.hash = 'dashboard'; return; }
     // Sans session : connexion, inscription, mot de passe oublié et réinitialisation. Avec une session, #reset reste ouvert
     // (le lien reçu par e-mail vaut pour son compte, qui peut être un autre que celui connecté).
-    if (!state.user && !/^(login|signup|forgot|reset)$/.test(route)) { location.hash = 'login' + (location.hash.indexOf('?') > 0 ? location.hash.slice(location.hash.indexOf('?')) : ''); return; }
+    if (!state.user && !/^(login|signup|forgot|reset|verify)$/.test(route)) { location.hash = 'login' + (location.hash.indexOf('?') > 0 ? location.hash.slice(location.hash.indexOf('?')) : ''); return; }
     if (state.user && /^(login|signup|forgot)$/.test(route)) { location.hash = pendingKey() && onboardingDone() ? 'billing' : home(); return; }
     if (state.user && route === 'dashboard' && !onboardingDone() && !(state.dash && state.dash.counters.total)) { if (!state.user.mandate_signed_at || !state.profiles[0].first_name) { location.hash = 'onboarding'; return; } }
     if (route === 'admin' && (!state.user || state.user.role !== 'admin')) { location.hash = 'dashboard'; return; }
@@ -901,6 +930,7 @@
     if (route === 'onboarding' || route === 'dossier') loadMandateText();
     if (route === 'report') loadReport();
     if (route === 'settings') loadDevices();
+    if (route === 'verify') runVerify(q || {});
     if (plugins[route]) plugins[route](q || {});
   }
   /* Requête du tableau de bord : une seule à la fois (sauf demande explicite), la plus récente l'emporte. En cas d'échec,
@@ -987,7 +1017,8 @@
     if (f._busy) return;
     if (f.id === 'login-form' || f.id === 'signup-form') {
       var d = formData(f); busy(f, true); showMsg(f, '');
-      api(f.id === 'login-form' ? '/auth/login' : '/auth/signup', { body: d }).then(function () { state.dash = null; state.profileId = null; return loadMe(); }).then(function () { toast(f.id === 'login-form' ? 'Connecté.' : 'Compte créé. Dossier ouvert.'); go(pendingKey() && onboardingDone() ? 'billing' : home()); }).catch(function (err) { showMsg(f, err.message, true, null, $('#f-password', f)); }).finally(function () { busy(f, false); });
+      var adminMail = false;
+      api(f.id === 'login-form' ? '/auth/login' : '/auth/signup', { body: d }).then(function (r) { adminMail = !!(r && r.admin_verification); state.dash = null; state.profileId = null; return loadMe(); }).then(function () { toast(adminMail ? 'Pour activer l’accès administrateur, ouvrez le lien de confirmation envoyé à ' + d.email + '.' : f.id === 'login-form' ? 'Connecté.' : 'Compte créé. Dossier ouvert.'); go(pendingKey() && onboardingDone() ? 'billing' : home()); }).catch(function (err) { showMsg(f, err.message, true, null, $('#f-password', f)); }).finally(function () { busy(f, false); });
     } else if (f.id === 'key-form') {
       var ki = $('#key-input', f), kv = ki.value.trim();
       if (!kv) { showMsg(f, 'Saisissez la clé reçue, sous la forme ' + KEY_FMT + '.', true, null, ki); return; }

@@ -8,10 +8,10 @@ import crypto from 'node:crypto';
 import { db, q, now, tx, logEvent } from './db.js';
 import {
   hashPassword, passwordProblem, createSession, destroySession, destroyOtherSessions, requireAuth, rateLimit,
-  isSuspended, isBlockedEmail, promoteIfAdmin, clearLoginFailures,
+  isSuspended, isBlockedEmail, promoteIfAdmin, adminPending, clearLoginFailures,
 } from './auth.js';
 import { sendMail } from './mailer.js';
-import { passwordResetMail, passwordChangedMail } from './templates.js';
+import { passwordResetMail, passwordChangedMail, adminVerifyMail } from './templates.js';
 import { EMAIL, str, wrap, publicUser, sessionHandle, deviceLabel } from './util.js';
 
 export const account = express.Router();
@@ -110,7 +110,7 @@ account.post('/auth/reset', rateLimit({ windowMs: 15 * 60000, max: 20 }), wrap(a
   const changed = tx(() => {
     // Usage unique, même pour deux envois simultanés : seul le premier marque le jeton.
     if (!Number(q.run('UPDATE password_resets SET used_at = ? WHERE id = ? AND used_at IS NULL AND expires_at > ?', at, row.id, at).changes)) return false;
-    q.run('UPDATE users SET password_hash = ? WHERE id = ?', hash, user.id);
+    q.run('UPDATE users SET password_hash = ?, email_verified_at = COALESCE(email_verified_at, ?) WHERE id = ?', hash, at, user.id);   // lien reçu : boîte prouvée
     q.run('DELETE FROM sessions WHERE user_id = ?', user.id);                                // toutes les sessions du compte
     q.run('DELETE FROM password_resets WHERE user_id = ? AND id <> ?', user.id, row.id);     // et tous ses autres jetons
     return true;
@@ -128,10 +128,72 @@ account.post('/auth/reset', rateLimit({ windowMs: 15 * 60000, max: 20 }), wrap(a
   if (isSuspended(user)) {
     return res.json({ ok: true, signed_in: false, suspended: true, message: `Votre mot de passe est changé, mais ce compte est suspendu${NBSP}: la connexion reste impossible pour le moment. Pour toute question, écrivez au support.` });
   }
-  promoteIfAdmin(user);
-  createSession(res, user, req);
-  res.json({ ok: true, signed_in: true, user: publicUser(user) });
+  const updated = promoteIfAdmin(q.get('SELECT * FROM users WHERE id = ?', user.id));   // adresse prouvée : promotion possible
+  createSession(res, updated, req);
+  res.json({ ok: true, signed_in: true, user: publicUser(updated) });
 }));
+
+/* ---------- Confirmation de l'adresse d'un administrateur ---------- */
+// Une adresse de ADMIN_EMAILS ne donne l'accès administrateur qu'une fois la boîte prouvée (auth.js, ADMIN_VERIFY) :
+// lien à usage unique, valable 24 h, dont seule l'empreinte SHA-256 est stockée.
+db.exec(`
+CREATE TABLE IF NOT EXISTS email_verifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  email TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_email_verifications_user ON email_verifications(user_id);
+`);
+const VERIFY_TTL_MS = 24 * 3600000;
+// Envoie le lien si le compte l'attend et qu'aucun lien valable n'est déjà parti (un envoi par jour au plus, même en
+// se reconnectant). Retourne true si un e-mail part.
+export function sendAdminVerification(user) {
+  if (!adminPending(user)) return false;
+  const at = now();
+  if (q.get('SELECT 1 FROM email_verifications WHERE user_id = ? AND email = ? AND used_at IS NULL AND expires_at > ?', user.id, user.email, at)) return false;
+  const token = crypto.randomBytes(32).toString('base64url');
+  tx(() => {
+    q.run('DELETE FROM email_verifications WHERE user_id = ?', user.id);
+    q.run('INSERT INTO email_verifications (user_id, token_hash, email, created_at, expires_at) VALUES (?, ?, ?, ?, ?)', user.id, sha256(token), user.email, at, new Date(Date.now() + VERIFY_TTL_MS).toISOString());
+  });
+  const m = adminVerifyMail({ token });
+  sendMail({ to: user.email, subject: m.subject, text: m.text, user_id: user.id, redact: [token] })
+    .catch((e) => console.error('[account] lien de confirmation non envoyé :', e.message));
+  return true;
+}
+const VERIFY_ERRORS = {
+  invalid: `Ce lien de confirmation n’est pas valide ou a été remplacé${NBSP}: utilisez le dernier e-mail reçu.`,
+  expired: `Ce lien de confirmation a expiré${NBSP}: reconnectez-vous pour en recevoir un nouveau.`,
+  used: `Ce lien a déjà servi${NBSP}: votre adresse est confirmée.`,
+};
+const verifyError = (res, code) => bad(res, VERIFY_ERRORS[code], 400, { code });
+account.post('/auth/verify', rateLimit({ windowMs: 15 * 60000, max: 20 }), (req, res) => {
+  const { token } = req.body;
+  if (typeof token !== 'string' || !TOKEN_RE.test(token)) return verifyError(res, 'invalid');
+  const row = q.get('SELECT * FROM email_verifications WHERE token_hash = ?', sha256(token));
+  if (!row) return verifyError(res, 'invalid');
+  if (row.used_at) return verifyError(res, 'used');
+  if (!(row.expires_at > now())) return verifyError(res, 'expired');
+  const user = q.get('SELECT * FROM users WHERE id = ? AND deleted_at IS NULL', row.user_id);
+  if (!user || user.email !== row.email || isBlockedEmail(user.email)) {   // compte supprimé, adresse changée ou bloquée
+    q.run('DELETE FROM email_verifications WHERE id = ?', row.id);
+    return verifyError(res, 'invalid');
+  }
+  const at = now();
+  const done = tx(() => {
+    if (!Number(q.run('UPDATE email_verifications SET used_at = ? WHERE id = ? AND used_at IS NULL AND expires_at > ?', at, row.id, at).changes)) return false;
+    q.run('UPDATE users SET email_verified_at = COALESCE(email_verified_at, ?) WHERE id = ?', at, user.id);
+    return true;
+  });
+  if (!done) return verifyError(res, 'used');
+  const updated = promoteIfAdmin(q.get('SELECT * FROM users WHERE id = ?', user.id));
+  logEvent(user.id, 'account', updated.role === 'admin' ? `Adresse confirmée${NBSP}: accès administrateur activé.` : 'Adresse e-mail confirmée.');
+  res.json({ ok: true, admin: updated.role === 'admin' });
+});
 
 /* ---------- Appareils connectés ---------- */
 // La dernière activité d'une session est rafraîchie au plus une fois par heure (auth.js) ; celle de la session courante

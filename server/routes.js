@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { q, now, logEvent, db, dbPing } from './db.js';
 import {
   hashPassword, verifyPassword, verifyDecoy, passwordProblem, createSession, destroySession, destroyOtherSessions,
-  requireAuth, requireAdmin, rateLimit, isAdminEmail, promoteIfAdmin, loginLockRemaining, noteLoginFailure, clearLoginFailures, fmtWait,
+  requireAuth, requireAdmin, rateLimit, isAdminEmail, promoteIfAdmin, adminPending, ADMIN_VERIFY, loginLockRemaining, noteLoginFailure, clearLoginFailures, fmtWait,
   isSuspended, isBlockedEmail, endImpersonation,
 } from './auth.js';
 import { sendMail, mailMode } from './mailer.js';
@@ -17,7 +17,7 @@ import { EMAIL, publicUser, parseProfile, wrap, isId, str, strList, oneOf, HttpE
 import { buildDashboard, exportData, complaintReady } from './dashboard.js';
 import { addSite, relaunchRequest } from './sites.js';
 import { admin, auditAs, currentAnnouncement, toCsv, classifyReply } from './admin.js';
-import { account } from './account.js';
+import { account, sendAdminVerification } from './account.js';
 import { redeemKey, cancelRefusal } from './keys.js';
 import { evaluateHealth } from './health.js';
 import { sendJsonConditional } from './compress.js';
@@ -53,14 +53,15 @@ api.post('/auth/signup', rateLimit({ windowMs: 60 * 60000, max: 20 }), wrap(asyn
   const password_hash = await hashPassword(password);
   if (q.get('SELECT id FROM users WHERE email = ?', email)) return bad(res, 'Un compte existe déjà avec cette adresse.', 409);
   const id = crypto.randomUUID();
-  q.run('INSERT INTO users (id, email, password_hash, role, plan, billing, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', id, email, password_hash, isAdminEmail(email) ? 'admin' : 'user', plan, billing, now());
+  q.run('INSERT INTO users (id, email, password_hash, role, plan, billing, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', id, email, password_hash, isAdminEmail(email) && !ADMIN_VERIFY ? 'admin' : 'user', plan, billing, now());   // en production : après confirmation de l'adresse
   q.run('INSERT INTO profiles (id, user_id, is_primary, created_at, updated_at) VALUES (?, ?, 1, ?, ?)', crypto.randomUUID(), id, now(), now());
   logEvent(id, 'account', 'Compte créé. Dossier ouvert.');
   const user = q.get('SELECT * FROM users WHERE id = ?', id);
   createSession(res, user, req);
   const w = welcomeMail({ email });
   sendMail({ to: email, subject: w.subject, text: w.text, user_id: id }).catch(() => {});
-  res.status(201).json({ user: publicUser(user) });
+  sendAdminVerification(user);   // adresse de ADMIN_EMAILS (production) : lien de confirmation avant tout accès administrateur
+  res.status(201).json({ user: publicUser(user), ...(adminPending(user) ? { admin_verification: true } : {}) });
 }));
 api.post('/auth/login', rateLimit({ max: 50 }), wrap(async (req, res) => {
   const email = str(req.body.email, 'email', 160).toLowerCase();
@@ -75,8 +76,9 @@ api.post('/auth/login', rateLimit({ max: 50 }), wrap(async (req, res) => {
   // Mot de passe correct seulement : la suspension n'est jamais révélée à qui ne connaît pas le mot de passe.
   if (isSuspended(user)) return bad(res, 'Ce compte est suspendu. Pour toute question, écrivez au support.', 403);
   promoteIfAdmin(user);
+  sendAdminVerification(user);   // un envoi par jour au plus tant que l'adresse n'est pas confirmée
   createSession(res, user, req);
-  res.json({ user: publicUser(user) });
+  res.json({ user: publicUser(user), ...(adminPending(user) ? { admin_verification: true } : {}) });
 }));
 // Pendant un accès support, se déconnecter ramène l'administrateur à sa propre session.
 const stopSupport = (req, res) => { auditAs(req.impersonator.id, 'user.impersonate_stop', req.user.id, {}, req.ip); return { ok: true, ...endImpersonation(req, res) }; };
@@ -366,7 +368,7 @@ api.delete('/account', requireAuth, rateLimit({ max: 5 }), wrap(async (req, res)
   db.exec('BEGIN');
   try {
     q.run('DELETE FROM requests WHERE user_id = ?', u.id); q.run('DELETE FROM profiles WHERE user_id = ?', u.id); q.run('DELETE FROM events WHERE user_id = ?', u.id);
-    q.run('DELETE FROM mails WHERE user_id = ?', u.id); q.run('DELETE FROM sessions WHERE user_id = ?', u.id); q.run('DELETE FROM password_resets WHERE user_id = ?', u.id);
+    q.run('DELETE FROM mails WHERE user_id = ?', u.id); q.run('DELETE FROM sessions WHERE user_id = ?', u.id); q.run('DELETE FROM password_resets WHERE user_id = ?', u.id); q.run('DELETE FROM email_verifications WHERE user_id = ?', u.id);
     q.run(`UPDATE users SET email = ?, password_hash = '', deleted_at = ?, mandate_name = NULL, mandate_ip = NULL, stripe_customer_id = NULL, stripe_subscription_id = NULL WHERE id = ?`, `deleted-${u.id}@oubli.invalid`, now(), u.id);
     db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }
