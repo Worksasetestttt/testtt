@@ -60,7 +60,7 @@ try {
   r = await call('POST', '/billing/checkout', { plan: 'famille', billing: 'annual' }, AC); assert.equal(r.status, 400, 'formule unique : plus d’offre annuelle');
   r = await call('POST', '/billing/checkout', { plan: 'famille' }, AC); assert.equal(r.data.mode, 'simulated');
   r = await call('POST', '/requests/launch', {}, AC); assert.ok(r.data.created >= 50, JSON.stringify(r.data));
-  await call('POST', '/contact', { email: 'prospect@exemple.fr', subject: 'Question', message: '=HYPERLINK("http://x") couvrez-vous la Belgique ?' });
+  await call('POST', '/contact', { email: 'prospect@exemple.fr', subject: 'Question;=1+1', message: '=HYPERLINK("http://x") couvrez-vous la Belgique ?' });
   await call('POST', '/newsletter', { email: 'lettre@exemple.fr' });
   await wait(1200); // premier passage du planificateur : envoi des demandes
 
@@ -201,7 +201,11 @@ try {
   const raw = Buffer.from(await (await fetch(`${base}/admin/export.csv?what=users`, { headers: { cookie: admin.cookie } })).arrayBuffer());
   assert.deepEqual([...raw.subarray(0, 3)], [0xEF, 0xBB, 0xBF], 'BOM UTF-8 (Excel)'); assert.ok(r.text.startsWith('id,email,role'), 'en-têtes'); assert.ok(!r.text.includes('password_hash') && !r.text.includes('scrypt$'));
   r = await call('GET', '/admin/export.csv?what=contacts', undefined, AD); assert.ok(r.text.includes(`"'=HYPERLINK(""http://x"") couvrez-vous la Belgique ?"`), 'formule neutralisée');
+  assert.ok(r.text.includes(`"Question;'=1+1"`), 'formule neutralisée après un point-virgule (Excel en français)');
   assert.equal((await call('GET', '/admin/export.csv?what=sessions', undefined, AD)).status, 400);
+  // Clés héritées du prototype (« constructor », « toString ») : refusées comme n'importe quelle valeur inconnue.
+  assert.equal((await call('GET', '/admin/export.csv?what=constructor', undefined, AD)).status, 400);
+  assert.equal((await call('GET', '/admin/requests?sort=constructor', undefined, AD)).status, 200);
   step('contacts : traité / rouvert ; lettre d’information ; CSV (BOM, sans secret, injection de formule neutralisée)');
 
   /* ---------- 9. Système ---------- */

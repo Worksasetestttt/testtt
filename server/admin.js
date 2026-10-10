@@ -200,7 +200,7 @@ admin.get('/users', (req, res) => {
   else if (status === 'suspended') { where.push(`u.deleted_at IS NULL AND ${SUSPENDED_SQL}`); params.push(now()); }
   else { if (SUBS.includes(status)) { where.push('u.subscription_status = ?'); params.push(status); } if (status !== 'all') where.push('u.deleted_at IS NULL'); }
   const plan = clean(req.query.plan, 20);
-  if (PLANS[plan]) { where.push('u.plan = ?'); params.push(plan); }
+  if (Object.hasOwn(PLANS, plan)) { where.push('u.plan = ?'); params.push(plan); }
   const base = `FROM users u${where.length ? ' WHERE ' + where.join(' AND ') : ''}`;
   const total = q.get(`SELECT COUNT(*) AS c ${base}`, ...params).c; fit(p, total);
   const rows = q.all(`SELECT u.*,
@@ -252,7 +252,7 @@ admin.post('/users/:id/subscription', wrap(async (req, res) => {
   const b = req.body, status = String(b.status || '');
   if (!SUBS.includes(status)) return bad(res, 'Statut inconnu (none, active, past_due ou canceled).');
   let plan = u.plan, billing = u.billing, ends = u.subscription_ends_at;
-  if (b.plan != null && b.plan !== '') { if (!PLANS[b.plan]) return bad(res, 'Offre inconnue.'); plan = b.plan; }
+  if (b.plan != null && b.plan !== '') { if (!Object.hasOwn(PLANS, b.plan)) return bad(res, 'Offre inconnue.'); plan = b.plan; }
   if (b.billing != null && b.billing !== '') { if (!['monthly', 'annual'].includes(b.billing)) return bad(res, 'Périodicité inconnue (monthly ou annual).'); billing = b.billing; }
   if (b.ends_at !== undefined) { if (b.ends_at === null || b.ends_at === '') ends = null; else { ends = isoDate(b.ends_at); if (!ends) return bad(res, 'Date de fin invalide.'); } }
   // Abonnement offert par clé : il reste « par clé » tant qu’une date de fin est donnée (le formulaire la pré-remplit ;
@@ -439,7 +439,7 @@ admin.get('/requests', (req, res) => {
   if (UUID.test(String(req.query.profile || ''))) { where.push('r.profile_id = ?'); params.push(req.query.profile); }
   const search = clean(req.query.q, 120);
   if (search) { const l = like(search.replace(/^OUBLI-/i, '')); where.push(`(r.token LIKE ? ESCAPE '\\' OR u.email LIKE ? ESCAPE '\\' OR b.name LIKE ? ESCAPE '\\' OR (p.first_name || ' ' || p.last_name) LIKE ? ESCAPE '\\')`); params.push(l, l, l, l); }
-  const sort = SORTS[req.query.sort] ? req.query.sort : 'created_desc';
+  const sort = Object.hasOwn(SORTS, req.query.sort) ? req.query.sort : 'created_desc';
   const base = `${REQ_BASE}${where.length ? ' WHERE ' + where.join(' AND ') : ''}`;
   const total = q.get(`SELECT COUNT(*) AS c ${base}`, ...params).c; fit(p, total);
   const rows = q.all(`SELECT ${REQ_COLS} ${base} ORDER BY ${SORTS[sort]} LIMIT ? OFFSET ?`, ...params, p.per, p.offset);
@@ -643,10 +643,12 @@ admin.post('/contacts/:id/handled', (req, res) => {
   audit(req, 'contact.handled', c.id, { handled: !!handled });
   res.json({ contact: q.get('SELECT id, email, subject, message, created_at, handled_at FROM contacts WHERE id = ?', c.id) });
 });
-// CSV : guillemets doublés, cellules commençant par = + - @ préfixées d'une apostrophe (injection de formules).
+// CSV : guillemets doublés, cellules commençant par = + - @ préfixées d'une apostrophe (injection de formules). Même
+// chose après une virgule ou un point-virgule : un tableur réglé sur l'autre séparateur (Excel en français découpe sur
+// « ; ») ouvre là une nouvelle cellule, que les guillemets du CSV ne protègent plus.
 export function csvCell(v) {
   if (v == null) return '';
-  let s = String(v);
+  let s = String(v).replace(/([,;])(["\s]*)(?=[=+\-@])/g, "$1$2'");
   if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
   return /[",;\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
@@ -659,7 +661,7 @@ const EXPORTS = {
 };
 admin.get('/export.csv', (req, res) => {
   const what = String(req.query.what || '');
-  if (!EXPORTS[what]) return bad(res, 'Export inconnu (newsletter, contacts, users ou requests).');
+  if (!Object.hasOwn(EXPORTS, what)) return bad(res, 'Export inconnu (newsletter, contacts, users ou requests).');
   const { headers, rows } = EXPORTS[what]();
   audit(req, 'export.csv', what, { rows: rows.length });
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
