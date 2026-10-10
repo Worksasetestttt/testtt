@@ -1,5 +1,6 @@
-// Test des fonctions du tableau de bord et de l'exploitation : détail d'une demande, export CSV, préférences, rapport
-// mensuel par e-mail (échéance, désinscription, pas de doublon), santé du service, compression et réponses 304.
+// Test des fonctions du tableau de bord : détail d'une demande, export CSV, préférences, rapport mensuel par e-mail
+// (échéance, désinscription dans les paramètres et en un clic, pas de doublon), refus et plainte, relance « données
+// réapparues », demandes arrêtées par la révocation du mandat. Santé, compression et 304 : voir perf.test.mjs.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
