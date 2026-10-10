@@ -253,7 +253,7 @@
     { name: 'ZoomInfo', cat: 'B2B', sens: 1 },
     { name: 'Intelius', cat: 'Recherche de personnes', sens: 3 },
     { name: 'Clearbit', cat: 'B2B', sens: 1 },
-    { name: 'TruthFinder', cat: 'Vérification', sens: 3 }
+    { name: 'TruePeopleSearch', cat: 'Recherche de personnes', sens: 3 }
   ];
   var poolIx = 0, loopTimer = null, cardVisible = true, rows = $('#dash-rows');
   var SENS_TXT = { 1: 'identifiant publicitaire', 2: 'adresse, âge', 3: 'adresse, âge, proches' };
@@ -480,7 +480,14 @@
       sMsg.classList.remove('is-error'); sMsg.textContent = 'Ouverture du dossier…';
       sBtn.disabled = true;
       var appUrl = '/app/#signup?email=' + encodeURIComponent(v) + '&plan=' + encodeURIComponent(chosenPlan);
-      /* Avec le serveur : ouverture du dossier dans l'application. Page servie seule (aperçu statique) : confirmation simulée. */
+      /* Avec le serveur : ouverture du dossier dans l'application (/api/health répond, 503 compris pendant un incident).
+         Fichier ouvert sans serveur (file:, aperçu) : confirmation simulée. Serveur injoignable : un message d'erreur,
+         jamais une fausse confirmation (le visiteur croirait son dossier ouvert). */
+      var unavailable = function () {
+        sBtn.disabled = false;
+        sMsg.classList.add('is-error');
+        sMsg.textContent = 'Service momentanément indisponible' + NBSP + ': réessayez dans quelques minutes.';
+      };
       var simulate = function () {
         sBtn.disabled = false;
         sMsg.innerHTML = '';
@@ -490,7 +497,7 @@
         sInput.value = '';
       };
       if (window.fetch && location.protocol !== 'file:') {
-        fetch('/api/health', { cache: 'no-store' }).then(function (r) { if (r.ok) window.location.href = appUrl; else simulate(); }).catch(simulate);
+        fetch('/api/health', { cache: 'no-store' }).then(function (r) { if (r.ok || r.status === 503) window.location.href = appUrl; else unavailable(); }).catch(unavailable);
       } else setTimeout(simulate, 600);
     });
     sInput.addEventListener('input', function () { if (sMsg.classList.contains('is-error')) { sMsg.textContent = ''; sMsg.classList.remove('is-error'); sInput.removeAttribute('aria-invalid'); } });
