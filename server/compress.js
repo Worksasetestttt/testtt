@@ -59,6 +59,24 @@ export function etagMatches(header, etag) {
   return false;
 }
 
+// Réponse JSON avec ETag fort calculé sur le JSON, et 304 sans corps quand If-None-Match correspond. La comparaison est
+// faite ici et non par req.fresh : fetch ajoute « Cache-Control: no-cache » aux requêtes conditionnelles manuelles, et
+// Express répondrait alors toujours 200.
+export function sendJsonConditional(req, res, data) {
+  const body = JSON.stringify(data);
+  const etag = strongEtag(body);
+  res.vary('Accept-Encoding');
+  if (etagMatches(req.headers['if-none-match'], etag)) {
+    // Même validateur que la réponse 200 qu'aurait reçue ce client (variante compressée ou non).
+    const size = Buffer.byteLength(body);
+    const enc = size >= COMPRESS_MIN && size <= COMPRESS_MAX ? negotiate(req.headers['accept-encoding']) : null;
+    res.setHeader('ETag', etagVariant(etag, enc));
+    return res.status(304).end();
+  }
+  res.setHeader('ETag', etag);   // compressApi y ajoute le suffixe de l'encodage choisi
+  res.type('application/json').send(body);
+}
+
 /* ---------- Compression à la volée (API) ---------- */
 function eligible(res) {
   const status = res.statusCode;

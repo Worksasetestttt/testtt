@@ -17,6 +17,7 @@ import { EMAIL, publicUser, parseProfile, wrap, isId, str, strList, oneOf } from
 import { buildDashboard, exportData, complaintReady } from './dashboard.js';
 import { addSite, relaunchRequest } from './sites.js';
 import { admin, auditAs, currentAnnouncement, toCsv } from './admin.js';
+import { sendJsonConditional } from './compress.js';
 
 export const api = express.Router();
 const fresh = (req) => q.get('SELECT * FROM users WHERE id = ?', req.user.id);
@@ -198,7 +199,9 @@ api.post('/sites', requireAuth, rateLimit({ windowMs: 60 * 60000, max: 30 }), (r
   const b = r.broker;
   res.status(r.status === 'already' ? 200 : 201).json({ status: r.status, registry: r.registry, request_id: r.request.id, broker: { id: b.id, name: b.name, domain: b.domain, custom: !!b.custom }, url: r.site.url });
 });
-api.get('/dashboard', requireAuth, (req, res) => res.json(buildDashboard(fresh(req), isId(req.query.profile_id) ? req.query.profile_id : undefined)));
+// Interrogé toutes les 6 s par chaque onglet ouvert : ETag fort calculé sur le JSON, 304 sans corps si If-None-Match
+// correspond (le client renvoie l'ETag reçu). Cache-Control reste no-store, comme toute l'API.
+api.get('/dashboard', requireAuth, (req, res) => sendJsonConditional(req, res, buildDashboard(fresh(req), isId(req.query.profile_id) ? req.query.profile_id : undefined)));
 const ownRequest = (req, cols = '*') => (isId(req.params.id) ? q.get(`SELECT ${cols} FROM requests WHERE id = ? AND user_id = ?`, req.params.id, req.user.id) : null);
 api.post('/requests/:id/resolve', requireAuth, wrap(async (req, res) => {
   const r = ownRequest(req);
