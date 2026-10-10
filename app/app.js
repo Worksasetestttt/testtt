@@ -1018,7 +1018,9 @@
     if (f.id === 'login-form' || f.id === 'signup-form') {
       var d = formData(f); busy(f, true); showMsg(f, '');
       var adminMail = false;
-      api(f.id === 'login-form' ? '/auth/login' : '/auth/signup', { body: d }).then(function (r) { adminMail = !!(r && r.admin_verification); state.dash = null; state.profileId = null; return loadMe(); }).then(function () { toast(adminMail ? 'Pour activer l’accès administrateur, ouvrez le lien de confirmation envoyé à ' + d.email + '.' : f.id === 'login-form' ? 'Connecté.' : 'Compte créé. Dossier ouvert.'); go(pendingKey() && onboardingDone() ? 'billing' : home()); }).catch(function (err) { showMsg(f, err.message, true, null, $('#f-password', f)); }).finally(function () { busy(f, false); });
+      api(f.id === 'login-form' ? '/auth/login' : '/auth/signup', { body: d }).then(function (r) { adminMail = r && r.admin_verification; state.dash = null; state.profileId = null; return loadMe(); }).then(function () {
+        toast(adminMail === 'outbox' ? 'Accès administrateur en attente' + NBSP + ': aucun serveur d’envoi n’est configuré, lancez «' + NBSP + 'npm run admin -- promote ' + d.email + NBSP + '» sur le serveur.'
+          : adminMail ? 'Pour activer l’accès administrateur, ouvrez le lien de confirmation envoyé à ' + d.email + '.' : f.id === 'login-form' ? 'Connecté.' : 'Compte créé. Dossier ouvert.', adminMail === 'outbox'); go(pendingKey() && onboardingDone() ? 'billing' : home()); }).catch(function (err) { showMsg(f, err.message, true, null, $('#f-password', f)); }).finally(function () { busy(f, false); });
     } else if (f.id === 'key-form') {
       var ki = $('#key-input', f), kv = ki.value.trim();
       if (!kv) { showMsg(f, 'Saisissez la clé reçue, sous la forme ' + KEY_FMT + '.', true, null, ki); return; }

@@ -50,6 +50,7 @@ Parcours : créer un compte → renseigner les informations à faire effacer →
 | `scripts/account.test.mjs`, `scripts/keys.test.mjs` | Mot de passe oublié et appareils connectés ; clés d'activation. |
 | `scripts/perf.test.mjs`, `scripts/regressions.test.mjs` | Compression, cache, santé, sauvegardes, arrêt ; régressions des bugs corrigés. |
 | `scripts/ui.audit.cjs` | Audit navigateur (Playwright, hors `npm test`) de tous les écrans à 1280 et 390 px. |
+| `scripts/admin-cli.mjs` | `npm run admin` : rôle administrateur et clés d'activation en ligne de commande, sur la base du serveur. |
 
 ## Configuration (`.env`)
 
@@ -146,11 +147,18 @@ Pour offrir l'abonnement à des proches ou à des partenaires, sans paiement :
 2. Les clés `OUBLI-XXXX-XXXX-XXXX` s'affichent **une seule fois** : « Copier tout », CSV, ou le lien de partage de chaque clé (`/app/#signup?key=…`).
 3. La personne ouvre le lien (la clé est pré-remplie à l'étape « offre » et retirée de l'adresse) ou saisit la clé à l'étape « offre » ou sur la page Abonnement ; la casse, les espaces et les tirets ne comptent pas.
 
-Une clé démarre l'abonnement aussitôt et lance les demandes. Les durées se cumulent (une clé prolonge un abonnement offert, ou prend le relais à la fin d'une période déjà payée) ; l'abonnement s'arrête de lui-même à sa date de fin, sans rien à résilier. Une clé ne remplace jamais un abonnement payé en cours. La révocation empêche toute nouvelle activation, les abonnements déjà accordés vont à leur terme. Seules l'empreinte SHA-256 et les 4 derniers caractères sont stockés : une clé perdue ne se retrouve pas, elle se révoque et se remplace.
+Sans passer par le panel (ou s'il n'y a pas encore d'administrateur), sur la machine du serveur :
+
+```bash
+npm run admin -- keys --plan famille --days 90 --count 3 --note "Amis"   # affiche les clés et leurs liens, une seule fois
+npm run admin -- promote moi@exemple.fr                                   # donne le rôle administrateur à un compte existant
+```
+
+Une clé démarre l'abonnement aussitôt et lance les demandes. Elle remplace un abonnement simulé (environnement sans Stripe), pas un abonnement payé par carte. Une clé Individuel est refusée tant que le dossier protège plusieurs personnes. Les durées se cumulent (une clé prolonge un abonnement offert, ou prend le relais à la fin d'une période déjà payée) ; l'abonnement s'arrête de lui-même à sa date de fin, sans rien à résilier. Une clé ne remplace jamais un abonnement payé en cours. La révocation empêche toute nouvelle activation, les abonnements déjà accordés vont à leur terme. Seules l'empreinte SHA-256 et les 4 derniers caractères sont stockés : une clé perdue ne se retrouve pas, elle se révoque et se remplace.
 
 ## Panel d'administration
 
-Accès : `/app/#admin`, pour les adresses listées dans `ADMIN_EMAILS`. Hors production, le rôle est attribué à l'inscription ou à la connexion suivante ; en production, après confirmation de l'adresse par le lien envoyé à l'inscription (ou par une réinitialisation du mot de passe). Un administrateur sans abonnement arrive directement sur l'administration après la connexion. Le code du panel n'est téléchargé que par les administrateurs. Onze onglets :
+Accès : `/app/#admin`, pour les adresses listées dans `ADMIN_EMAILS`. Hors production, le rôle est attribué à l'inscription ou à la connexion suivante ; en production, après confirmation de l'adresse par le lien envoyé à l'inscription (ou par une réinitialisation du mot de passe). Sans serveur d'envoi, ce lien n'arrive nulle part : l'application l'indique, et `npm run admin -- promote <adresse>` sur le serveur donne le rôle. Un administrateur sans abonnement arrive directement sur l'administration après la connexion. Le code du panel n'est téléchargé que par les administrateurs. Onze onglets :
 
 | Onglet | Contenu |
 |---|---|

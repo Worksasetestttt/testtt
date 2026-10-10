@@ -39,6 +39,9 @@ api.get('/health', (_req, res) => {
 api.get('/config', (_req, res) => res.json({ plans: PLANS, billing: billingMode, mail: mailMode, demo: DEMO, mandate_version: MANDATE_VERSION, brokers: q.get('SELECT COUNT(*) AS c FROM brokers WHERE active = 1 AND custom = 0').c, announcement: currentAnnouncement() }));
 
 /* ---------- Authentification ---------- */
+// Accès administrateur en attente de confirmation de l'adresse : « outbox » si aucun serveur d'envoi n'est configuré
+// (le lien n'arrive alors nulle part : il faut « npm run admin -- promote » sur le serveur).
+const adminNotice = (user) => (adminPending(user) ? { admin_verification: mailMode === 'outbox' ? 'outbox' : true } : {});
 api.post('/auth/signup', rateLimit({ windowMs: 60 * 60000, max: 20 }), wrap(async (req, res) => {
   const email = str(req.body.email, 'email', 160).toLowerCase();
   const password = req.body.password;
@@ -61,7 +64,7 @@ api.post('/auth/signup', rateLimit({ windowMs: 60 * 60000, max: 20 }), wrap(asyn
   const w = welcomeMail({ email });
   sendMail({ to: email, subject: w.subject, text: w.text, user_id: id }).catch(() => {});
   sendAdminVerification(user);   // adresse de ADMIN_EMAILS (production) : lien de confirmation avant tout accès administrateur
-  res.status(201).json({ user: publicUser(user), ...(adminPending(user) ? { admin_verification: true } : {}) });
+  res.status(201).json({ user: publicUser(user), ...adminNotice(user) });
 }));
 api.post('/auth/login', rateLimit({ max: 50 }), wrap(async (req, res) => {
   const email = str(req.body.email, 'email', 160).toLowerCase();
@@ -78,7 +81,7 @@ api.post('/auth/login', rateLimit({ max: 50 }), wrap(async (req, res) => {
   promoteIfAdmin(user);
   sendAdminVerification(user);   // un envoi par jour au plus tant que l'adresse n'est pas confirmée
   createSession(res, user, req);
-  res.json({ user: publicUser(user), ...(adminPending(user) ? { admin_verification: true } : {}) });
+  res.json({ user: publicUser(user), ...adminNotice(user) });
 }));
 // Pendant un accès support, se déconnecter ramène l'administrateur à sa propre session.
 const stopSupport = (req, res) => { auditAs(req.impersonator.id, 'user.impersonate_stop', req.user.id, {}, req.ip); return { ok: true, ...endImpersonation(req, res) }; };

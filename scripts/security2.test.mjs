@@ -165,14 +165,14 @@ try {
     const mails = (addr, re) => (fs.existsSync(outbox) ? fs.readdirSync(outbox).filter((f) => f.endsWith(`-${addr}.eml`)).sort().map((f) => fs.readFileSync(path.join(outbox, f), 'utf8')).filter((b) => re.test(b)) : []);
     const tokenIn = (body, route) => (body.match(new RegExp(`#${route}\\?token=([A-Za-z0-9_-]{43})`)) || [])[1];
     let r = await call(s, 'POST', '/auth/signup', { email: 'chef@test.fr', password: PW });
-    assert.equal(r.status, 201); assert.equal(r.data.user.role, 'user', 'aucun accès administrateur à l’inscription'); assert.equal(r.data.admin_verification, true);
+    assert.equal(r.status, 201); assert.equal(r.data.user.role, 'user', 'aucun accès administrateur à l’inscription'); assert.equal(r.data.admin_verification, 'outbox', 'sans serveur d’envoi : la commande est indiquée');
     const chef = r.cookie;
     assert.equal((await call(s, 'GET', '/admin/stats', undefined, { cookie: chef })).status, 403);
     await wait(300);
     let sent = mails('chef@test.fr', /Confirmez votre adresse/);
     assert.equal(sent.length, 1); const token = tokenIn(sent[0], 'verify'); assert.ok(token, 'lien de confirmation envoyé');
     r = await call(s, 'POST', '/auth/login', { email: 'chef@test.fr', password: PW });
-    assert.equal(r.status, 200); assert.equal(r.data.admin_verification, true); await wait(300);
+    assert.equal(r.status, 200); assert.equal(r.data.admin_verification, 'outbox'); await wait(300);
     assert.equal(mails('chef@test.fr', /Confirmez votre adresse/).length, 1, 'pas de second lien tant que le premier est valable');
     assert.equal((await call(s, 'POST', '/auth/verify', { token: 'x'.repeat(43) })).data.code, 'invalid');
     r = await call(s, 'POST', '/auth/verify', { token }); assert.equal(r.status, 200); assert.equal(r.data.admin, true);

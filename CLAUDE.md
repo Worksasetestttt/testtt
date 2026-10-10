@@ -49,6 +49,7 @@ Sans `.env`, le serveur tourne en mode développement : abonnement simulé, cour
 | `app/index.html`, `app/app.js`, `app/app.css` | Application abonné en JS vanilla, routage par hash. |
 | `app/admin.js`, `app/admin.css` | Panel d’administration (11 onglets, dont « Clés »). Chargé à la demande par `app.js` uniquement pour les administrateurs. Classes préfixées `adm-` (ne pas réutiliser `.chart`, déjà pris par le tableau de bord). |
 | `scripts/smoke.mjs` | Parcours complet de bout en bout. |
+| `scripts/admin-cli.mjs` | `npm run admin -- promote <adresse>` (rôle administrateur, adresse tenue pour confirmée) et `npm run admin -- keys --plan --days --count --uses --expires --note` (clés affichées une fois). Lit `.env` ; une option inconnue n'exécute rien. |
 | `scripts/security.test.mjs` | Tests de sécurité : en-têtes, cookies, autorisations, limitation de débit, webhooks. |
 | `scripts/admin.test.mjs` | Tests de l’API d’administration : autorisations, comptes, demandes, courtiers, exports, audit. |
 | `scripts/ui.audit.cjs` | Audit navigateur (`npm run test:ui`, hors `npm test`) : écrans de connexion, offre et clé, tableau de bord (tiroir, plainte, focus, 304), vues, onglets et fiche admin, à 1280 et 390 px (débordement, ids, cibles de 44 px), sur un serveur (port attribué par le système) et une base temporaires. Relance-le après toute modification de l’interface. |
@@ -110,7 +111,7 @@ Fait et poussé :
 - Outils de support : suspension, liste de blocage, accès au compte en lecture seule, sessions par compte, notes internes, message, changement d’adresse, export RGPD par l’admin, annonce globale.
 - Formule unique à 5 € (Individuel) et 9,99 € (Famille) par mois ; sites ajoutés en collant une adresse ; rapport mensuel ; rapport imprimable et CSV.
 - Tableau de bord refondu (synthèse, tiroir de détail, activité groupée, analyse) ; un refus programme un nouveau cycle ; plainte prête à déposer ; relance « données réapparues » ; demandes « Arrêtées » après une révocation du mandat.
-- Clés d’activation (abonnements offerts) : onglet « Clés », lien `#signup?key=`, cumul des durées, expiration automatique.
+- Clés d’activation (abonnements offerts) : onglet « Clés », lien `#signup?key=`, cumul des durées, expiration automatique, `npm run admin -- keys` ; une clé remplace un abonnement simulé et refuse une offre trop petite pour le dossier.
 - Comptes : mot de passe oublié, appareils connectés, avis par e-mail après un changement de mot de passe, confirmation de l’adresse des administrateurs en production.
 - Audit de sécurité (découverte des sites, limitation de débit, courtiers personnalisés, CSV, erreurs SMTP), chasse aux bugs (17 correctifs, `regressions.test.mjs`), performance (compression, cache, ETag, santé, sauvegardes, arrêt propre).
 - `npm test` passe (dix suites) ; `npm run test:ui` passe à 1280 et 390 px. README à jour.
