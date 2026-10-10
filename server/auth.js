@@ -1,5 +1,5 @@
-// Authentification : mots de passe scrypt (asynchrones), sessions en base, cookie signé HMAC,
-// verrouillage par compte, limitation de débit en mémoire avec nettoyage périodique.
+// Authentification : mots de passe scrypt (asynchrones), sessions en base, cookie signé HMAC, verrouillage de connexion
+// par couple (adresse, client) avec plafond global par adresse, limitation de débit en mémoire avec nettoyage périodique.
 import crypto from 'node:crypto';
 import net from 'node:net';
 import { promisify } from 'node:util';
@@ -92,6 +92,10 @@ export function checkLinkToken(purpose, value, token) {
   const ref = Buffer.from(linkToken(purpose, String(value))), test = Buffer.from(String(token ?? ''));
   return ref.length === test.length && crypto.timingSafeEqual(ref, test);
 }
+// Clé de 256 bits dérivée de SESSION_SECRET pour un usage donné (HKDF-SHA256, sel « oubli », info = usage) : le secret
+// lui-même ne sort pas de ce module. Sert au chiffrement des clés de double authentification (twofactor.js) ; changer
+// SESSION_SECRET rend illisible ce qui a été chiffré avec l'ancienne valeur.
+export const deriveKey = (purpose) => Buffer.from(crypto.hkdfSync('sha256', SECRET, 'oubli', String(purpose), 32));
 const ID_RE = /^[A-Za-z0-9_-]{32}$/;
 const SIG_RE = /^[A-Za-z0-9_-]{43}$/;
 function parseCookies(header) {
@@ -221,31 +225,65 @@ export function promoteIfAdmin(user) {
   return user;
 }
 
-/* ---------- Verrouillage par compte et limitation de débit (mémoire) ---------- */
+/* ---------- Verrouillage de connexion et limitation de débit (mémoire) ---------- */
 const fmtWait = (s) => (s >= 90 ? `${Math.ceil(s / 60)} minutes` : s > 1 ? `${s} secondes` : '1 seconde');
 // Supprime les entrées les plus anciennes (les Map conservent l'ordre d'insertion) : jamais de vidage global.
 function evictOldest(map, count) { let i = 0; for (const k of map.keys()) { if (i++ >= count) break; map.delete(k); } }
 
-const LOCK_MAX = 10, LOCK_WINDOW_MS = 15 * 60000;
-const failures = new Map(); // empreinte de l'e-mail → { n, first, until }
+// Compteur d'échecs : au `max`-ième échec dans une fenêtre de `windowMs` comptée depuis le premier, la clé est bloquée
+// pendant `windowMs`. Au-delà de `size` clés, les plus anciennes sont évincées ; les entrées échues sont purgées chaque
+// minute (plus bas). Sert au verrouillage de connexion et à la seconde étape de la double authentification.
+const failureLocks = [];
+export function failureLock({ max, windowMs = 15 * 60000, size = 20000 }) {
+  const map = new Map();   // clé → { n, first, until }
+  const live = (f, t) => !!f && (t - f.first <= windowMs || f.until > t);
+  const lock = {
+    remaining(key) { const f = map.get(key), t = Date.now(); return f && f.until > t ? Math.ceil((f.until - t) / 1000) : 0; },
+    note(key) {
+      const t = Date.now();
+      let f = map.get(key);
+      if (!live(f, t)) f = { n: 0, first: t, until: 0 };
+      f.n += 1;
+      if (f.n >= max && !(f.until > t)) f.until = t + windowMs;
+      map.delete(key); map.set(key, f);
+      if (map.size > size) evictOldest(map, Math.ceil(size / 10));
+      return f;
+    },
+    clear(key) { map.delete(key); },
+    clearPrefix(prefix) { for (const k of map.keys()) if (k.startsWith(prefix)) map.delete(k); },
+    sweep(t) { for (const [k, f] of map) if (!live(f, t)) map.delete(k); },
+  };
+  failureLocks.push(lock);
+  return lock;
+}
+
+// Verrouillage de connexion. Un tiers ne doit pas pouvoir bloquer le compte d'un autre : les échecs se comptent par
+// couple (adresse, client), où le client est celui de la limitation de débit (IPv4, ou préfixe /64 en IPv6) ; 10 échecs
+// en 15 minutes bloquent ce client pour cette adresse, pendant 15 minutes. Un plafond global par adresse, nettement plus
+// haut (100 échecs en 15 minutes, tous clients confondus), arrête les attaques réparties. Une adresse sans compte se
+// verrouille exactement de même : le blocage ne révèle pas l'existence du compte. Les codes faux de la seconde étape de
+// la double authentification comptent comme des échecs (routes.js).
+export const LOGIN_LOCK = Object.freeze({ perClient: 10, perAddress: 100, windowMinutes: 15 });
+const clientFailures = failureLock({ max: LOGIN_LOCK.perClient, windowMs: LOGIN_LOCK.windowMinutes * 60000 });
+const addressFailures = failureLock({ max: LOGIN_LOCK.perAddress, windowMs: LOGIN_LOCK.windowMinutes * 60000 });
 const lockKey = (email) => crypto.createHash('sha256').update(String(email ?? '').toLowerCase().trim()).digest('base64url');
-// Secondes restantes de verrouillage pour ce compte (0 si libre).
-export function loginLockRemaining(email) {
-  const f = failures.get(lockKey(email));
-  if (!f || !f.until) return 0;
-  return f.until > Date.now() ? Math.ceil((f.until - Date.now()) / 1000) : 0;
+const coupleKey = (email, ip) => `${lockKey(email)}|${clientKey(ip)}`;
+// Secondes restantes de verrouillage pour cette adresse depuis ce client (0 si libre).
+export function loginLockRemaining(email, ip) {
+  return Math.max(clientFailures.remaining(coupleKey(email, ip)), addressFailures.remaining(lockKey(email)));
 }
-export function noteLoginFailure(email) {
-  const k = lockKey(email), t = Date.now();
-  let f = failures.get(k);
-  if (!f || t - f.first > LOCK_WINDOW_MS) f = { n: 0, first: t, until: 0 };
-  f.n += 1;
-  if (f.n >= LOCK_MAX) f.until = t + LOCK_WINDOW_MS;
-  failures.delete(k); failures.set(k, f);
-  if (failures.size > 20000) evictOldest(failures, 2000);
-  return f;
+export function noteLoginFailure(email, ip) {
+  clientFailures.note(coupleKey(email, ip));
+  addressFailures.note(lockKey(email));
 }
-export function clearLoginFailures(email) { failures.delete(lockKey(email)); }
+// Connexion réussie : seul le compteur de ce client repart à zéro. Le plafond global, lui, continue de courir : sinon,
+// chaque connexion de l'abonné relancerait une attaque répartie en cours.
+export function clearClientLoginFailures(email, ip) { clientFailures.clear(coupleKey(email, ip)); }
+// Boîte prouvée (réinitialisation du mot de passe par e-mail) : tous les compteurs de l'adresse repartent à zéro.
+export function clearLoginFailures(email) {
+  addressFailures.clear(lockKey(email));
+  clientFailures.clearPrefix(`${lockKey(email)}|`);
+}
 
 const buckets = new Map(); // « METHOD route|ip » → { n, reset }
 // Clé de route : le motif Express (req.route.path), sinon le chemin. Express ignore la casse et la barre finale du chemin ;
@@ -284,7 +322,7 @@ export function rateLimit({ windowMs = 15 * 60000, max = 30, name, by } = {}) {
 setInterval(() => {
   const t = Date.now();
   for (const [k, b] of buckets) if (t >= b.reset) buckets.delete(k);
-  for (const [k, f] of failures) if (t - f.first > LOCK_WINDOW_MS && f.until <= t) failures.delete(k);
+  for (const l of failureLocks) l.sweep(t);
 }, 60000).unref();
 
 export { fmtWait };

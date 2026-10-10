@@ -161,7 +161,9 @@ try {
   // d'un compte) devenait administrateur. En production, la boîte se prouve par le lien de confirmation ou par une
   // réinitialisation du mot de passe.
   {
-    const s = await startServer('prod-admin', { NODE_ENV: 'production', ADMIN_EMAILS: 'chef@test.fr,second@test.fr' });
+    // ADMIN_REQUIRE_2FA=off : ce groupe vérifie la confirmation de l'adresse ; la double authentification exigée par
+    // défaut en production pour l'administration est vérifiée par twofactor.test.mjs.
+    const s = await startServer('prod-admin', { NODE_ENV: 'production', ADMIN_EMAILS: 'chef@test.fr,second@test.fr', ADMIN_REQUIRE_2FA: 'off' });
     const outbox = path.join(tmp, 'prod-admin', 'outbox'), PW = 'Corde-a-linge-78!';
     const mails = (addr, re) => (fs.existsSync(outbox) ? fs.readdirSync(outbox).filter((f) => f.endsWith(`-${addr}.eml`)).sort().map((f) => fs.readFileSync(path.join(outbox, f), 'utf8')).filter((b) => re.test(b)) : []);
     const tokenIn = (body, route) => (body.match(new RegExp(`#${route}\\?token=([A-Za-z0-9_-]{43})`)) || [])[1];

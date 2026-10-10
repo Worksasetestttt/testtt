@@ -170,10 +170,14 @@ try {
   for (let i = 1; i <= 10; i++) { r = await login('lock@test.fr', 'Mauvais-mot-de-passe-' + i); assert.equal(r.status, 401, `échec ${i}`); assert.equal(r.data.error, 'E-mail ou mot de passe incorrect.'); }
   r = await login('lock@test.fr', 'Mauvais-mot-de-passe-11'); assert.equal(r.status, 429); assert.ok(Number(r.headers.get('retry-after')) > 0, 'Retry-After');
   r = await login('lock@test.fr', STRONG); assert.equal(r.status, 429, 'verrouillé même avec le bon mot de passe');
+  const lockMsg = r.data.error;
   r = await login('inconnu@test.fr', STRONG); assert.equal(r.status, 401); assert.equal(r.data.error, 'E-mail ou mot de passe incorrect.', 'message générique');
+  // Adresse sans compte : même verrouillage, même message (le blocage ne révèle pas l'existence du compte).
+  for (let i = 1; i <= 10; i++) { r = await login('fantome@test.fr', 'Mauvais-mot-de-passe-' + i); assert.equal(r.status, 401, `échec ${i} (adresse inconnue)`); }
+  r = await login('fantome@test.fr', STRONG); assert.equal(r.status, 429, 'adresse inconnue verrouillée de même'); assert.equal(r.data.error, lockMsg, 'message de verrouillage identique');
   r = await login('a@test.fr', 'x'.repeat(200)); assert.equal(r.status, 401, 'mot de passe trop long à la connexion → 401 générique');
   r = await call('GET', '/me', undefined, { cookie: L.cookie }); assert.equal(r.data.user.email, 'lock@test.fr', 'la session existante survit au verrouillage');
-  step('verrouillage : 10 échecs → 429 + Retry-After, message générique, pas d’oracle sur l’existence du compte');
+  step('verrouillage : 10 échecs depuis un client → 429 + Retry-After pour ce client, message générique, même verrouillage pour une adresse sans compte');
 
   /* ---------- 8. Sessions : logout-all, changement de mot de passe, plafond, IP, index ---------- */
   const s1 = (await login('b@test.fr')).cookie, s2 = (await login('b@test.fr')).cookie;

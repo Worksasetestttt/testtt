@@ -1,6 +1,7 @@
 // Outil d'exploitation en ligne de commande, pour qui a accès au serveur : donner le rôle administrateur à un compte
-// (sans attendre le lien de confirmation, par exemple sans serveur d'envoi configuré) ou créer des clés d'activation
-// sans passer par le panel. Utilise la base du serveur (DATABASE_PATH, lu dans .env par « npm run admin »).
+// (sans attendre le lien de confirmation, par exemple sans serveur d'envoi configuré), désactiver la double
+// authentification d'un compte qui a perdu son téléphone et ses codes de secours, ou créer des clés d'activation sans
+// passer par le panel. Utilise la base du serveur (DATABASE_PATH, lu dans .env par « npm run admin »).
 // Les clés ne sont affichées qu'ici, une seule fois : la base n'en garde que l'empreinte et les 4 derniers caractères.
 import { q, now, ensureColumn, logEvent } from '../server/db.js';
 import { parseKeyBatch, createKeys } from '../server/keys.js';
@@ -8,6 +9,8 @@ import { parseKeyBatch, createKeys } from '../server/keys.js';
 const USAGE = `Outil d'administration d'Oubli (à lancer sur la machine du serveur) :
 
   npm run admin -- promote <adresse>     Donne le rôle administrateur à un compte existant.
+  npm run admin -- 2fa-off <adresse>     Désactive la double authentification d'un compte (téléphone et codes de
+                                         secours perdus) ; le titulaire la réactive ensuite dans ses paramètres.
   npm run admin -- keys [options]        Crée des clés d'activation (affichées une seule fois).
       --plan individuel|famille          offre offerte (défaut : individuel)
       --days N                           durée offerte, de 1 à 730 jours (défaut : 30)
@@ -51,6 +54,24 @@ function promote(address) {
   console.log(`✔ ${email} est maintenant administrateur : rechargez l’application, puis ouvrez ${APP_URL}/app/#admin`);
 }
 
+// Dernier recours quand le titulaire a perdu son téléphone et ses codes de secours (la réinitialisation du mot de passe
+// ne contourne pas la double authentification) : à lancer après avoir vérifié son identité par un autre moyen.
+function twoFactorOff(address) {
+  const email = String(address || '').trim().toLowerCase();
+  if (!email) throw new Error('Indiquez l’adresse du compte : npm run admin -- 2fa-off moi@exemple.fr');
+  const u = q.get('SELECT id FROM users WHERE email = ? AND deleted_at IS NULL', email);
+  if (!u) throw new Error(`Aucun compte pour ${email}.`);
+  let removed = 0;
+  try {
+    removed = Number(q.run('DELETE FROM user_totp WHERE user_id = ? AND enabled_at IS NOT NULL', u.id).changes || 0);
+    if (removed) { q.run('DELETE FROM totp_recovery_codes WHERE user_id = ?', u.id); q.run('DELETE FROM login_challenges WHERE user_id = ?', u.id); }
+  } catch { /* serveur jamais démarré sur cette base : pas encore de double authentification */ }
+  if (!removed) return console.log(`✔ La double authentification n’est pas active pour ${email} : rien à faire.`);
+  logEvent(u.id, 'account', 'Double authentification désactivée par l’équipe Oubli (ligne de commande du serveur).');
+  audit('user.2fa_off', u.id, {});
+  console.log(`✔ Double authentification désactivée pour ${email} : le mot de passe suffit pour se connecter. Invitez le titulaire à la réactiver dans ses paramètres.`);
+}
+
 function keys(args) {
   const o = options(args);
   const r = createKeys(parseKeyBatch({ count: o.count ?? '1', plan: o.plan ?? 'individuel', days: o.days ?? '30', max_uses: o.uses ?? '1', expires_at: o.expires, note: o.note }), null);
@@ -62,6 +83,7 @@ function keys(args) {
 
 try {
   if (cmd === 'promote') promote(rest[0]);
+  else if (cmd === '2fa-off') twoFactorOff(rest[0]);
   else if (cmd === 'keys') keys(rest);
   else { console.log(USAGE); if (cmd && cmd !== 'help' && cmd !== '--help') process.exitCode = 1; }
 } catch (e) {

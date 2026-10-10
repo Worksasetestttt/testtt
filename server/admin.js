@@ -18,6 +18,7 @@ import { runDiscovery } from './sites.js';
 import { runMonthlyReports } from './reports.js';
 import { KEY_STATUS_SQL, keyStatus, keyCounts, keySubscriptions, parseKeyBatch, createKeys, revokeKey, keysOfUser } from './keys.js';
 import { backupStatus, runBackup } from './backup.js';
+import { twoFactorEnabled, ADMIN_REQUIRE_2FA } from './twofactor.js';
 
 const { applyOutcome, tick, launchProfile, ref, DEMO } = scheduler;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -216,7 +217,7 @@ admin.get('/users/:id', (req, res) => {
   if (!u) return bad(res, 'Compte introuvable.', 404);
   const profiles = q.all('SELECT * FROM profiles WHERE user_id = ? ORDER BY is_primary DESC, created_at', u.id).map(parseProfile).map((pr) => ({ ...pr, requests: statusCounts(q.all('SELECT status, COUNT(*) AS n FROM requests WHERE profile_id = ? GROUP BY status', pr.id)) }));
   res.json({
-    user: adminUser(u),
+    user: { ...adminUser(u), two_factor: twoFactorEnabled(u.id) },   // double authentification active (jamais la clé)
     profiles,
     requests_by_status: statusCounts(q.all('SELECT status, COUNT(*) AS n FROM requests WHERE user_id = ? GROUP BY status', u.id)),
     requests: q.all(`SELECT r.id, r.token, r.status, r.cycle, r.created_at, r.sent_at, r.due_at, r.completed_at, r.note, b.name AS broker, (p.first_name || ' ' || p.last_name) AS profile FROM requests r JOIN brokers b ON b.id = r.broker_id JOIN profiles p ON p.id = r.profile_id WHERE r.user_id = ? ORDER BY CASE r.status WHEN 'action_required' THEN 0 WHEN 'refused' THEN 1 ELSE 2 END, r.created_at DESC LIMIT 60`, u.id).map((r) => ({ ...r, ref: ref(r) })),
@@ -758,7 +759,7 @@ admin.get('/system', (_req, res) => {
     node: process.version, platform: `${process.platform}-${process.arch}`, uptime_s: Math.round(process.uptime()), started_at: STARTED_AT, memory_rss_mb: Math.round(process.memoryUsage().rss / 1048576), time: now(),
     db: { bytes: (pages?.page_count || 0) * (size?.page_size || 0), wal: true },
     outbox: { dir: OUTBOX, files: outboxFiles },
-    modes: { mail: mailMode, billing: billingMode, demo: DEMO, production: process.env.NODE_ENV === 'production', allow_unverified_contacts: /^(1|true|yes)$/i.test(process.env.ALLOW_UNVERIFIED_CONTACTS || '') },
+    modes: { mail: mailMode, billing: billingMode, demo: DEMO, production: process.env.NODE_ENV === 'production', admin_2fa: ADMIN_REQUIRE_2FA, allow_unverified_contacts: /^(1|true|yes)$/i.test(process.env.ALLOW_UNVERIFIED_CONTACTS || '') },
     scheduler: { interval_ms: Number(process.env.SCHEDULER_INTERVAL_MS || (DEMO ? 20000 : 60000)), ...(lastTickAt() ? { last_tick_at: lastTickAt() } : {}), last_manual_tick_at: lastManualTickAt },
     counts: {
       users: q.get('SELECT COUNT(*) AS c FROM users WHERE deleted_at IS NULL').c, users_deleted: q.get('SELECT COUNT(*) AS c FROM users WHERE deleted_at IS NOT NULL').c,
@@ -769,7 +770,7 @@ admin.get('/system', (_req, res) => {
     },
     announcement: currentAnnouncement(),
     backup: backupStatus(),
-    env: Object.fromEntries(['NODE_ENV', 'APP_URL', 'SESSION_SECRET', 'DATABASE_PATH', 'OUTBOX_DIR', 'BACKUP_DIR', 'SMTP_URL', 'MAIL_FROM', 'MAIL_REPLY_TO', 'ALLOW_UNVERIFIED_CONTACTS', 'INBOUND_TOKEN', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'ADMIN_EMAILS', 'COMPANY_NAME', 'COMPANY_ADDRESS', 'SCHEDULER_INTERVAL_MS', 'SHUTDOWN_TIMEOUT_MS', 'TRUST_PROXY', 'DEMO_MODE'].map((k) => [k, present(k)])),
+    env: Object.fromEntries(['NODE_ENV', 'APP_URL', 'SESSION_SECRET', 'DATABASE_PATH', 'OUTBOX_DIR', 'BACKUP_DIR', 'SMTP_URL', 'MAIL_FROM', 'MAIL_REPLY_TO', 'ALLOW_UNVERIFIED_CONTACTS', 'INBOUND_TOKEN', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'ADMIN_EMAILS', 'ADMIN_REQUIRE_2FA', 'COMPANY_NAME', 'COMPANY_ADDRESS', 'SCHEDULER_INTERVAL_MS', 'SHUTDOWN_TIMEOUT_MS', 'TRUST_PROXY', 'DEMO_MODE'].map((k) => [k, present(k)])),
   });
 });
 // Sauvegarde immédiate de la base (backup.js) ; rejoint celle en cours s'il y en a une. Journalisée dans l'audit.

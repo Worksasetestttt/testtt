@@ -219,6 +219,13 @@ textarea.adm-textarea:focus { outline: none; border-color: var(--accent); box-sh
   .adm-key { font-size: .85rem; letter-spacing: .02em; white-space: normal; overflow-wrap: anywhere; }
 }
 
+/* ---------- Double authentification exigée (ADMIN_REQUIRE_2FA) : invitation à l'activer ---------- */
+.adm-gate { max-width: 760px; }
+.adm-gate h2:focus { outline: none; }
+.adm-gate h2:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.adm-gate__lead { color: var(--muted); max-width: 62ch; }
+.adm-gate__lead + .adm-gate__lead { margin-top: 12px; }
+
 /* ---------- Réactif ---------- */
 @media (max-width: 1150px) {
   .adm { grid-template-columns: 170px minmax(0, 1fr); gap: 28px; }
