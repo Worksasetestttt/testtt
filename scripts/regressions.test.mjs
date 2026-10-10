@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { createRequire } from 'node:module';
 import { discoverContact } from '../server/sitediscovery.js';
+import { freePort } from './free-port.mjs';
 
 // Navigateur pour les vérifications de l'application (facultatif : ignorées si Playwright n'est pas installé).
 const playwright = (() => { try { return createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE || '/opt/node-tools/node_modules/playwright'); } catch { return null; } })();
@@ -18,7 +19,6 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'oubli-reg-'));
 const STRONG = 'Corde-a-linge-78!', INBOUND = 'inbound-secret-token-0123456789', WHSEC = 'whsec_regression_0123456789';
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-let nextPort = 5500 + Math.floor(Math.random() * 300);
 const servers = [];
 let passed = 0;
 const step = (name) => { passed += 1; console.log(`  ✔ ${name}`); };
@@ -32,8 +32,8 @@ async function call(base, method, p, body, cookie = '', headers = {}) {
 // Démarre un serveur : `extra` complète l'environnement de test, `cwd` permet de lancer une copie du dépôt, `db` de
 // reprendre une base existante (redémarrage).
 async function start(name, extra = {}, { cwd = ROOT, db } = {}) {
-  const dir = path.join(tmp, `${name}-${nextPort}`); fs.mkdirSync(dir, { recursive: true });
-  const port = nextPort++;
+  const port = await freePort();
+  const dir = path.join(tmp, `${name}-${port}`); fs.mkdirSync(dir, { recursive: true });
   const env = {
     ...process.env, PORT: String(port), DATABASE_PATH: db || path.join(dir, 'test.sqlite'), OUTBOX_DIR: path.join(dir, 'outbox'), DEMO_MODE: 'false', SMTP_URL: '',
     STRIPE_SECRET_KEY: '', STRIPE_WEBHOOK_SECRET: WHSEC, SESSION_SECRET: 'test-secret-for-regression-suite-0123456789', ADMIN_EMAILS: 'admin@test.fr',

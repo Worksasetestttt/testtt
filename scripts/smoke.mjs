@@ -4,9 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
+import { freePort } from './free-port.mjs';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'oubli-'));
-const PORT = 3900 + Math.floor(Math.random() * 100);
+const PORT = await freePort();
 const env = { ...process.env, PORT: String(PORT), DATABASE_PATH: path.join(tmp, 'test.sqlite'), OUTBOX_DIR: path.join(tmp, 'outbox'), DEMO_MODE: 'false', SMTP_URL: '', STRIPE_SECRET_KEY: '', SESSION_SECRET: 'test-secret', ADMIN_EMAILS: 'admin@test.fr', SCHEDULER_INTERVAL_MS: '600000', NODE_ENV: 'test' };
 const server = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server/index.js'], { env, stdio: ['ignore', 'pipe', 'inherit'] });
 const base = `http://localhost:${PORT}/api`;

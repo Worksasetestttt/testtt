@@ -9,9 +9,10 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
+import { freePort } from './free-port.mjs';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'oubli-account-'));
-const PORT = 5700 + Math.floor(Math.random() * 300);
+const PORT = await freePort();
 const DB = path.join(tmp, 'test.sqlite'), OUTBOX = path.join(tmp, 'outbox');
 // TRUST_PROXY=1 : chaque appel peut se présenter avec sa propre IP (X-Forwarded-For), pour tester les limites par IP
 // et par adresse séparément.

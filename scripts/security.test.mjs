@@ -7,9 +7,10 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
+import { freePort } from './free-port.mjs';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'oubli-sec-'));
-const PORT = 4100 + Math.floor(Math.random() * 400);
+const PORT = await freePort();
 const DB = path.join(tmp, 'test.sqlite');
 const INBOUND = 'inbound-secret-token-0123456789';
 const env = {

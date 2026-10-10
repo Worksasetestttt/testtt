@@ -6,9 +6,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
+import { freePort } from './free-port.mjs';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'oubli-admin-'));
-const PORT = 4600 + Math.floor(Math.random() * 300);
+const PORT = await freePort();
 const OUTBOX = path.join(tmp, 'outbox');
 const SECRET = 'test-secret-for-admin-suite-0123456789';
 const env = {

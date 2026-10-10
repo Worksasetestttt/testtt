@@ -10,9 +10,10 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
+import { freePort } from './free-port.mjs';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'oubli-keys-'));
-const PORT = 5500 + Math.floor(Math.random() * 300);
+const PORT = await freePort();
 const DB = path.join(tmp, 'test.sqlite');
 const OUTBOX = path.join(tmp, 'outbox');
 const WHSEC = 'whsec_keys_suite_0123456789abcdef';

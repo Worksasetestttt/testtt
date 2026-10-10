@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { discoverContact, isPublicIp, safeFetch } from '../server/sitediscovery.js';
+import { freePort } from './free-port.mjs';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'oubli-sec2-'));
 const servers = [];
@@ -19,7 +20,7 @@ const elapsed = async (fn) => { const t = performance.now(); await fn(); return 
 
 // Serveur de test : port libre, base temporaire, découverte désactivée (aucun accès réseau), variables en plus.
 async function startServer(name, extra = {}) {
-  const port = 5100 + Math.floor(Math.random() * 800);
+  const port = await freePort();
   const dir = path.join(tmp, name);
   const env = {
     ...process.env, PORT: String(port), DATABASE_PATH: path.join(dir, 'test.sqlite'), OUTBOX_DIR: path.join(dir, 'outbox'), DEMO_MODE: 'false', SMTP_URL: '',

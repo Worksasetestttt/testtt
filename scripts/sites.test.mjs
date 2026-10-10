@@ -8,6 +8,7 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { normalizeSite, excludedReason, isPublicIp, extractContacts, discoverContact, legalLinks, registrableDomain, safeFetch } from '../server/sitediscovery.js';
+import { freePort } from './free-port.mjs';
 
 let passed = 0;
 const step = (name) => { passed += 1; console.log(`  ✔ ${name}`); };
@@ -62,7 +63,7 @@ step('découverte : liens légaux suivis en priorité, arrêt sur une adresse DP
 
 /* ---------- 5. Parcours API ---------- */
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'oubli-sites-'));
-const PORT = 4950 + Math.floor(Math.random() * 40);
+const PORT = await freePort();
 const env = { ...process.env, PORT: String(PORT), DATABASE_PATH: path.join(tmp, 'test.sqlite'), OUTBOX_DIR: path.join(tmp, 'outbox'), DEMO_MODE: 'false', SMTP_URL: '', STRIPE_SECRET_KEY: '', SESSION_SECRET: 'test-secret-for-sites-suite-0123456789', ADMIN_EMAILS: 'admin@test.fr', SCHEDULER_INTERVAL_MS: '600000', NODE_ENV: 'test', SITE_DISCOVERY: 'off' };
 const server = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server/index.js'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
 let serverErr = ''; server.stderr.on('data', (x) => { serverErr += x; });
@@ -138,7 +139,7 @@ try {
 
   // Envoi réel (SMTP) : une adresse présumée n'est jamais écrite ; une adresse publiée par le site part (ici, tentative
   // vers un serveur SMTP fermé : l'échec enregistré prouve que l'envoi a été autorisé).
-  const tmp2 = fs.mkdtempSync(path.join(os.tmpdir(), 'oubli-sites-smtp-')), PORT2 = PORT + 50, DB2 = path.join(tmp2, 'test.sqlite');
+  const tmp2 = fs.mkdtempSync(path.join(os.tmpdir(), 'oubli-sites-smtp-')), PORT2 = await freePort(), DB2 = path.join(tmp2, 'test.sqlite');
   const smtp = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server/index.js'], { env: { ...env, PORT: String(PORT2), DATABASE_PATH: DB2, OUTBOX_DIR: path.join(tmp2, 'outbox'), SMTP_URL: 'smtp://127.0.0.1:9', MAIL_FROM: 'Oubli <demandes@oubli.test>' }, stdio: ['ignore', 'pipe', 'pipe'] });
   try {
     const base2 = `http://localhost:${PORT2}/api`;

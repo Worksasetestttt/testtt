@@ -7,9 +7,10 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
+import { freePort } from './free-port.mjs';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'oubli-feat-'));
-const PORT = 5100 + Math.floor(Math.random() * 300);
+const PORT = await freePort();
 const DB = path.join(tmp, 'test.sqlite');
 const env = { ...process.env, PORT: String(PORT), DATABASE_PATH: DB, OUTBOX_DIR: path.join(tmp, 'outbox'), BACKUP_DIR: path.join(tmp, 'backups'), DEMO_MODE: 'false', SMTP_URL: '', STRIPE_SECRET_KEY: '', SESSION_SECRET: 'test-secret-for-features-suite-0123456789', ADMIN_EMAILS: 'admin@test.fr', SCHEDULER_INTERVAL_MS: '600000', NODE_ENV: 'test', SITE_DISCOVERY: 'off' };
 const server = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server/index.js'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
