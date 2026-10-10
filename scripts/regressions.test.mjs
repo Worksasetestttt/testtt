@@ -317,6 +317,58 @@ try {
   }
   step('renvoi par l’administration : départ immédiat malgré un recul en cours, essais remis à zéro après une erreur');
 
+  /* ---------- 10. Relance : relecture de la demande avant chaque envoi ---------- */
+  // followUps envoyait la relance d'après la liste lue au début du passage : une demande effacée pendant le passage
+  // (envoi SMTP lent, réponse reçue entre-temps) recevait quand même « Relance — demande sans réponse ».
+  {
+    const net = await import('node:net');
+    const smtp = net.createServer((sock) => {
+      let buf = '', data = false;
+      sock.write('220 faux-smtp ESMTP\r\n');
+      sock.on('data', (chunk) => {
+        buf += chunk.toString('utf8');
+        for (;;) {
+          if (data) {
+            const end = buf.indexOf('\r\n.\r\n'); if (end < 0) return;
+            const msg = buf.slice(0, end); buf = buf.slice(end + 5); data = false;
+            // Objet éventuellement encodé (RFC 2047, Q ou B) et replié sur plusieurs lignes.
+            const subj = ((msg.match(/^Subject:(.*(?:\r\n[ \t].*)*)/mi) || [])[1] || '').replace(/=\?utf-8\?([qb])\?([^?]*)\?=/gi, (_, enc, txt) => (enc.toLowerCase() === 'b' ? Buffer.from(txt, 'base64').toString('utf8') : txt.replace(/_/g, ' ').replace(/=([0-9a-f]{2})/gi, (m, h) => String.fromCharCode(parseInt(h, 16)))));
+            setTimeout(() => sock.write('250 OK\r\n'), /Relance/.test(subj) ? 1500 : 0);
+            continue;
+          }
+          const i = buf.indexOf('\r\n'); if (i < 0) return;
+          const line = buf.slice(0, i); buf = buf.slice(i + 2);
+          const cmd = line.slice(0, 4).toUpperCase();
+          if (cmd === 'EHLO' || cmd === 'HELO') sock.write('250-faux-smtp\r\n250 OK\r\n');
+          else if (cmd === 'DATA') { data = true; sock.write('354 Suite\r\n'); }
+          else if (cmd === 'QUIT') { sock.end('221 Au revoir\r\n'); return; }
+          else sock.write('250 OK\r\n');
+        }
+      });
+      sock.on('error', () => {});
+    });
+    await new Promise((res) => smtp.listen(0, '127.0.0.1', res));
+    const SL = await start('smtp-slow', { SMTP_URL: `smtp://127.0.0.1:${smtp.address().port}`, ALLOW_UNVERIFIED_CONTACTS: 'true' });
+    try {
+      const SLA = await adminOf(SL);
+      const N = await member(SL);
+      await settle(SL);
+      const sdb = SL.sql();
+      const [f1, f2] = sdb.prepare(`SELECT id FROM requests WHERE user_id = ? AND status = 'sent' ORDER BY created_at LIMIT 2`).all(N.id);
+      sdb.prepare('UPDATE requests SET due_at = ? WHERE id = ?').run(new Date(Date.now() - 2 * 86400000).toISOString(), f1.id);
+      sdb.prepare('UPDATE requests SET due_at = ? WHERE id = ?').run(new Date(Date.now() - 86400000).toISOString(), f2.id);
+      const ticking = SL.call('POST', '/admin/tick', {}, SLA);
+      await wait(600);   // la relance de f1 est en cours d'envoi (1,5 s)
+      const r = await SL.call('POST', `/admin/requests/${f2.id}/outcome`, { outcome: 'done', note: 'confirmé pendant le passage' }, SLA);
+      assert.equal(r.status, 200);
+      await ticking;
+      assert.equal(sdb.prepare(`SELECT COUNT(*) AS c FROM mails WHERE request_id = ? AND subject LIKE 'Relance%'`).get(f1.id).c, 1, 'relance de f1 envoyée');
+      assert.equal(sdb.prepare(`SELECT COUNT(*) AS c FROM mails WHERE request_id = ? AND subject LIKE 'Relance%'`).get(f2.id).c, 0, 'aucune relance pour la demande effacée pendant le passage');
+      sdb.close();
+    } finally { await SL.stop(); smtp.close(); }
+  }
+  step('relance : la demande est relue avant l’envoi, aucune relance vers un courtier qui vient de confirmer');
+
   console.log(`✔ Régressions validées (${passed} groupes de vérifications).`);
 } catch (e) {
   console.error('✘ Échec :', e.message);

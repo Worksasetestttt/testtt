@@ -110,6 +110,10 @@ async function followUps() {
   const rows = q.all(`SELECT * FROM requests WHERE status IN ('sent', 'in_progress') AND followup_sent_at IS NULL AND due_at IS NOT NULL AND due_at <= ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ORDER BY due_at LIMIT ?`, t, t, BATCH);
   for (const r of rows) {
     try {
+      // Relecture avant chaque envoi, comme pour les demandes : une réponse reçue pendant le passage (envoi SMTP lent)
+      // rend la relance sans objet.
+      const cur = q.get('SELECT status, followup_sent_at FROM requests WHERE id = ?', r.id);
+      if (!cur || !['sent', 'in_progress'].includes(cur.status) || cur.followup_sent_at) continue;
       const user = q.get('SELECT * FROM users WHERE id = ?', r.user_id);
       const profile = q.get('SELECT * FROM profiles WHERE id = ?', r.profile_id);
       const broker = q.get('SELECT * FROM brokers WHERE id = ?', r.broker_id);
