@@ -1,6 +1,10 @@
 // Test de la facturation Stripe contre un faux serveur Stripe (node:http) : chaque appel à l'API est enregistré (méthode,
 // chemin, paramètres form-urlencoded, en-têtes) et reçoit une réponse réaliste. Le serveur Oubli tourne sur un port libre,
 // avec une base temporaire, STRIPE_API_BASE pointé vers le faux Stripe et des webhooks signés comme Stripe les envoie.
+// Groupes : session de paiement et résiliation en fin de période ; garde https en production ; réabonnement pendant la
+// période payée (reprise sans paiement, changement d'offre au prorata, jamais de second abonnement) et état réel chez
+// Stripe ; application à 1280 et 390 px ; webhooks livrés en retard ; suppression du compte (annulation immédiate,
+// factures ouvertes annulées) ; aucun identifiant Stripe dans les réponses ; signatures ; abonnement d'un compte supprimé.
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
