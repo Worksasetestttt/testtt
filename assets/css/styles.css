@@ -560,7 +560,7 @@ main { position: relative; }
 .plan:hover { border-color: var(--border-strong); transform: translateY(-2px); box-shadow: var(--shadow-hover); }
 .plan--featured { border: 1.5px solid var(--text); }
 .plan--featured:hover { border-color: var(--text); }
-.plan__head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.plan__head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 12px; }   /* à 360 px, l'étiquette passe sous le nom */
 .plan__tag { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .1em; white-space: nowrap; }
 .price { display: flex; flex-direction: column; gap: 4px; padding-bottom: 24px; border-bottom: 1px solid var(--border); }
 .pricing__lead { text-align: center; color: var(--muted); max-width: 52ch; margin: 28px auto 48px; }
@@ -649,6 +649,30 @@ main { position: relative; }
 .signup__input[aria-invalid="true"] { border-color: var(--danger); }
 .signup__msg { min-height: 18px; color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 8px; justify-content: center; }
 .signup__msg.is-error { color: var(--danger); }
+
+/* ---------- Contact ---------- */
+.contact { padding: 0 0 112px; scroll-margin-top: var(--nav-h, 72px); }
+.contact__inner { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: 56px; align-items: start; border-top: 1px solid var(--border); padding-top: 72px; }
+.contact__title { margin-top: 12px; }
+.contact__sub { margin-top: 16px; color: var(--muted); font-size: 1.0625rem; line-height: 1.55; max-width: 42ch; }
+.contact__form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 28px; }
+.contact__field { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.contact__field--full, .contact__foot { grid-column: 1 / -1; }
+.contact__label { font-size: 14px; font-weight: 500; }
+.contact__input { width: 100%; min-height: 48px; border-radius: 12px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); padding: 12px 14px; font: inherit; font-size: 16px; }
+.contact__input::placeholder { color: var(--muted); }
+.contact__input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.contact__input[aria-invalid="true"] { border-color: var(--danger); }
+.contact__textarea { resize: vertical; min-height: 140px; line-height: 1.5; }
+.contact__foot { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.contact__msg { min-height: 18px; color: var(--muted); font-size: 12px; flex: 1 1 220px; }
+.contact__msg.is-error { color: var(--danger); }
+.contact__msg.is-ok { color: var(--success-ink); }
+@media (max-width: 860px) {
+  .contact__inner { grid-template-columns: minmax(0, 1fr); gap: 28px; padding-top: 56px; }
+  .contact__form { grid-template-columns: minmax(0, 1fr); padding: 20px; }
+  .contact__foot .btn { width: 100%; justify-content: center; }
+}
 
 /* ---------- Footer ---------- */
 .footer { background: var(--text); color: var(--bg); padding: 80px 0 40px; }

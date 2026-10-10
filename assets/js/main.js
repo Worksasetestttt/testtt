@@ -548,4 +548,36 @@
     });
     input.addEventListener('input', function () { if (msg.classList.contains('is-error')) { msg.textContent = ''; msg.classList.remove('is-error'); input.removeAttribute('aria-invalid'); } });
   }
+
+  /* ---------- Contact : messages enregistrés par /api/contact (onglet Contacts de l'administration) ---------- */
+  var cform = $('#contact-form');
+  if (cform) {
+    var cEmail = $('#contact-email'), cSubject = $('#contact-subject'), cText = $('#contact-message'), cOut = $('#contact-msg'), cBtn = $('#contact-btn');
+    var NB = '\u00a0';
+    // « Contacter le DPO », « nous écrire » (entreprises) : l'objet du message est présélectionné.
+    $$('[data-contact-subject]').forEach(function (a) {
+      a.addEventListener('click', function () { cSubject.value = a.getAttribute('data-contact-subject'); });
+    });
+    var say = function (text, kind) { cOut.className = 'contact__msg mono' + (kind ? ' is-' + kind : ''); cOut.textContent = text; };
+    var invalid = function (el, text) { el.setAttribute('aria-invalid', 'true'); say(text, 'error'); el.focus(); };
+    var failed = function () { say('Envoi impossible pour le moment' + NB + ': réessayez dans quelques minutes.', 'error'); };
+    cform.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var email = cEmail.value.trim(), message = cText.value.trim();
+      cEmail.removeAttribute('aria-invalid'); cText.removeAttribute('aria-invalid');
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return invalid(cEmail, 'Indiquez une adresse e-mail valide.');
+      if (message.length < 5) return invalid(cText, 'Écrivez votre message (5' + NB + 'caractères au moins).');
+      if (!window.fetch || location.protocol === 'file:') return say('Envoi impossible depuis cette page' + NB + ': ouvrez le site depuis son adresse en ligne.', 'error');
+      cBtn.disabled = true; say('Envoi…');
+      fetch('/api/contact', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: email, subject: cSubject.value, message: message }) })
+        .then(function (r) {
+          if (r.ok) { cText.value = ''; say('Message envoyé. Nous vous répondrons à ' + email + '.', 'ok'); }
+          else if (r.status === 429) say('Trop de messages envoyés depuis votre connexion' + NB + ': réessayez dans une heure.', 'error');
+          else failed();
+        })
+        .catch(failed)
+        .then(function () { cBtn.disabled = false; });
+    });
+    [cEmail, cText].forEach(function (el) { el.addEventListener('input', function () { if (el.getAttribute('aria-invalid')) { el.removeAttribute('aria-invalid'); say(''); } }); });
+  }
 })();
