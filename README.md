@@ -161,6 +161,7 @@ npm run test:security    # sécurité seule
 npm run test:admin       # administration seule
 npm run test:sites       # sites ajoutés seuls
 npm run test:features    # fonctions du tableau de bord seules
+npm run test:ui          # audit navigateur (Playwright installé à part), 1280 et 390 px
 ```
 
 Chaque suite démarre son propre serveur sur un port libre avec une base temporaire : `data/` n'est jamais touché. Dans un pipe, activez `set -o pipefail` pour que l'échec d'une suite ne passe pas inaperçu.

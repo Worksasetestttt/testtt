@@ -12,7 +12,8 @@
     "test:security": "node --disable-warning=ExperimentalWarning scripts/security.test.mjs",
     "test:admin": "node --disable-warning=ExperimentalWarning scripts/admin.test.mjs",
     "test:sites": "node --disable-warning=ExperimentalWarning scripts/sites.test.mjs",
-    "test:features": "node --disable-warning=ExperimentalWarning scripts/features.test.mjs"
+    "test:features": "node --disable-warning=ExperimentalWarning scripts/features.test.mjs",
+    "test:ui": "node scripts/ui.audit.cjs"
   },
   "dependencies": {
     "express": "^5.1.0",

@@ -46,6 +46,7 @@ Sans `.env`, le serveur tourne en mode développement : abonnement simulé, cour
 | `scripts/smoke.mjs` | Parcours complet de bout en bout. |
 | `scripts/security.test.mjs` | Tests de sécurité : en-têtes, cookies, autorisations, limitation de débit, webhooks. |
 | `scripts/admin.test.mjs` | Tests de l’API d’administration : autorisations, comptes, demandes, courtiers, exports, audit. |
+| `scripts/ui.audit.cjs` | Audit navigateur (`npm run test:ui`, hors `npm test`) : tableau de bord, tiroir, plainte, focus, vues, onglets admin, à 1280 et 390 px, sur un serveur et une base temporaires. Relance-le après toute modification de l’interface. |
 | `scripts/sites.test.mjs`, `scripts/features.test.mjs` | Sites ajoutés (SSRF, découverte, règle d’envoi) ; fonctions du tableau de bord (détail, CSV, rapport mensuel, refus, plainte, relance). |
 | `docs/handoff/` | Rapports des relectures (bureau, accessibilité, mobile) et contrat de découpage des fichiers. Lis-les avant de toucher l'interface. |
 
@@ -96,7 +97,6 @@ Fait et poussé :
 - `npm test` passe (cinq suites). README à jour.
 
 Pistes suivantes (non commencées) :
-- Scripts Playwright versionnés dans le dépôt (les vérifications navigateur ont été faites hors dépôt).
 - Typographie des textes produits par le serveur (erreurs d’API, journal, courriers) : espaces ordinaires avant « : » et quelques apostrophes droites (ex. `routes.js`, message de l’offre Individuel). Le client corrige l’affichage du journal et des messages de l’administration avec `typo()`, pas le contenu des courriers. La plainte (`complaintDraft`) applique déjà la typographie française (`frTypo`).
 - La landing annonce « 420+ courtiers » ; le registre en contient 50. À aligner avant toute publication.
 - Authentification à deux facteurs pour les administrateurs.
