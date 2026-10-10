@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { frTypo } from './util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DB_PATH = process.env.DATABASE_PATH || path.join(__dirname, '..', 'data', 'oubli.sqlite');
@@ -283,8 +284,9 @@ export function tx(fn) {
   catch (e) { db.exec(`ROLLBACK TO ${sp}`); db.exec(`RELEASE ${sp}`); throw e; }
   finally { depth--; }
 }
+// Journal de l'abonné : message en typographie française (frTypo), comme les courriers et les réponses de l'API.
 export function logEvent(user_id, type, message, { profile_id = null, request_id = null } = {}) {
-  q.run('INSERT INTO events (user_id, profile_id, request_id, type, message, created_at) VALUES (?, ?, ?, ?, ?, ?)', user_id, profile_id, request_id, type, String(message).slice(0, 1000), now());
+  q.run('INSERT INTO events (user_id, profile_id, request_id, type, message, created_at) VALUES (?, ?, ?, ?, ?, ?)', user_id, profile_id, request_id, type, frTypo(message).slice(0, 1000), now());
 }
 
 /* ---------- Santé et arrêt ---------- */

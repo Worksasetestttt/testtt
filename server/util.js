@@ -19,6 +19,9 @@ export const publicUser = (u) => ({
 const parseList = (v) => { try { const a = JSON.parse(v || '[]'); return Array.isArray(a) ? a : []; } catch { return []; } };
 export const parseProfile = (p) => ({ ...p, emails: parseList(p.emails), phones: parseList(p.phones), addresses: parseList(p.addresses), aliases: parseList(p.aliases) });
 export const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+// Typographie française d'un texte produit par le serveur (courriers, messages de l'API, journal) : espace insécable avant
+// « : ; ? ! » et à l'intérieur des guillemets « ». Les textes sont écrits avec des espaces ordinaires et corrigés ici.
+export const frTypo = (s) => String(s).replace(/ ([:;?!»])/g, '\u00a0$1').replace(/« /g, '«\u00a0');
 
 /* ---------- Validation des entrées ---------- */
 // Erreur HTTP « exposable » : le gestionnaire global renvoie son message tel quel (statut < 500).

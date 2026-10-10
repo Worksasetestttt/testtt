@@ -1,5 +1,7 @@
 // Modèles d’e-mails (français + anglais pour les courtiers hors francophonie) et texte du mandat.
-// Typographie française : espace insécable (U+00A0) avant : ; ? ! et à l’intérieur des « », apostrophe ’.
+// Typographie française : espace insécable (U+00A0) avant : ; ? ! et à l’intérieur des « » (frTypo, util.js), apostrophe ’.
+import { frTypo } from './util.js';
+
 const APP_URL = (process.env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
 const COMPANY = process.env.COMPANY_NAME || 'Oubli SAS';
 const COMPANY_ADDR = process.env.COMPANY_ADDRESS || '12 rue des Capucins, 69001 Lyon, France';
@@ -122,8 +124,6 @@ export const AUTHORITIES = {
   CA: { name: 'le Commissariat à la protection de la vie privée du Canada', short: 'CPVP', url: 'https://www.priv.gc.ca' },
 };
 const GDPR_COUNTRIES = new Set(['FR', 'BE', 'LU', 'DE', 'ES', 'IT', 'NL', 'PT', 'GB']);
-// Typographie française du texte produit : espace insécable avant : ; ? ! et à l’intérieur des « ».
-const frTypo = (s) => s.replace(/ ([:;?!»])/g, '\u00a0$1').replace(/« /g, '«\u00a0');
 const deName = (name) => (/^[aeiouyàâéèêëîïôûü]/i.test(name) ? `d’${name}` : `de ${name}`);   // « auprès d’Acxiom »
 
 // Plainte rédigée au nom de la personne, prête à déposer auprès de l’autorité : après un refus du courtier, ou quand la

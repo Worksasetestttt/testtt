@@ -108,7 +108,7 @@ try {
   r = await call('GET', '/dashboard', undefined, A);
   const row = r.data.requests.find((x) => x.id === reqId);
   assert.equal(row.custom, true); assert.equal(row.site.status, 'presumed'); assert.equal(r.data.sites.count, 1); assert.equal(r.data.sites.max, 20);
-  assert.ok(r.data.events.some((e) => /Site ajouté : annuaire-inconnu\.fr/.test(e.message)));
+  assert.ok(r.data.events.some((e) => /Site ajouté\u00a0: annuaire-inconnu\.fr/.test(e.message)));
   r = await call('GET', '/brokers'); assert.ok(!JSON.stringify(r.data).includes('annuaire-inconnu'), 'jamais publié dans le registre public');
   assert.equal((await call('GET', '/config')).data.brokers, registryCount, 'compteur du registre inchangé');
   step('site inconnu : courtier personnalisé, demande envoyée avec l’adresse de la fiche, sans doublon, absent du registre public');

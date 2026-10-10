@@ -88,6 +88,17 @@ try {
   assert.equal((await call('GET', '/me', undefined, A.cookie)).data.user.monthly_report, false, 'désinscrit');
   step('rapport mensuel : activé par défaut, envoyé après 30 jours, désinscription respectée (paramètres et lien en un clic), pas de doublon');
 
+  /* ---------- 3 bis. Typographie des messages de l'API et du journal ---------- */
+  const raw = await fetch(base + '/contact', { method: 'POST', headers: { 'content-type': 'text/plain' }, body: 'x' });
+  const msg415 = (await raw.json()).error;
+  assert.equal(raw.status, 415); assert.match(msg415, /Content-Type\u00a0: application\/json/, 'message d’erreur : espace insécable avant « : »');
+  r = await call('POST', '/profiles', { first_name: 'Noé', last_name: 'Moreau' }, A.cookie);
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  const journal = db.prepare('SELECT message FROM events WHERE user_id = ?').all(A.id).map((e) => e.message);
+  assert.ok(journal.some((m) => /Proche ajouté au dossier\u00a0: Noé Moreau/.test(m)), 'journal : espace insécable avant « : »');
+  assert.deepEqual(journal.filter((m) => / [:;?!»]|« /.test(m)), [], 'aucune espace ordinaire avant « : ; ? ! » dans le journal');
+  step('typographie : messages de l’API et journal avec espace insécable avant « : ; ? ! » et dans « »');
+
   /* ---------- 4. Refus : nouvelle demande programmée, plainte prête à déposer ---------- */
   r = await call('GET', '/dashboard', undefined, A.cookie);
   const [r1, r2] = r.data.requests.filter((x) => x.status === 'sent');

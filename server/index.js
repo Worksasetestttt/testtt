@@ -16,7 +16,7 @@ import { closeDb } from './db.js';
 import { compressApi } from './compress.js';
 import { createStatic } from './static.js';
 import { markDraining, isDraining } from './health.js';
-import { HttpError, isPlainObject } from './util.js';
+import { HttpError, isPlainObject, frTypo } from './util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
@@ -78,6 +78,16 @@ app.use((_req, res, next) => { if (isDraining()) res.setHeader('Connection', 'cl
 
 /* ---------- API ---------- */
 app.use('/api', (_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
+// Messages renvoyés (error, message) en typographie française : écrits avec des espaces ordinaires dans les routes,
+// corrigés ici une fois pour toutes (frTypo : espace insécable avant « : ; ? ! » et dans « »).
+app.use('/api', (_req, res, next) => {
+  const json = res.json.bind(res);
+  res.json = (body) => {
+    if (body && typeof body === 'object' && !Array.isArray(body)) for (const k of ['error', 'message']) if (typeof body[k] === 'string') body[k] = frTypo(body[k]);
+    return json(body);
+  };
+  next();
+});
 // Webhook Stripe : monté avant la session et l'analyse JSON → corps brut, cookies ignorés, signature seule.
 app.post('/api/billing/webhook', express.raw({ type: '*/*', limit: '1mb' }), stripeWebhook);
 // Compression des réponses (brotli ou gzip, 1 Ko à 2 Mo), sauf routes à jeton et téléchargements (compress.js).

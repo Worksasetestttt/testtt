@@ -71,7 +71,7 @@ Sans `.env`, le serveur tourne en mode développement : abonnement simulé, cour
 - Palette : papier `#F6F1E8`, encre `#1C1915`, vermillon `#C8471F`. Définie en tokens CSS dans `:root`.
 - Polices : Fraunces (titres), Instrument Sans (texte), DM Mono (libellés et métadonnées).
 - Composants existants à réutiliser : `.sheet`, `.row`, `.chip`, `.btn` (`--outline`, `--ghost`, `--sm`, `--danger`), `.f` (champ souligné), `.ledger`, `.filters`, `.notice`, `.empty`, `.page-head`, `.vh` (texte masqué visuellement).
-- Typographie française : espace insécable (U+00A0) avant `:` `;` `?` `!` et dans `« »`, espace fine insécable (U+202F) pour les séparateurs de milliers, apostrophe typographique `’`, « 12,99 € ».
+- Typographie française : espace insécable (U+00A0) avant `:` `;` `?` `!` et dans `« »`, espace fine insécable (U+202F) pour les séparateurs de milliers, apostrophe typographique `’`, « 12,99 € ». Côté serveur, `frTypo` (util.js) l’applique aux courriers (templates.js), aux champs `error` et `message` de toute réponse de l’API (index.js) et au journal (`logEvent`) : écris les textes avec des espaces ordinaires, et dans les tests attends `\u00a0` avant « : ».
 - `[hidden]{display:none!important}` est indispensable : sans lui, un `display` d'auteur masque l'attribut `hidden`.
 - Accessibilité : chaque champ a un `<label>` unique (attention aux ids dupliqués quand le même formulaire est rendu plusieurs fois). Les messages d'erreur ont `role="alert"`. Ne fais pas de `aria-live` sur `<main>`. Les mouvements respectent `prefers-reduced-motion`.
 - Mobile : pas de débordement horizontal à 360, 390, 768, 820 et 1024 px, ni sur le document ni sur un `.sheet`. Les cibles tactiles font au moins 44 px.
@@ -122,7 +122,6 @@ Fait et poussé :
 - `npm test` passe (onze suites) ; `npm run test:ui` passe à 1280 et 390 px. README à jour.
 
 Pistes suivantes (non commencées) :
-- Typographie des messages d’erreur de l’API et du journal : encore des espaces ordinaires avant « : » (le client les corrige à l’affichage avec `typo()`). Les courriers en français passent par `frTypo` (templates.js).
 - Landing : témoignages et chiffres du tableau de bord illustré fictifs ; pages légales (mentions, CGU, confidentialité), presse et carrières absentes.
 - Authentification à deux facteurs pour les administrateurs ; vérification de l’adresse de tous les abonnés (inscription : 409 « compte existant » révèle encore l’existence d’un compte).
 - Stripe : deux paiements terminés en parallèle (deux onglets) créent deux abonnements, le compte ne garde que le dernier ; aucun moyen pour l’abonné de changer de carte en cas d’impayé (ni lien vers la facture ni portail client) ; à la suppression, les factures en brouillon ne sont pas annulées et rien n’est remboursé ; un changement d’offre d’un abonnement actif répond encore 409 (« résiliez d’abord ») ; `cancelSubscription` force l’état local « résilié » même si Stripe répond « impayé ».
