@@ -116,8 +116,13 @@ async function scenario(browser, width) {
   if (ar) { await ar.click(); await page.waitForSelector('#drawer [data-resolve]', { timeout: 8000 }); await page.click('#drawer [data-resolve]'); await wait(1500); if (/Action requise/.test(await page.textContent('#drawer .dstatus .chip'))) note('« Vérification faite » sans effet'); else ok('« Vérification faite » depuis le tiroir'); await page.keyboard.press('Escape'); await wait(300); }
   await page.evaluate(() => document.activeElement && document.activeElement.blur()); await page.keyboard.press('/');
   if (await page.evaluate(() => document.activeElement && document.activeElement.id) !== 'broker-search') note('« / » ne place pas le focus dans la recherche'); else ok('« / » → recherche');
+  // Rafraîchissement : le focus reste dans la recherche, et une donnée inchangée revient en 304 sans corps (ETag).
+  const polls = [], onPoll = (r) => { if (new URL(r.url()).pathname === '/api/dashboard') polls.push(r.status()); };
+  page.on('response', onPoll);
   await page.keyboard.type('a'); await wait(6800);
+  page.off('response', onPoll);
   if (await page.evaluate(() => document.activeElement && document.activeElement.id) !== 'broker-search') note('focus perdu pendant le rafraîchissement'); else ok('focus conservé pendant le rafraîchissement');
+  if (!polls.includes(304)) note(`rafraîchissement sans réponse 304 (${polls.join(', ') || 'aucune requête'})`); else ok('rafraîchissement conditionnel : 304 quand rien ne change');
   for (const route of ['report', 'dossier', 'billing', 'settings']) {
     await page.goto(BASE + '/app/#' + route); await wait(1000); await shot(page, `${route}-${width}`, true);
     if (await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)) note(`#${route} : débordement horizontal`);
