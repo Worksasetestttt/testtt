@@ -14,11 +14,12 @@
     ['mails', 'Courriers', 'Chaque courrier envoyé, avec son contenu exact.'],
     ['inbound', 'Réponses entrantes', 'Rattacher une réponse de courtier à sa demande et la qualifier.'],
     ['contacts', 'Contacts et listes', 'Messages reçus, inscrits à la lettre d’information et exports CSV.', 'Contacts'],
-    ['system', 'Système', 'Configuration, planificateur et volumes de données.'],
+    ['security', 'Sécurité', 'Comptes suspendus, liste de blocage, accès support et sessions actives.'],
+    ['system', 'Système', 'Configuration, annonce, planificateur et volumes de données.'],
     ['audit', 'Journal d’audit', 'Chaque action d’un administrateur, horodatée et attribuée.'],
   ];
   var TAB = {}; TABS.forEach(function (t) { TAB[t[0]] = t; });
-  var BADGE = { users: ' comptes', requests: ' à traiter', brokers: ' contacts non vérifiés', contacts: ' messages à traiter' };
+  var BADGE = { users: ' comptes', requests: ' à traiter', brokers: ' contacts non vérifiés', contacts: ' messages à traiter', security: ' comptes suspendus' };
   var STATUSES = ['queued', 'sent', 'in_progress', 'action_required', 'done', 'refused', 'error'];
   var OUTCOMES = [['done', 'Effacée'], ['in_progress', 'En cours'], ['action_required', 'Vérification demandée'], ['refused', 'Refus']];
   var SUBS = [['active', 'Actif'], ['past_due', 'Paiement en attente'], ['canceled', 'Résilié'], ['none', 'Aucun abonnement']];
@@ -26,8 +27,9 @@
   var BASES = [['rgpd', 'RGPD'], ['ccpa', 'CCPA'], ['both', 'RGPD et CCPA']];
   var SENS = [['1', 'Faible'], ['2', 'Moyenne'], ['3', 'Élevée']];
   var SORTS = [['created_desc', 'Plus récentes'], ['created_asc', 'Plus anciennes'], ['status', 'Par statut'], ['due_asc', 'Échéance proche'], ['sent_desc', 'Envoi récent'], ['broker', 'Par courtier'], ['user', 'Par abonné']];
-  var ACTIONS = { 'user.role': 'Rôle modifié', 'user.subscription': 'Abonnement modifié', 'user.logout_all': 'Sessions fermées', 'user.launch': 'Demandes lancées', 'user.delete': 'Compte supprimé', 'request.outcome': 'Réponse enregistrée', 'request.resend': 'Demande renvoyée', 'request.bulk': 'Réponses groupées', 'broker.create': 'Courtier créé', 'broker.update': 'Courtier modifié', 'broker.deactivate': 'Courtier désactivé', 'broker.test_mail': 'Courrier de test', 'contact.handled': 'Message traité', 'export.csv': 'Export CSV', 'system.tick': 'Planificateur exécuté' };
-  var KEYS = { note: 'note', reason: 'motif', sessions: 'sessions', created: 'créées', updated: 'mises à jour', missing: 'introuvables', rows: 'lignes', to: 'destinataire', mode: 'mode', ref: 'réf.', slug: 'slug', name: 'nom', handled: 'traité', outcome: 'résultat' };
+  var ACTIONS = { 'user.role': 'Rôle modifié', 'user.subscription': 'Abonnement modifié', 'user.logout_all': 'Sessions fermées', 'user.launch': 'Demandes lancées', 'user.delete': 'Compte supprimé', 'request.outcome': 'Réponse enregistrée', 'request.resend': 'Demande renvoyée', 'request.bulk': 'Réponses groupées', 'broker.create': 'Courtier créé', 'broker.update': 'Courtier modifié', 'broker.deactivate': 'Courtier désactivé', 'broker.test_mail': 'Courrier de test', 'contact.handled': 'Message traité', 'export.csv': 'Export CSV', 'system.tick': 'Planificateur exécuté',
+    'user.suspend': 'Compte suspendu', 'user.unsuspend': 'Compte réactivé', 'user.impersonate': 'Accès au compte', 'user.impersonate_stop': 'Fin de l’accès au compte', 'user.session_revoke': 'Session fermée', 'user.note': 'Note ajoutée', 'note.delete': 'Note supprimée', 'user.message': 'Message envoyé', 'user.email': 'Adresse modifiée', 'user.export': 'Données exportées', 'blocklist.add': 'Adresse bloquée', 'blocklist.remove': 'Blocage retiré', 'settings.announcement': 'Annonce modifiée' };
+  var KEYS = { until: 'jusqu’au', blocked: 'adresse bloquée', pattern: 'motif bloqué', subject: 'objet', text: 'texte', level: 'niveau', removed: 'retirée', minutes: 'minutes', note_id: 'note', was: 'motif levé', stripe: 'Stripe', note: 'note', reason: 'motif', sessions: 'sessions', created: 'créées', updated: 'mises à jour', missing: 'introuvables', rows: 'lignes', to: 'destinataire', mode: 'mode', ref: 'réf.', slug: 'slug', name: 'nom', handled: 'traité', outcome: 'résultat' };
   var seq = 0, brokersById = {};
 
   /* ---------- utilitaires ---------- */
@@ -207,7 +209,8 @@
     var hp = sheet('adm-hl-h', 'Santé du service', meta((s.mail_mode === 'smtp' ? 'SMTP' : 'Boîte d’envoi locale') + SEP + (s.billing_mode === 'stripe' ? 'Stripe' : 'Paiement simulé')), '<div class="adm-health">' +
       health(pct(s.done_rate), 'des demandes envoyées sont effacées') + health(days(s.median_days_to_done), 'délai médian avant effacement') +
       health(num(b.verified) + NB + '/' + NB + num(b.active), 'contacts de courtiers vérifiés') + health(sc.last_tick_at ? esc(O.fmtTime(sc.last_tick_at)) : '—', 'dernier passage du planificateur') +
-      health(num(s.contacts_open), '<a href="' + esc(link('contacts', { status: 'open' })) + '">' + (s.contacts_open > 1 ? 'messages de contact à traiter' : 'message de contact à traiter') + '</a>') + health(num(s.newsletter), (s.newsletter > 1 ? 'inscrits' : 'inscrit') + ' à la lettre d’information') + '</div>');
+      health(num(s.contacts_open), '<a href="' + esc(link('contacts', { status: 'open' })) + '">' + (s.contacts_open > 1 ? 'messages de contact à traiter' : 'message de contact à traiter') + '</a>') + health(num(s.newsletter), (s.newsletter > 1 ? 'inscrits' : 'inscrit') + ' à la lettre d’information') +
+      (s.suspended ? health(num(s.suspended), '<a href="' + esc(link('security')) + '">' + (s.suspended > 1 ? 'comptes suspendus' : 'compte suspendu') + '</a>') : '') + (s.support_sessions ? health(num(s.support_sessions), s.support_sessions > 1 ? 'accès support en cours' : 'accès support en cours') : '') + '</div>');
     var shown = act.slice(0, 12);
     var ar = sheet('adm-ar-h', 'Vérifications en attente', meta(pl(act.length, 'demande', 'demandes')), table('Demandes en attente de vérification', [th('Courtier'), th('Abonné'), th('<span class="vh">Réponse</span>', 'act')], shown.map(function (r) {
       return '<tr>' + td('Courtier', '<strong>' + esc(r.broker) + '</strong><span class="sub"><a href="' + esc(link('requests', { q: r.token, open: r.id })) + '">OUBLI-' + esc(r.token) + '</a></span>') + td('Abonné', esc(r.email)) + td('', outcomeButtons(r.id), 'act') + '</tr>';
@@ -220,10 +223,10 @@
   function vUsers(d, q) {
     var c = d.counts || {};
     var bar = '<div class="adm-bar">' + searchForm('Rechercher un utilisateur', inp('adm-q', 'Rechercher', 'q', q.q, ' type="search" placeholder="e-mail, nom ou identifiant" autocomplete="off" maxlength="120" data-k="q"') + sel('adm-plan', 'Offre', 'plan', [['', 'Toutes']].concat(planOpts()), q.plan, ' data-autosubmit data-k="plan"')) + '<a class="btn btn--outline btn--sm" href="/api/admin/export.csv?what=users" download>Exporter (CSV)</a></div>';
-    var f = filters('Filtrer par abonnement', 'status', [['', 'Tous', c.all], ['active', 'Actifs', c.active], ['past_due', 'Paiement en attente', c.past_due], ['canceled', 'Résiliés', c.canceled], ['none', 'Sans abonnement', c.none], ['admin', 'Administrateurs', c.admin], ['deleted', 'Supprimés', c.deleted]], q.status);
+    var f = filters('Filtrer par abonnement', 'status', [['', 'Tous', c.all], ['active', 'Actifs', c.active], ['past_due', 'Paiement en attente', c.past_due], ['canceled', 'Résiliés', c.canceled], ['none', 'Sans abonnement', c.none], ['admin', 'Administrateurs', c.admin], ['suspended', 'Suspendus', c.suspended], ['deleted', 'Supprimés', c.deleted]], q.status);
     var rows = d.users.map(function (u) {
       var del = !!u.deleted_at;
-      return '<tr' + (del ? ' class="is-off"' : '') + '>' + td('Compte', '<a href="' + esc(href({ id: u.id })) + '" data-nav data-k="u-' + esc(u.id) + '"><strong>' + esc(del ? 'Compte supprimé' : u.email) + '</strong></a>' + (u.role === 'admin' ? ' <span class="badge">admin</span>' : '') + '<span class="sub">' + esc(u.name || (del ? short(u.id) : 'Profil non renseigné')) + '</span>') +
+      return '<tr' + (del ? ' class="is-off"' : '') + '>' + td('Compte', '<a href="' + esc(href({ id: u.id })) + '" data-nav data-k="u-' + esc(u.id) + '"><strong>' + esc(del ? 'Compte supprimé' : u.email) + '</strong></a>' + (u.role === 'admin' ? ' <span class="badge">admin</span>' : '') + (u.suspended ? ' ' + chip('refused', 'Suspendu') : '') + '<span class="sub">' + esc(u.name || (del ? short(u.id) : 'Profil non renseigné')) + '</span>') +
         td('Offre', u.plan ? esc(planName(u.plan)) + '<span class="sub">' + (u.billing === 'annual' ? 'annuel' : u.billing === 'monthly' ? 'mensuel' : '') + '</span>' : '—') + td('Abonnement', chip(u.subscription_status, O.subLabel(u.subscription_status))) +
         td('Mandat', esc(mandate(u))) + td('Demandes', '<span class="num">' + num(u.done_n) + NB + '/' + NB + num(u.requests_n) + '</span><span class="sub">effacées</span>' + (u.action_required_n ? chip('action_required', num(u.action_required_n) + ' à vérifier') : '')) + td('Créé le', '<span class="num">' + date(u.created_at) + '</span>') + '</tr>';
     }).join('');
@@ -232,16 +235,19 @@
   function action(title, text, button) { return '<div class="adm-action"><div><strong>' + title + '</strong><span>' + text + '</span></div>' + button + '</div>'; }
   function vUser(d) {
     var u = d.user, del = !!u.deleted_at, self = O.state.user && O.state.user.id === u.id, rs = d.requests_by_status || {};
-    var head = '<div class="adm-main-title"><div><a class="adm-back" href="' + esc(link('users')) + '" data-nav data-k="back"><span aria-hidden="true">←</span> Tous les utilisateurs</a><h2>' + esc(del ? 'Compte supprimé' : u.email) + '</h2></div><div class="btn-row">' + chip(u.subscription_status, O.subLabel(u.subscription_status)) + (u.role === 'admin' ? '<span class="badge">administrateur</span>' : '') + '</div></div>';
+    var head = '<div class="adm-main-title"><div><a class="adm-back" href="' + esc(link('users')) + '" data-nav data-k="back"><span aria-hidden="true">←</span> Tous les utilisateurs</a><h2>' + esc(del ? 'Compte supprimé' : u.email) + '</h2></div><div class="btn-row">' + (u.suspended ? chip('refused', 'Suspendu') : '') + chip(u.subscription_status, O.subLabel(u.subscription_status)) + (u.role === 'admin' ? '<span class="badge">administrateur</span>' : '') + '</div></div>';
+    var protectedAcc = del || self || u.role === 'admin', uid = esc(u.id);
+    var susp = u.suspended ? '<div class="notice adm-banner" role="status"><p><strong>Compte suspendu</strong> depuis le ' + date(u.suspended_at) + (u.suspended_until ? ', jusqu’au ' + date(u.suspended_until) : ', sans date de fin') + '.' + (u.suspended_reason ? ' Motif' + NB + ': ' + esc(fr(u.suspended_reason)) + '.' : '') + ' La connexion est refusée et aucune demande ne part.</p><button class="btn btn--sm" type="button" data-unsuspend="' + uid + '" data-k="unsuspend">Réactiver le compte</button></div>' : '';
     var kv = '<dl class="kv"><dt>Identifiant</dt><dd class="mono mono--plain">' + esc(u.id) + '</dd><dt>Offre</dt><dd>' + (u.plan ? esc(planName(u.plan)) + SEP + (u.billing === 'annual' ? 'annuel' : 'mensuel') : '—') + '</dd><dt>Paiement</dt><dd>' + esc(u.billing_mode === 'stripe' ? 'Stripe' : u.billing_mode === 'simulated' ? 'Simulé' : u.billing_mode === 'manual' ? 'Activé par l’équipe' : '—') + (u.stripe_customer ? '<span class="adm-sub">client ' + esc(u.stripe_customer) + (u.stripe_subscription ? SEP + 'abonnement ' + esc(u.stripe_subscription) : '') + '</span>' : '') + '</dd>' +
       (u.subscription_ends_at ? '<dt>Fin d’accès</dt><dd>' + date(u.subscription_ends_at) + '</dd>' : '') + '<dt>Mandat</dt><dd>' + esc(mandate(u)) + (u.mandate_version ? '<span class="adm-sub">version ' + esc(u.mandate_version) + (u.mandate_name ? SEP + 'signé «' + NB + esc(u.mandate_name) + NB + '»' : '') + '</span>' : '') + '</dd>' +
       '<dt>Créé le</dt><dd>' + stamp(u.created_at) + '</dd>' + (del ? '<dt>Supprimé le</dt><dd>' + stamp(u.deleted_at) + '</dd>' : '') + '<dt>Sessions</dt><dd>' + pl(d.sessions_n, 'session active', 'sessions actives') + '</dd><dt>Courriers</dt><dd><a href="' + esc(link('mails', { user: u.id })) + '">' + pl(d.mails_n, 'courrier', 'courriers') + '</a></dd></dl>';
     var acts = del ? '<p class="empty empty--sm">Compte supprimé' + NB + ': aucune action possible.</p>' : '<div class="adm-actions">' +
       action('Lancer les demandes', 'Crée les demandes manquantes pour les profils complets (mandat signé et abonnement actif requis).', '<button class="btn btn--outline btn--sm" type="button" data-user-act="launch" data-user="' + esc(u.id) + '" data-k="act-launch">Lancer</button>') +
+      action('Exporter ses données', 'Export RGPD complet (JSON) : profils, demandes, journal, courriers. Journalisé.', '<a class="btn btn--outline btn--sm" href="/api/admin/users/' + uid + '/export" download>Exporter</a>') +
       action('Déconnecter tous les appareils', pl(d.sessions_n, 'session active', 'sessions actives') + (self ? ' (la vôtre est conservée).' : '.'), '<button class="btn btn--outline btn--sm" type="button" data-user-act="logout" data-user="' + esc(u.id) + '" data-k="act-logout">Déconnecter</button>') +
       (self ? '' : action(u.role === 'admin' ? 'Retirer le rôle administrateur' : 'Nommer administrateur', u.role === 'admin' ? 'Le compte perd l’accès à cette administration.' : 'Accès complet à l’administration, journalisé.', '<button class="btn btn--outline btn--sm" type="button" data-user-act="role" data-role="' + (u.role === 'admin' ? 'user' : 'admin') + '" data-user="' + esc(u.id) + '" data-k="act-role">' + (u.role === 'admin' ? 'Retirer' : 'Nommer') + '</button>') +
-        action('Supprimer le compte', 'Résilie l’abonnement, efface profils, demandes, courriers et journal. Irréversible.', '<button class="btn btn--danger btn--sm" type="button" data-user-act="delete" data-user="' + esc(u.id) + '" data-k="act-delete">Supprimer</button>')) + '</div>' +
-      '<form class="adm-subform" id="adm-sub-form" data-user="' + esc(u.id) + '" novalidate><h3>Modifier l’abonnement</h3><div class="fields">' +
+        action('Supprimer le compte', 'Résilie l’abonnement, efface profils, demandes, courriers et journal. Irréversible.', '<button class="btn btn--danger btn--sm" type="button" data-user-act="delete" data-user="' + esc(u.id) + '" data-k="act-delete">Supprimer</button>')) + '</div>';
+    var subForm = del ? '' : '<form class="adm-subform adm-subform--plain" id="adm-sub-form" data-user="' + esc(u.id) + '" novalidate><div class="fields">' +
       sel('sub-status', 'Statut', 'status', SUBS, u.subscription_status) + sel('sub-plan', 'Offre', 'plan', [['', '—']].concat(planOpts()), u.plan) + sel('sub-billing', 'Périodicité', 'billing', [['monthly', 'Mensuelle'], ['annual', 'Annuelle']], u.billing || 'monthly') +
       inp('sub-ends', 'Fin d’accès', 'ends_at', u.subscription_ends_at ? u.subscription_ends_at.slice(0, 10) : '', ' type="date"', 'Pour un abonnement résilié.') + inp('sub-note', 'Note interne', 'note', '', ' maxlength="200" autocomplete="off"', 'Visible dans le journal d’audit.') + '</div>' + msg() + '<div class="btn-row"><button class="btn btn--outline btn--sm" type="submit">Enregistrer l’abonnement</button></div></form>';
     var profiles = d.profiles.map(function (p) {
@@ -252,10 +258,47 @@
       return '<tr>' + td('Référence', '<a href="' + esc(link('requests', { q: r.token, open: r.id })) + '" class="mono mono--plain">' + esc(r.ref) + '</a>') + td('Courtier', esc(r.broker)) + td('Profil', esc(r.profile)) + td('Statut', chip(r.status)) + td('Envoyée', '<span class="num">' + date(r.sent_at) + '</span>') + '</tr>';
     }).join(''), 'Aucune demande.');
     var total = STATUSES.reduce(function (a, s) { return a + (rs[s] || 0); }, 0);
-    return head + '<div class="adm-grid">' + sheet('adm-u-acc', 'Compte', '', '<div class="sheet__body">' + kv + '</div>') + sheet('adm-u-act', 'Actions', '', '<div class="sheet__body">' + acts + '</div>') + '</div>' +
+    var access = protectedAcc ? '' : '<form class="sheet" id="adm-imp-form" data-user="' + uid + '" aria-labelledby="adm-imp-h" novalidate><div class="sheet__head"><h2 id="adm-imp-h">Accéder au compte</h2>' + meta('Lecture seule' + SEP + '30' + NB + 'min') + '</div><div class="sheet__body"><p class="hint adm-hint">Vous voyez l’application exactement comme l’abonné, sans pouvoir rien modifier. L’accès est journalisé et apparaît dans le journal de l’abonné.</p>' +
+      inp('imp-reason', 'Motif', 'reason', '', ' required maxlength="200" autocomplete="off" placeholder="ex. ticket 1234, appel du 10 octobre"') + msg() + '</div><div class="sheet__foot"><button class="btn btn--outline" type="submit">Ouvrir en lecture seule</button><span class="mono">Visible par l’abonné</span></div></form>';
+    var suspend = protectedAcc || u.suspended ? '' : '<form class="sheet" id="adm-sus-form" data-user="' + uid + '" aria-labelledby="adm-sus-h" novalidate><div class="sheet__head"><h2 id="adm-sus-h">Suspendre le compte</h2>' + meta('Réversible') + '</div><div class="sheet__body"><p class="hint adm-hint">Ferme toutes les sessions, refuse la connexion et met les envois en pause. Les données sont conservées.</p><div class="fields">' +
+      inp('sus-reason', 'Motif (interne)', 'reason', '', ' required maxlength="300" autocomplete="off"') + inp('sus-until', 'Jusqu’au (facultatif)', 'until', '', ' type="date"', 'Sans date, jusqu’à réactivation.') + '</div><label class="check adm-check"><input type="checkbox" name="block_email"> <span>Bloquer aussi la réinscription avec cette adresse</span></label>' + msg() +
+      '</div><div class="sheet__foot"><button class="btn btn--danger" type="submit">Suspendre</button><span class="mono">Journalisé</span></div></form>';
+    var write = del ? '' : '<div class="adm-grid"><form class="sheet" id="adm-msg-form" data-user="' + uid + '" aria-labelledby="adm-msg-h" novalidate><div class="sheet__head"><h2 id="adm-msg-h">Écrire à l’abonné</h2>' + meta('Envoyé à ' + esc(u.email)) + '</div><div class="sheet__body"><div class="fields">' +
+      inp('msg-subject', 'Objet', 'subject', '', ' required maxlength="160" autocomplete="off"') + '<div class="f f--full"><label for="msg-body">Message</label><textarea id="msg-body" name="body" class="adm-textarea" rows="5" maxlength="5000" required></textarea></div></div>' + msg() + '</div><div class="sheet__foot"><button class="btn btn--outline" type="submit">Envoyer</button><span class="mono">Signé «' + NB + 'L’équipe Oubli' + NB + '»</span></div></form>' +
+      '<form class="sheet" id="adm-mail-form" data-user="' + uid + '" aria-labelledby="adm-mail-h" novalidate><div class="sheet__head"><h2 id="adm-mail-h">Adresse de connexion</h2></div><div class="sheet__body"><div class="fields">' + inp('mail-new', 'Nouvelle adresse', 'email', '', ' type="email" required maxlength="160" autocomplete="off" spellcheck="false"', 'L’ancienne adresse est prévenue par e-mail.') + '</div>' + msg() + '</div><div class="sheet__foot"><button class="btn btn--outline" type="submit">Remplacer l’adresse</button><span class="mono">Journalisé</span></div></form></div>';
+    var sessions = sheet('adm-u-se', 'Sessions', meta(pl((d.sessions || []).length, 'session ouverte', 'sessions ouvertes')), sessionsTable(d.sessions || [], false));
+    var notes = sheet('adm-u-no', 'Notes internes', meta('Visibles par les administrateurs seulement'), '<div class="sheet__body">' + ((d.notes || []).length ? '<ol class="adm-notes">' + d.notes.map(function (n) { return '<li><p>' + esc(n.body) + '</p><span class="adm-sub">' + esc(n.admin_email || '—') + SEP + esc(stamp(n.created_at)) + '</span><button class="btn btn--ghost" type="button" data-note-del="' + esc(n.id) + '">Supprimer<span class="vh"> la note du ' + esc(stamp(n.created_at)) + '</span></button></li>'; }).join('') + '</ol>' : '<p class="empty empty--sm">Aucune note.</p>') +
+      '<form id="adm-note-form" class="adm-noteform" data-user="' + uid + '" novalidate><div class="f f--full"><label for="note-body">Nouvelle note</label><textarea id="note-body" name="body" class="adm-textarea" rows="3" maxlength="2000"></textarea></div>' + msg() + '<button class="btn btn--outline btn--sm" type="submit" data-k="note-add">Ajouter la note</button></form></div>');
+    return head + susp + '<div class="adm-grid"><div class="adm-col">' + sheet('adm-u-acc', 'Compte', '', '<div class="sheet__body">' + kv + '</div>') + (subForm ? sheet('adm-u-sub', 'Modifier l’abonnement', meta('Journalisé'), '<div class="sheet__body">' + subForm + '</div>') : '') + '</div>' + sheet('adm-u-act', 'Actions', '', '<div class="sheet__body">' + acts + '</div>') + '</div>' +
+      (access || suspend ? '<div class="adm-grid">' + access + suspend + '</div>' : '') + write + sessions + notes +
       sheet('adm-u-pr', 'Personnes protégées', meta(d.profiles.length + NB + '/' + NB + (u.plan === 'famille' ? 5 : 1)), profiles || '<p class="empty empty--sm">Aucun profil.</p>') +
       sheet('adm-u-rq', 'Demandes', '<a class="btn btn--outline btn--xs" href="' + esc(link('requests', { user: u.id })) + '">Toutes (' + num(total) + ')</a>', reqs) +
       '<div class="adm-grid">' + sheet('adm-u-ev', 'Journal de l’abonné', meta('30 derniers événements'), '<div class="sheet__body sheet__body--tight">' + timeline(d.events) + '</div>') + sheet('adm-u-au', 'Actions des administrateurs', meta('Journal d’audit'), '<div class="sheet__body sheet__body--tight">' + auditList(d.audit) + '</div>') + '</div>';
+  }
+
+  function sessionsTable(list, withUser) {
+    return table('Sessions ouvertes', (withUser ? [th('Compte')] : []).concat([th('Appareil'), th('IP'), th('Dernière activité'), th('Statut'), th('<span class="vh">Action</span>', 'act')]), list.map(function (x) {
+      return '<tr>' + (withUser ? td('Compte', '<a href="' + esc(link('users', { id: x.user_id })) + '"><span class="ell">' + esc(x.email) + '</span></a>') : '') + td('Appareil', esc(x.device) + '<span class="sub" title="' + esc(x.user_agent) + '">ouverte le ' + esc(stamp(x.created_at)) + '</span>') + td('IP', '<span class="mono mono--plain">' + esc(x.ip || '—') + '</span>') +
+        td('Dernière activité', '<span class="num">' + esc(stamp(x.last_seen_at)) + '</span>') + td('Statut', x.support_by ? chip('action_required', 'Accès support') + '<span class="sub">par ' + esc(x.support_by) + '</span>' : x.current ? chip('active', 'Votre session') : chip('sent', 'Ouverte')) +
+        td('', x.current ? '' : '<button class="btn btn--outline btn--xs" type="button" data-session="' + esc(x.handle) + '" data-user="' + esc(x.user_id) + '">Fermer<span class="vh"> la session ' + esc(x.device) + '</span></button>', 'act') + '</tr>';
+    }).join(''), 'Aucune session ouverte.');
+  }
+  function vSecurity(d) {
+    var sus = sheet('adm-sc1', 'Comptes suspendus', meta(pl(d.suspended.length, 'compte', 'comptes')), table('Comptes suspendus', [th('Compte'), th('Motif'), th('Depuis'), th('Jusqu’au'), th('<span class="vh">Action</span>', 'act')], d.suspended.map(function (u) {
+      return '<tr>' + td('Compte', '<a href="' + esc(link('users', { id: u.id })) + '"><strong>' + esc(u.email) + '</strong></a>') + td('Motif', '<span class="adm-details">' + esc(fr(u.suspended_reason || '—')) + '</span>') + td('Depuis', '<span class="num">' + date(u.suspended_at) + '</span>') + td('Jusqu’au', '<span class="num">' + (u.suspended_until ? date(u.suspended_until) : 'sans date') + '</span>') +
+        td('', '<button class="btn btn--outline btn--xs" type="button" data-unsuspend="' + esc(u.id) + '">Réactiver<span class="vh"> ' + esc(u.email) + '</span></button>', 'act') + '</tr>';
+    }).join(''), 'Aucun compte suspendu.'));
+    var block = '<section class="sheet" aria-labelledby="adm-sc2"><div class="sheet__head"><h2 id="adm-sc2">Liste de blocage</h2>' + meta('Refusées à l’inscription') + '</div><div class="sheet__body sheet__body--tight"><form id="adm-block-form" class="adm-search adm-blockform" novalidate>' +
+      inp('block-pattern', 'Adresse ou domaine', 'pattern', '', ' required maxlength="160" autocomplete="off" spellcheck="false" placeholder="nom@exemple.fr ou @exemple.fr"') + inp('block-reason', 'Motif', 'reason', '', ' maxlength="200" autocomplete="off"') + '<button class="btn btn--outline btn--sm" type="submit" data-k="block-add">Bloquer</button>' + msg() + '</form></div>' +
+      table('Adresses et domaines bloqués', [th('Adresse ou domaine'), th('Motif'), th('Ajouté par'), th('Le'), th('<span class="vh">Action</span>', 'act')], d.blocklist.map(function (b) {
+        return '<tr>' + td('Bloqué', '<span class="mono mono--plain">' + esc(b.pattern) + '</span>') + td('Motif', '<span class="adm-details">' + esc(fr(b.reason || '—')) + '</span>') + td('Ajouté par', esc(b.created_by_email || '—')) + td('Le', '<span class="num">' + date(b.created_at) + '</span>') +
+          td('', '<button class="btn btn--outline btn--xs" type="button" data-block-remove="' + esc(b.id) + '">Retirer<span class="vh"> ' + esc(b.pattern) + '</span></button>', 'act') + '</tr>';
+      }).join(''), 'Aucune adresse bloquée.') + '</section>';
+    var imp = sheet('adm-sc3', 'Accès support récents', meta('20 derniers'), table('Accès support récents', [th('Date'), th('Administrateur'), th('Compte'), th('Motif')], d.impersonations.map(function (a) {
+      return '<tr>' + td('Date', '<span class="num">' + esc(stamp(a.created_at)) + '</span>') + td('Administrateur', esc(a.admin_email || '—')) + td('Compte', a.user_email ? '<a href="' + esc(link('users', { id: a.target })) + '">' + esc(a.user_email) + '</a>' : '—') + td('Motif', '<span class="adm-details">' + esc(fr((a.details && a.details.reason) || '—')) + '</span>') + '</tr>';
+    }).join(''), 'Aucun accès support.'));
+    var ses = sheet('adm-sc4', 'Sessions actives', meta(pl(d.sessions_total, 'session', 'sessions') + ', 50 plus récentes'), sessionsTable(d.sessions, true));
+    return sus + block + imp + ses;
   }
 
   /* ---------- Demandes ---------- */
@@ -359,11 +402,11 @@
     o.contact_verified = form.querySelector('[name="contact_verified"]').checked; o.active = form.querySelector('[name="active"]').checked;
     return o;
   }
-  var FIELD_HINTS = [[/slug/i, 'slug'], [/domaine/i, 'domain'], [/nom/i, 'name'], [/catégorie/i, 'category'], [/contact/i, 'contact_email'], [/revérification/i, 'recheck_days'], [/sensibilité/i, 'sensitivity'], [/juridiction/i, 'jurisdiction'], [/base légale/i, 'legal_basis']];
+  var FIELD_HINTS = [[/motif/i, 'reason'], [/date/i, 'until'], [/objet/i, 'subject'], [/message|note/i, 'body'], [/annonce/i, 'text'], [/domaine précédé|liste de blocage|adresse|compte existe/i, 'pattern'], [/adresse|compte existe/i, 'email'], [/slug/i, 'slug'], [/domaine/i, 'domain'], [/nom/i, 'name'], [/catégorie/i, 'category'], [/contact/i, 'contact_email'], [/revérification/i, 'recheck_days'], [/sensibilité/i, 'sensitivity'], [/juridiction/i, 'jurisdiction'], [/base légale/i, 'legal_basis']];
   function formError(form, text, field) {
     var m = $('.msg', form); if (m) { m.textContent = fr(text); m.classList.add('is-error'); }
     $$('[aria-invalid="true"]', form).forEach(function (i) { i.removeAttribute('aria-invalid'); });
-    if (!field) FIELD_HINTS.some(function (h) { if (h[0].test(text)) { field = form.querySelector('[name="' + h[1] + '"]'); return true; } return false; });
+    if (!field) FIELD_HINTS.some(function (h) { if (h[0].test(text)) field = form.querySelector('[name="' + h[1] + '"]'); return !!field; });
     if (field) { field.setAttribute('aria-invalid', 'true'); field.focus(); }
   }
   function formOk(form) { var m = $('.msg', form); if (m) { m.textContent = ''; m.classList.remove('is-error'); } $$('[aria-invalid="true"]', form).forEach(function (i) { i.removeAttribute('aria-invalid'); }); }
@@ -442,7 +485,11 @@
     var sched = sheet('adm-sy3', 'Planificateur', '<button class="btn btn--outline btn--xs" type="button" data-tick>Exécuter maintenant</button>', kv([['Intervalle', Math.round((sc.interval_ms || 0) / 1000) + NB + 's'], ['Dernier passage', esc(stamp(sc.last_tick_at))], ['Dernier passage manuel', esc(stamp(sc.last_manual_tick_at))]]));
     var vol = sheet('adm-sy4', 'Volumes', '', kv([['Utilisateurs', num(c.users) + (c.users_deleted ? '<span class="adm-sub">' + num(c.users_deleted) + ' supprimés</span>' : '')], ['Administrateurs', num(c.admins)], ['Profils', num(c.profiles)], ['Demandes', num(c.requests)], ['Événements', num(c.events)], ['Courriers', num(c.mails)], ['Sessions actives', num(c.sessions)], ['Courtiers', num(c.brokers_active) + NB + '/' + NB + num(c.brokers)], ['Lettre d’information', num(c.newsletter)], ['Messages', num(c.contacts) + (c.contacts_open ? '<span class="adm-sub">' + num(c.contacts_open) + ' à traiter</span>' : '')], ['Entrées d’audit', num(c.audit)]]));
     var envs = sheet('adm-sy5', 'Variables d’environnement', meta('Présence seulement, jamais la valeur'), '<div class="sheet__body"><ul class="adm-env" role="list">' + Object.keys(env).map(function (k) { return '<li>' + (env[k] ? chip('active', 'Définie') : chip('none', 'Absente')) + '<code>' + esc(k) + '</code></li>'; }).join('') + '</ul></div>');
-    return warn + '<div class="adm-grid">' + server + modes + '</div><div class="adm-grid">' + sched + vol + '</div>' + envs;
+    var a = s.announcement;
+    var ann = '<form class="sheet" id="adm-ann-form" aria-labelledby="adm-sy0" novalidate><div class="sheet__head"><h2 id="adm-sy0">Annonce</h2>' + (a ? chip('active', 'Publiée') : chip('none', 'Aucune')) + '</div><div class="sheet__body"><p class="hint adm-hint">Bandeau affiché en haut de l’application, pour tous les visiteurs (maintenance, incident, nouveauté).</p><div class="fields">' +
+      '<div class="f f--full"><label for="ann-text">Texte</label><textarea id="ann-text" name="text" class="adm-textarea" rows="2" maxlength="280">' + esc(a ? a.text : '') + '</textarea></div>' + sel('ann-level', 'Niveau', 'level', [['info', 'Information'], ['warn', 'Attention']], a ? a.level : 'info') + '</div>' + msg() +
+      '</div><div class="sheet__foot"><div class="btn-row"><button class="btn btn--outline" type="submit">' + (a ? 'Mettre à jour' : 'Publier') + '</button>' + (a ? '<button class="btn btn--danger btn--sm" type="button" data-ann-remove>Retirer l’annonce</button>' : '') + '</div><span class="mono">280' + NB + 'caractères au plus</span></div></form>';
+    return warn + ann + '<div class="adm-grid">' + server + modes + '</div><div class="adm-grid">' + sched + vol + '</div>' + envs;
   }
 
   /* ---------- Journal d'audit ---------- */
@@ -460,6 +507,7 @@
     mails: function (q) { return api('/admin/mails' + qs({ q: q.q, mode: q.mode, user: q.user, request: q.request, page: q.page })).then(function (d) { return vMails(d, q); }); },
     inbound: function () { return Promise.all([api('/admin/system'), api('/admin/audit' + qs({ action: 'request.', per: 12 }))]).then(function (r) { return vInbound(r[0], r[1]); }); },
     contacts: function (q) { return Promise.all([api('/admin/contacts' + qs({ status: q.status, page: q.page })), api('/admin/newsletter' + qs({ page: q.npage }))]).then(function (r) { return vContacts(r[0], r[1], q); }); },
+    security: function () { return api('/admin/security').then(vSecurity); },
     system: function () { return api('/admin/system').then(vSystem); },
     audit: function (q) { return api('/admin/audit' + qs({ action: q.action, target: q.target, page: q.page })).then(function (d) { return vAudit(d, q); }); },
   };
@@ -483,7 +531,7 @@
   function reload(changes, focusKey) { history.replaceState(null, '', href(changes || {})); return loadMain(O.params().q, focusKey); }
   function setBadges(s) {
     var rs = s.requests_by_status || {}, b = s.brokers || {};
-    var v = { users: s.users, requests: (rs.action_required || 0) + (rs.error || 0), brokers: (b.active || 0) - (b.verified || 0), contacts: s.contacts_open };
+    var v = { users: s.users, requests: (rs.action_required || 0) + (rs.error || 0), brokers: (b.active || 0) - (b.verified || 0), contacts: s.contacts_open, security: s.suspended };
     var hot = { requests: v.requests > 0, brokers: s.mail_mode === 'smtp' && v.brokers > 0, contacts: v.contacts > 0 };
     Object.keys(v).forEach(function (k) { var el = $('[data-badge="' + k + '"]'); if (!el) return; el.innerHTML = '<span class="vh">,' + NB + '</span>' + num(v[k]) + '<span class="vh">' + BADGE[k] + '</span>'; el.hidden = !v[k]; el.classList.toggle('is-hot', !!hot[k]); });
   }
@@ -500,6 +548,12 @@
   /* ---------- interactions (délégation, actives seulement sur #admin) ---------- */
   function onAdmin() { return O.params().route === 'admin' && !!$('#adm-main'); }
   function done(text, focusKey, changes) { toast(text); refreshBadges(); return reload(changes || {}, focusKey); }
+  function fd(f) { var o = {}; new FormData(f).forEach(function (v, k) { o[k] = typeof v === 'string' ? v.trim() : v; }); return o; }
+  // Envoi d'un formulaire de la fiche compte : bouton verrouillé, erreur affichée et liée au champ, rechargement sinon.
+  function send(f, path, body, okText, focusKey, opts) {
+    var b = $('button[type="submit"]', f); lock(b, true); formOk(f);
+    return api(path, merge({ body: body }, opts)).then(function (r) { done(typeof okText === 'function' ? okText(r) : okText, focusKey); return r; }).catch(function (err) { formError(f, err.message); lock(b, false); });
+  }
   function tick(btn) { lock(btn, true); api('/admin/tick', { method: 'POST' }).then(function () { done('Planificateur exécuté.'); }).catch(fail).finally(function () { lock(btn, false); }); }
 
   document.addEventListener('click', function (e) {
@@ -559,6 +613,17 @@
       (on ? api('/admin/brokers/' + brid, { method: 'PUT', body: { active: true } }) : api('/admin/brokers/' + brid, { method: 'DELETE', body: {} })).then(function () { done(on ? 'Courtier réactivé.' : 'Courtier désactivé' + NB + ': plus aucune nouvelle demande ne lui sera adressée.', 'bact-' + brid); }).catch(function (err) { fail(err); lock(t, false); });
     }
     else if (t.hasAttribute('data-mail-open')) openMail(t.getAttribute('data-mail-open'), t);
+    else if (t.hasAttribute('data-unsuspend')) { lock(t, true); api('/admin/users/' + t.getAttribute('data-unsuspend') + '/unsuspend', { body: {} }).then(function () { done('Compte réactivé' + NB + ': connexion et envois rétablis.'); }).catch(function (err) { fail(err); lock(t, false); }); }
+    else if (t.hasAttribute('data-session')) {
+      if (!arm(t, 'Confirmer')) return;
+      lock(t, true); api('/admin/users/' + t.getAttribute('data-user') + '/sessions/' + encodeURIComponent(t.getAttribute('data-session')), { method: 'DELETE', body: {} }).then(function () { done('Session fermée.'); }).catch(function (err) { fail(err); lock(t, false); });
+    }
+    else if (t.hasAttribute('data-note-del')) { if (!arm(t, 'Confirmer')) return; lock(t, true); api('/admin/notes/' + t.getAttribute('data-note-del'), { method: 'DELETE', body: {} }).then(function () { done('Note supprimée.', 'note-add'); }).catch(function (err) { fail(err); lock(t, false); }); }
+    else if (t.hasAttribute('data-block-remove')) { if (!arm(t, 'Confirmer')) return; lock(t, true); api('/admin/blocklist/' + t.getAttribute('data-block-remove'), { method: 'DELETE', body: {} }).then(function () { done('Blocage retiré.', 'block-add'); }).catch(function (err) { fail(err); lock(t, false); }); }
+    else if (t.hasAttribute('data-ann-remove')) {
+      if (!arm(t, 'Confirmer le retrait')) return;
+      lock(t, true); api('/admin/announcement', { method: 'DELETE', body: {} }).then(function () { O.state.config.announcement = null; O.chrome(); done('Annonce retirée.'); }).catch(function (err) { fail(err); lock(t, false); });
+    }
     else if (t.hasAttribute('data-contact')) {
       var ctid = t.getAttribute('data-contact'), handled = t.getAttribute('data-handled') === 'true'; lock(t, true);
       api('/admin/contacts/' + ctid + '/handled', { body: { handled: handled } }).then(function () { done(handled ? 'Message marqué traité.' : 'Message rouvert.', 'c-' + ctid); }).catch(function (err) { fail(err); lock(t, false); });
@@ -587,6 +652,33 @@
       if (missing) { formError(f, 'Ce champ est obligatoire.', $('[name="' + missing + '"]', f)); return; }
       lock(b2, true); formOk(f);
       api(isNew ? '/admin/brokers' : '/admin/brokers/' + id, { method: isNew ? 'POST' : 'PUT', body: bd }).then(function (r) { done(isNew ? 'Courtier créé' + NB + ': ' + r.broker.name + '.' : 'Courtier enregistré.', 'bedit-' + r.broker.id, isNew ? { q: r.broker.slug, f: null, cat: null } : {}); }).catch(function (err) { formError(f, err.message); lock(b2, false); });
+    } else if (f.id === 'adm-imp-form') {
+      var ir = fd(f); if (ir.reason.length < 3) { formError(f, 'Indiquez le motif de l’accès.', $('[name="reason"]', f)); return; }
+      var ib2 = $('button[type="submit"]', f); lock(ib2, true); formOk(f);
+      api('/admin/users/' + f.getAttribute('data-user') + '/impersonate', { body: ir }).then(function () { location.hash = 'dashboard'; location.reload(); }).catch(function (err) { formError(f, err.message); lock(ib2, false); });
+    } else if (f.id === 'adm-sus-form') {
+      var sr = fd(f); sr.block_email = $('[name="block_email"]', f).checked;
+      if (sr.reason.length < 3) { formError(f, 'Indiquez le motif de la suspension.', $('[name="reason"]', f)); return; }
+      if (!arm($('button[type="submit"]', f), 'Confirmer la suspension')) return;
+      send(f, '/admin/users/' + f.getAttribute('data-user') + '/suspend', sr, function (r) { return 'Compte suspendu' + NB + ': ' + pl(r.sessions, 'session fermée', 'sessions fermées') + '.'; }, 'unsuspend');
+    } else if (f.id === 'adm-msg-form') {
+      var mr = fd(f); if (mr.subject.length < 3) { formError(f, 'Objet trop court.'); return; } if (mr.body.length < 5) { formError(f, 'Message trop court.'); return; }
+      send(f, '/admin/users/' + f.getAttribute('data-user') + '/message', mr, 'Message envoyé.');
+    } else if (f.id === 'adm-mail-form') {
+      var er = fd(f); if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(er.email)) { formError(f, 'Adresse e-mail invalide.', $('[name="email"]', f)); return; }
+      if (!arm($('button[type="submit"]', f), 'Confirmer le remplacement')) return;
+      send(f, '/admin/users/' + f.getAttribute('data-user') + '/email', er, 'Adresse remplacée' + NB + ': l’ancienne adresse a été prévenue.');
+    } else if (f.id === 'adm-note-form') {
+      var nr = fd(f); if (!nr.body) { formError(f, 'La note est vide.'); return; }
+      send(f, '/admin/users/' + f.getAttribute('data-user') + '/notes', nr, 'Note ajoutée.', 'note-add');
+    } else if (f.id === 'adm-block-form') {
+      var br = fd(f); br.pattern = br.pattern.toLowerCase();
+      if (!/^([^\s@]+@[^\s@]+\.[^\s@]{2,}|@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,})$/.test(br.pattern)) { formError(f, 'Saisissez une adresse (nom@domaine.fr) ou un domaine précédé de @ (@domaine.fr).', $('[name="pattern"]', f)); return; }
+      send(f, '/admin/blocklist', br, 'Ajouté à la liste de blocage.', 'block-add');
+    } else if (f.id === 'adm-ann-form') {
+      var an = fd(f); if (an.text.length < 3) { formError(f, 'Annonce trop courte.', $('[name="text"]', f)); return; }
+      var ab = $('button[type="submit"]', f); lock(ab, true); formOk(f);
+      api('/admin/announcement', { method: 'PUT', body: an }).then(function (r) { O.state.config.announcement = r.announcement; O.chrome(); done('Annonce publiée.'); }).catch(function (err) { formError(f, err.message); lock(ab, false); });
     } else if (f.id === 'inbound-form') {
       var ib = {}; new FormData(f).forEach(function (v, k) { ib[k] = String(v); }); var ibtn = $('button[type="submit"]', f), res = $('#inbound-result');
       if (!ib.text.trim() && !ib.subject.trim() && !ib.token.trim()) { formError(f, 'Collez au moins l’objet ou le texte de la réponse.', $('#ib-text', f)); return; }

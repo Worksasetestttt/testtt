@@ -5,9 +5,9 @@
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
   var view = $('#view'), nav = $('#nav'), topUser = $('#top-user'), toastEl = $('#toast'), announceEl = $('#announce');
-  var state = { user: null, profiles: [], config: null, dash: null, profileId: null, billing: 'annual', filter: 'all', search: '', sort: 'status', page: 1, journalAll: false };
+  var state = { user: null, impersonation: null, profiles: [], config: null, dash: null, profileId: null, billing: 'annual', filter: 'all', search: '', sort: 'status', page: 1, journalAll: false };
   var PAGE = 25, JOURNAL = 8;
-  var pollTimer = null, sigs = {}, searchTimer = null, resizeTimer = null;
+  var pollTimer = null, sigs = {}, searchTimer = null, resizeTimer = null, barKey = null, noticeKey = null;
   var MARK = '<svg viewBox="0 0 32 32" width="44" height="44" fill="none" aria-hidden="true"><circle cx="16" cy="16" r="10.5" stroke="currentColor" stroke-width="3.2"/><path d="M3.5 17.8 L28.5 14.2" stroke="#C8471F" stroke-width="3.2" stroke-linecap="round"/></svg>';
   var COUNTRIES = { FR: 'France', BE: 'Belgique', CH: 'Suisse', LU: 'Luxembourg', DE: 'Allemagne', ES: 'Espagne', IT: 'Italie', NL: 'Pays-Bas', PT: 'Portugal', GB: 'Royaume-Uni', US: 'États-Unis', CA: 'Canada' };
   var SENS = { 3: 'Sensibilité élevée', 2: 'Sensibilité moyenne', 1: 'Sensibilité faible' };
@@ -66,17 +66,34 @@
 
   /* ---------- session ---------- */
   function loadMe() {
-    return api('/me').then(function (d) { state.user = d.user || null; state.profiles = d.profiles || []; return !!d.user; }).catch(function () { state.user = null; state.profiles = []; return false; });
+    return api('/me').then(function (d) { state.user = d.user || null; state.profiles = d.profiles || []; state.impersonation = d.impersonation || null; return !!d.user; }).catch(function () { state.user = null; state.profiles = []; state.impersonation = null; return false; });
   }
-  function resetSession() { state.user = null; state.profiles = []; state.dash = null; state.profileId = null; sigs = {}; }
+  function resetSession() { state.user = null; state.impersonation = null; state.profiles = []; state.dash = null; state.profileId = null; sigs = {}; }
   function setChrome() {
     var on = !!state.user;
     nav.hidden = !on; topUser.hidden = !on;
     if (on) { $('#top-email').textContent = state.user.email; $('#nav-admin').hidden = state.user.role !== 'admin'; }
     var route = params().route;
     $$('a', nav).forEach(function (a) { var act = a.getAttribute('data-route') === route; a.classList.toggle('is-active', act); if (act) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
+    setBars();
   }
-  $('#logout').addEventListener('click', function () { api('/auth/logout', { method: 'POST' }).then(function () { resetSession(); toast('À bientôt.'); go('login'); }); });
+  /* Bandeaux : accès support (un administrateur consulte ce compte, en lecture seule) et annonce de l'équipe.
+     Reconstruits seulement quand leur contenu change, pour ne pas voler le focus. */
+  function setBars() {
+    var imp = state.user && state.impersonation, sb = $('#support-bar'), key = imp ? state.user.email + '|' + imp.expires_at : '';
+    document.body.classList.toggle('is-support', !!imp);
+    if (key !== barKey) {
+      barKey = key; sb.hidden = !imp;
+      sb.innerHTML = imp ? '<div class="support-bar__inner"><p><strong>Accès support</strong>' + SEP + 'vous consultez le compte de ' + esc(state.user.email) + ' en lecture seule, jusqu’à ' + new Date(imp.expires_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) + '.</p><button class="btn btn--sm" type="button" id="support-stop">Revenir à l’administration</button></div>' : '';
+    }
+    var a = state.config && state.config.announcement, sn = $('#site-notice'), nk = a ? a.level + '|' + a.text : '';
+    if (nk !== noticeKey) {
+      noticeKey = nk; sn.hidden = !a; sn.classList.toggle('site-notice--warn', !!(a && a.level === 'warn'));
+      sn.innerHTML = a ? '<p class="site-notice__inner">' + esc(typo(a.text)) + '</p>' : '';
+    }
+  }
+  function backToAdmin(r) { location.hash = r && r.admin ? 'admin' : 'login'; location.reload(); }
+  $('#logout').addEventListener('click', function () { api('/auth/logout', { method: 'POST' }).then(function (r) { if (r && 'admin' in r) return backToAdmin(r); resetSession(); toast('À bientôt.'); go('login'); }); });
 
   /* ---------- vues ---------- */
   var views = {};
@@ -536,7 +553,8 @@
   document.addEventListener('click', function (e) {
     var t = e.target.closest('button, a'); if (!t) return;
     if (t.getAttribute('aria-disabled') === 'true') { e.preventDefault(); return; }
-    if (t.matches('.tags__add button')) { addTag(t.closest('.f--list')); }
+    if (t.id === 'support-stop') { lock(t, true); api('/auth/impersonate/stop', { method: 'POST' }).then(backToAdmin).catch(function () { backToAdmin(null); }); }
+    else if (t.matches('.tags__add button')) { addTag(t.closest('.f--list')); }
     else if (t.matches('.tag button')) { var li = t.closest('.tag'), nx = li.nextElementSibling || li.previousElementSibling, lf = li.closest('.f--list'), label = li.querySelector('span').textContent; li.remove(); (nx ? nx.querySelector('button') : $('.tags__add input', lf)).focus(); announce('Retiré' + NBSP + ': ' + label); }
     else if (t.hasAttribute('data-filter')) {
       e.preventDefault(); state.filter = t.getAttribute('data-filter'); state.page = 1;
@@ -581,7 +599,7 @@
   window.addEventListener('resize', function () { clearTimeout(resizeTimer); resizeTimer = setTimeout(function () { var h = $('#exp-chart'); if (h && h._size && Math.abs(h.clientWidth - h._size.W) > 8) drawChart(); }, 150); });
 
   /* ---------- API interne pour les modules optionnels (admin) ---------- */
-  window.Oubli = { registerView: registerView, api: api, esc: esc, toast: toast, fmtDate: fmtDate, fmtTime: fmtTime, money: money, chip: chip, dots: dots, statusLabel: statusLabel, subLabel: subLabel, field: field, go: go, render: render, params: params, state: state, NBSP: NBSP, NNBSP: NNBSP, announce: announce, typo: typo, fmtDay: fmtDay, plural: plural };
+  window.Oubli = { chrome: setChrome, registerView: registerView, api: api, esc: esc, toast: toast, fmtDate: fmtDate, fmtTime: fmtTime, money: money, chip: chip, dots: dots, statusLabel: statusLabel, subLabel: subLabel, field: field, go: go, render: render, params: params, state: state, NBSP: NBSP, NNBSP: NNBSP, announce: announce, typo: typo, fmtDay: fmtDay, plural: plural };
 
   /* ---------- démarrage ---------- */
   Promise.all([api('/config').catch(function () { return { plans: { individuel: { name: 'Individuel', members: 1, monthly: 1299, annual: 8388 }, famille: { name: 'Famille', members: 5, monthly: 2499, annual: 16788 } }, billing: 'simulated', brokers: 50, mandate_version: '' }; }), loadMe()]).then(function (r) {

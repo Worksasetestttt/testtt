@@ -29,8 +29,8 @@ p, h1, h2, h3, dl, dd { margin: 0; }
 :focus:not(:focus-visible) { outline: none; }
 
 /* ---------- En-tête ---------- */
-.top { position: sticky; top: 0; z-index: 40; height: var(--nav-h); background: rgba(246,241,232,.88); -webkit-backdrop-filter: blur(12px) saturate(140%); backdrop-filter: blur(12px) saturate(140%); border-bottom: 1px solid var(--border); }
-.top__inner { max-width: var(--container); margin: 0 auto; padding: 0 var(--pad); height: 100%; display: flex; align-items: center; gap: 36px; }
+.top { position: sticky; top: 0; z-index: 40; background: rgba(246,241,232,.88); -webkit-backdrop-filter: blur(12px) saturate(140%); backdrop-filter: blur(12px) saturate(140%); border-bottom: 1px solid var(--border); }
+.top__inner { max-width: var(--container); margin: 0 auto; padding: 0 var(--pad); height: var(--nav-h); display: flex; align-items: center; gap: 36px; }
 .logo { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; font-family: var(--font-display); font-weight: 600; font-size: 1.375rem; letter-spacing: -.02em; line-height: 1; }
 .top__nav { display: flex; gap: 26px; }
 .top__nav a { text-decoration: none; padding: 6px 0; font-size: .95rem; font-weight: 500; color: var(--muted); white-space: nowrap; background: linear-gradient(currentColor, currentColor) no-repeat 0 100% / 0 1px; transition: background-size .2s var(--ease), color .15s; }
@@ -39,6 +39,18 @@ p, h1, h2, h3, dl, dd { margin: 0; }
 .top__user .mono { text-transform: none; letter-spacing: .02em; font-size: .78rem; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .top__user button { height: 36px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--border-strong); font-size: .88rem; font-weight: 500; color: var(--text); white-space: nowrap; transition: border-color .15s, background .15s; }
 .top__user button:hover { border-color: var(--text); background: var(--surface); }
+
+/* Bandeau « accès support » (dans l'en-tête collant) et annonce de l'équipe */
+.support-bar { background: var(--accent-2); color: #fff; }
+.support-bar__inner { max-width: var(--container); margin: 0 auto; padding: 8px var(--pad); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 20px; font-size: .9rem; line-height: 1.4; }
+.support-bar strong { font-weight: 600; }
+.support-bar .btn { background: #fff; color: var(--accent-2); height: 36px; }
+.support-bar .btn:hover { background: var(--surface-2); }
+.support-bar :focus-visible { outline-color: #fff; }
+.site-notice { background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text); }
+.site-notice--warn { background: var(--warning-soft); color: var(--warning-ink); border-bottom-color: var(--warning); }
+.site-notice__inner { max-width: var(--container); margin: 0 auto; padding: 10px var(--pad); font-size: .92rem; }
+.is-support a[href="/api/export"] { display: none; } /* l'export complet est refusé pendant un accès support */
 
 /* ---------- Page ---------- */
 .view { max-width: var(--container); margin: 0 auto; padding: 48px var(--pad) 120px; }
@@ -410,6 +422,7 @@ h1 em, h2 em { font-style: italic; font-weight: 400; }
   .top__nav a { font-size: .86rem; letter-spacing: -.01em; padding: 12px 0; }
   .top__nav:has(#nav-admin:not([hidden])) a { font-size: .8rem; }
   .top__user button { height: 44px; }
+  .support-bar .btn { height: 44px; }
   .view { padding: 28px 16px 96px; }
   .sheet__head, .sheet__body, .sheet__foot, .sheet__more, .row, .row--head, .timeline, .deadlines, .member, .tools, .rows__more, .empty, .next { padding-left: 20px; padding-right: 20px; }
   .sheet__body--tight { padding-left: 20px; padding-right: 20px; }

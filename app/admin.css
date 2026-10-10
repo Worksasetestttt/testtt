@@ -130,6 +130,8 @@
 .adm-action span { display: block; color: var(--muted); font-size: .85rem; line-height: 1.4; max-width: 56ch; }
 .adm-subform { margin-top: 28px; padding-top: 28px; border-top: 1px solid var(--border); display: grid; gap: 18px; }
 .adm-subform h3 { margin: 0; }
+.adm-subform--plain { margin-top: 0; padding-top: 0; border-top: 0; }
+.adm-col { display: grid; gap: 24px; align-content: start; min-width: 0; }
 .adm-subform .fields { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 18px 24px; }
 .btn.is-confirm { background: var(--danger); border-color: var(--danger); color: #fff; }
 .btn.is-confirm:hover { background: var(--danger); }
@@ -160,6 +162,21 @@
 .adm-ref:hover .mono, .adm-ref[aria-expanded="true"] .mono { text-decoration-color: currentColor; }
 #inbound-result:empty { display: none; }
 details.adm-msg summary { cursor: pointer; }
+
+/* ---------- Fiche compte : suspension, accès support, notes ---------- */
+.adm-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; border-left-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
+.adm-banner p { flex: 1 1 360px; }
+.adm-hint { color: var(--muted); font-size: .92rem; margin-bottom: 18px; max-width: 60ch; }
+.adm-check { margin-top: 18px; font-size: .92rem; }
+.adm-notes { display: grid; gap: 0; margin-bottom: 20px; }
+.adm-notes li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 16px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.adm-notes li p { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .95rem; }
+.adm-notes li .adm-sub { grid-column: 1; }
+.adm-notes li .btn { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
+.adm-noteform { display: grid; gap: 12px; justify-items: start; }
+.adm-noteform .f { width: 100%; }
+.adm-blockform { max-width: none; }
+.adm-blockform .msg { flex-basis: 100%; }
 
 /* ---------- Réponses, prospects, système ---------- */
 .adm-sim { margin: 0 32px 24px; }
