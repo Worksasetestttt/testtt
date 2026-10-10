@@ -195,12 +195,13 @@ function autoLaunch() {
 // Un seul passage à la fois : un tick demandé pendant un passage en cours est fusionné (un nouveau passage suit).
 let inflight = null, again = false, lastTick = null;
 // Signe de vie (ms) : début et fin de passage, et chaque demande traitée ; un long passage qui avance reste « vivant ».
-let beat = null, every = null, startedAt = null;
+let beat = null, every = null, startedAt = null, stopped = false, timers = [];
 // Date (ISO) de la fin du dernier passage, affichée dans l’administration.
 export const lastTickAt = () => lastTick;
 // État lu par /api/health (health.js) : un planificateur sans signe de vie depuis trois intervalles est figé.
-export const schedulerState = () => ({ startedAt, intervalMs: every, lastTickAt: lastTick, lastBeatAt: beat, running: !!inflight });
+export const schedulerState = () => ({ startedAt, intervalMs: every, lastTickAt: lastTick, lastBeatAt: beat, running: !!inflight, stopped });
 export function tick() {
+  if (stopped) return Promise.resolve();
   if (inflight) { again = true; return inflight; }
   inflight = (async () => {
     do {
@@ -210,14 +211,21 @@ export function tick() {
       catch (e) { console.error('[scheduler]', e); }
       lastTick = now();
       beat = Date.now();
-    } while (again);
+    } while (again && !stopped);
   })().finally(() => { inflight = null; });
   return inflight;
 }
 export function startScheduler() {
   every = Math.max(1000, Number(process.env.SCHEDULER_INTERVAL_MS) || (DEMO ? 20000 : 60000));
-  startedAt = Date.now();
-  setTimeout(tick, 1500);
-  const h = setInterval(tick, every); h.unref();
+  startedAt = Date.now(); stopped = false;
+  timers = [setTimeout(tick, 1500), setInterval(tick, every)];
+  timers[1].unref();
   console.log(`[scheduler] actif toutes les ${every / 1000} s · courrier : ${mailMode} · démo : ${DEMO ? 'oui' : 'non'} · réponses attendues sur ${REPLY_TO}`);
+}
+// Arrêt du serveur : plus aucun passage. Renvoie la promesse du passage en cours, à attendre (avec une limite) avant de
+// fermer la base.
+export function stopScheduler() {
+  stopped = true;
+  clearTimeout(timers[0]); clearInterval(timers[1]); timers = [];
+  return inflight || Promise.resolve();
 }

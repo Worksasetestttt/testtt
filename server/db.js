@@ -252,8 +252,16 @@ export function logEvent(user_id, type, message, { profile_id = null, request_id
   q.run('INSERT INTO events (user_id, profile_id, request_id, type, message, created_at) VALUES (?, ?, ?, ?, ?, ?)', user_id, profile_id, request_id, type, String(message).slice(0, 1000), now());
 }
 
-/* ---------- Santé ---------- */
+/* ---------- Santé et arrêt ---------- */
 // La connexion répond-elle ? (/api/health) Ne lève jamais d’exception.
 export function dbPing() {
   try { return db.prepare('SELECT 1 AS ok').get()?.ok === 1; } catch { return false; }
+}
+// Arrêt du serveur : statistiques de l’optimiseur à jour (PRAGMA optimize), puis fermeture (le WAL est reversé dans la base).
+let closed = false;
+export function closeDb() {
+  if (closed) return;
+  closed = true;
+  try { db.exec('PRAGMA optimize'); } catch (e) { console.error('[db] PRAGMA optimize :', e.message); }
+  db.close();
 }

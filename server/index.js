@@ -8,12 +8,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { attachUser } from './auth.js';
 import { api, stripeWebhook } from './routes.js';
-import { startScheduler } from './scheduler.js';
+import { startScheduler, stopScheduler } from './scheduler.js';
 import { resumeDiscoveries } from './sites.js';
-import { startReports } from './reports.js';
-import { startBackups } from './backup.js';
+import { startReports, stopReports } from './reports.js';
+import { startBackups, stopBackups } from './backup.js';
+import { closeDb } from './db.js';
 import { compressApi } from './compress.js';
 import { createStatic } from './static.js';
+import { markDraining, isDraining } from './health.js';
 import { HttpError, isPlainObject } from './util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -71,6 +73,8 @@ app.use((req, res, next) => {
   if (PROD) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   next();
 });
+// Arrêt en cours : chaque réponse ferme sa connexion, pour que le serveur se vide vite (voir shutdown).
+app.use((_req, res, next) => { if (isDraining()) res.setHeader('Connection', 'close'); next(); });
 
 /* ---------- API ---------- */
 app.use('/api', (_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
@@ -178,11 +182,27 @@ server.headersTimeout = 20000;   // en-têtes complets sous 20 s
 server.requestTimeout = 60000;   // requête complète sous 60 s
 server.keepAliveTimeout = 5000;
 
-let stopping = false;
-function shutdown(code) {
-  if (stopping) return; stopping = true;
-  server.close(() => process.exit(code));
-  setTimeout(() => process.exit(code), 3000).unref();
+// Arrêt propre (SIGTERM, SIGINT, exception non interceptée) : /api/health passe à 503, plus de nouvelle connexion,
+// planificateur, rapports et sauvegardes arrêtés ; les requêtes en cours (et un passage du planificateur en cours) ont
+// SHUTDOWN_TIMEOUT_MS pour finir (10 s par défaut, 3 s au plus après une exception), puis les connexions restantes sont
+// coupées, la base est fermée (PRAGMA optimize) et le processus sort. Un second signal force la sortie immédiate.
+const SHUTDOWN_MS = Math.max(100, Number(process.env.SHUTDOWN_TIMEOUT_MS) || 10000);
+function shutdown(code, signal) {
+  if (isDraining()) { if (signal) { console.error(`[arrêt] second ${signal} : sortie immédiate.`); process.exit(code); } return; }
+  markDraining();
+  const limit = code === 0 ? SHUTDOWN_MS : Math.min(SHUTDOWN_MS, 3000);
+  console.log(`[arrêt] ${signal || 'exception'} : fin des requêtes en cours (${limit / 1000} s au plus)`);
+  const closed = new Promise((resolve) => server.close(() => resolve()));
+  const idle = setInterval(() => server.closeIdleConnections(), 200);   // connexions keep-alive libérées au fil de l'eau
+  let timer;
+  const late = new Promise((resolve) => { timer = setTimeout(resolve, limit, 'late'); });
+  const work = Promise.allSettled([closed, stopScheduler(), stopReports(), stopBackups()]);
+  Promise.race([work, late]).then((outcome) => {
+    clearInterval(idle); clearTimeout(timer);
+    if (outcome === 'late') { console.error('[arrêt] délai dépassé : connexions restantes coupées.'); server.closeAllConnections(); }
+    try { closeDb(); } catch (e) { console.error('[arrêt] fermeture de la base :', e.message); }
+    process.exit(code);
+  });
 }
-process.on('SIGTERM', () => shutdown(0));
-process.on('SIGINT', () => shutdown(0));
+process.on('SIGTERM', () => shutdown(0, 'SIGTERM'));
+process.on('SIGINT', () => shutdown(0, 'SIGINT'));
