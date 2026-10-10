@@ -190,6 +190,8 @@ try {
   const C = await signup('c@test.fr');
   for (let i = 0; i < 12; i++) assert.equal((await login('c@test.fr')).status, 200);
   const db = new DatabaseSync(DB);
+  // Changement depuis les paramètres : le titulaire est prévenu par e-mail.
+  assert.match(db.prepare(`SELECT body FROM mails WHERE to_addr = 'b@test.fr' AND subject = 'Votre mot de passe Oubli a été changé' ORDER BY id DESC`).get()?.body || '', /depuis les paramètres/, 'avis de changement de mot de passe');
   const cId = C.user.id;
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE user_id = ?').get(cId).n, 10, 'plafond de 10 sessions');
   assert.ok(db.prepare('SELECT ip FROM sessions WHERE user_id = ? LIMIT 1').get(cId).ip, 'IP stockée');

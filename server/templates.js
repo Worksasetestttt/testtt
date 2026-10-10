@@ -235,14 +235,15 @@ L’équipe Oubli`),
   };
 }
 
-// Prévient le titulaire après une réinitialisation (heure de Paris) : s’il n’en est pas l’auteur, il peut reprendre la main.
-export function passwordChangedMail({ changedAt }) {
+// Prévient le titulaire après un changement de mot de passe (heure de Paris), par le lien reçu (via « reset ») ou depuis
+// les paramètres (via « settings ») : s’il n’en est pas l’auteur, il peut reprendre la main.
+export function passwordChangedMail({ changedAt, via = 'reset' }) {
   const when = new Date(changedAt).toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Europe/Paris' });
   return {
     subject: 'Votre mot de passe Oubli a été changé',
     text: frTypo(`Bonjour,
 
-Le mot de passe de votre compte Oubli a été changé le ${when} (heure de Paris), à l’aide du lien de réinitialisation envoyé à cette adresse. Tous les appareils connectés au compte ont été déconnectés.
+Le mot de passe de votre compte Oubli a été changé le ${when} (heure de Paris), ${via === 'settings' ? 'depuis les paramètres du compte. Les autres appareils connectés ont été déconnectés.' : 'à l’aide du lien de réinitialisation envoyé à cette adresse. Tous les appareils connectés au compte ont été déconnectés.'}
 
 Si vous êtes à l’origine de ce changement, vous n’avez rien à faire.
 

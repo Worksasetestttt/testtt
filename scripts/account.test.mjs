@@ -235,7 +235,9 @@ try {
   await wait(300); assert.equal(mailsTo(ines.email).length, ib, 'aucun envoi à une adresse bloquée');
   r = await reset(tI); assert.equal(r.data.code, 'invalid', 'un lien antérieur au blocage ne vaut plus');
   const jules = await signup('jules@exemple.fr');
+  await requestLink(jules.email);
   assert.equal((await call('DELETE', '/account', { password: STRONG }, { cookie: jules.cookie })).status, 200);
+  { const d = new DatabaseSync(DB); d.exec('PRAGMA busy_timeout = 5000'); assert.equal(d.prepare('SELECT COUNT(*) AS c FROM password_resets WHERE user_id = ?').get(jules.id).c, 0, 'liens du compte supprimé purgés'); d.close(); }
   const jb = mailsTo(jules.email).length;
   assert.equal((await call('POST', '/auth/forgot', { email: jules.email })).status, 200);
   await wait(300); assert.equal(mailsTo(jules.email).length, jb, 'aucun envoi pour un compte supprimé');

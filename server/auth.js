@@ -74,7 +74,7 @@ export function passwordProblem(password, email = '') {
   const lower = password.toLowerCase();
   const core = lower.replace(/^[^a-z]+|[^a-z]+$/g, '');
   const repeated = (lower + lower).indexOf(lower, 1) !== lower.length; // motif court répété (abcabcabcabc)
-  if (new Set(lower).size < 4 || repeated || /^\d+$/.test(lower) || COMMON.has(lower) || COMMON.has(core)) return 'Ce mot de passe est trop simple ou trop courant : choisissez-en un plus original.';
+  if (new Set(lower).size < 4 || repeated || /^\d+$/.test(lower) || COMMON.has(lower) || COMMON.has(core)) return 'Ce mot de passe est trop simple ou trop courant\u00a0: choisissez-en un plus original.';
   const address = String(email || '').toLowerCase().trim();
   const local = address.split('@')[0];
   const parts = [local, ...local.split(/[._+-]+/)].filter((p) => p.length >= 3);

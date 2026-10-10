@@ -10,7 +10,7 @@ import {
   isSuspended, isBlockedEmail, endImpersonation,
 } from './auth.js';
 import { sendMail, mailMode } from './mailer.js';
-import { welcomeMail, mandateText, complaintDraft, MANDATE_VERSION } from './templates.js';
+import { welcomeMail, mandateText, complaintDraft, passwordChangedMail, MANDATE_VERSION } from './templates.js';
 import { PLANS, BILLING_PERIODS, billingMode, startCheckout, cancelSubscription, verifyStripeSignature, handleStripeEvent } from './billing.js';
 import { launchProfile, applyOutcome, tick, ref, DEMO, schedulerState } from './scheduler.js';
 import { EMAIL, publicUser, parseProfile, wrap, isId, str, strList, oneOf, HttpError } from './util.js';
@@ -100,6 +100,10 @@ api.post('/auth/password', requireAuth, rateLimit({ max: 10 }), wrap(async (req,
   q.run('UPDATE users SET password_hash = ? WHERE id = ?', await hashPassword(next), u.id);
   destroyOtherSessions(u.id, req.sessionId);
   logEvent(u.id, 'account', 'Mot de passe modifié ; les autres sessions ont été déconnectées.');
+  setImmediate(() => {   // le titulaire est prévenu, comme après une réinitialisation par e-mail
+    const m = passwordChangedMail({ changedAt: now(), via: 'settings' });
+    sendMail({ to: u.email, subject: m.subject, text: m.text, user_id: u.id }).catch((e) => console.error('[account] avis de changement de mot de passe non envoyé :', e.message));
+  });
   res.json({ ok: true });
 }));
 // Mot de passe oublié (/auth/forgot, /auth/reset) et appareils connectés (/sessions) : voir server/account.js.
@@ -362,7 +366,7 @@ api.delete('/account', requireAuth, rateLimit({ max: 5 }), wrap(async (req, res)
   db.exec('BEGIN');
   try {
     q.run('DELETE FROM requests WHERE user_id = ?', u.id); q.run('DELETE FROM profiles WHERE user_id = ?', u.id); q.run('DELETE FROM events WHERE user_id = ?', u.id);
-    q.run('DELETE FROM mails WHERE user_id = ?', u.id); q.run('DELETE FROM sessions WHERE user_id = ?', u.id);
+    q.run('DELETE FROM mails WHERE user_id = ?', u.id); q.run('DELETE FROM sessions WHERE user_id = ?', u.id); q.run('DELETE FROM password_resets WHERE user_id = ?', u.id);
     q.run(`UPDATE users SET email = ?, password_hash = '', deleted_at = ?, mandate_name = NULL, mandate_ip = NULL, stripe_customer_id = NULL, stripe_subscription_id = NULL WHERE id = ?`, `deleted-${u.id}@oubli.invalid`, now(), u.id);
     db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }
