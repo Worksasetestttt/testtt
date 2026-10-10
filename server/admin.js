@@ -75,6 +75,8 @@ function paging(query, def = 25) {
   return { per, page, offset: (page - 1) * per };
 }
 const pageMeta = (total, p) => ({ total, page: p.page, per: p.per, pages: Math.max(1, Math.ceil(total / p.per)) });
+// Page au-delà de la dernière (lien conservé après une action qui a vidé la fin de la liste) : ramenée à la dernière.
+const fit = (p, total) => { p.page = Math.min(p.page, Math.max(1, Math.ceil(total / p.per))); p.offset = (p.page - 1) * p.per; return p; };
 // Journal d'audit. auditAs sert aussi hors du routeur (fin d'un accès support, routes.js).
 export function auditAs(adminId, action, target, details = {}, ip = '') {
   q.run('INSERT INTO admin_audit (admin_id, action, target, details, ip, created_at) VALUES (?, ?, ?, ?, ?, ?)', adminId, action, target == null ? null : String(target), JSON.stringify(details), String(ip || '').slice(0, 64), now());
@@ -196,7 +198,7 @@ admin.get('/users', (req, res) => {
   const plan = clean(req.query.plan, 20);
   if (PLANS[plan]) { where.push('u.plan = ?'); params.push(plan); }
   const base = `FROM users u${where.length ? ' WHERE ' + where.join(' AND ') : ''}`;
-  const total = q.get(`SELECT COUNT(*) AS c ${base}`, ...params).c;
+  const total = q.get(`SELECT COUNT(*) AS c ${base}`, ...params).c; fit(p, total);
   const rows = q.all(`SELECT u.*,
       (SELECT pr.first_name || ' ' || pr.last_name FROM profiles pr WHERE pr.user_id = u.id AND pr.is_primary = 1) AS name,
       (SELECT COUNT(*) FROM profiles pr WHERE pr.user_id = u.id) AS profiles_n,
@@ -428,7 +430,7 @@ admin.get('/requests', (req, res) => {
   if (search) { const l = like(search.replace(/^OUBLI-/i, '')); where.push(`(r.token LIKE ? ESCAPE '\\' OR u.email LIKE ? ESCAPE '\\' OR b.name LIKE ? ESCAPE '\\' OR (p.first_name || ' ' || p.last_name) LIKE ? ESCAPE '\\')`); params.push(l, l, l, l); }
   const sort = SORTS[req.query.sort] ? req.query.sort : 'created_desc';
   const base = `${REQ_BASE}${where.length ? ' WHERE ' + where.join(' AND ') : ''}`;
-  const total = q.get(`SELECT COUNT(*) AS c ${base}`, ...params).c;
+  const total = q.get(`SELECT COUNT(*) AS c ${base}`, ...params).c; fit(p, total);
   const rows = q.all(`SELECT ${REQ_COLS} ${base} ORDER BY ${SORTS[sort]} LIMIT ? OFFSET ?`, ...params, p.per, p.offset);
   res.json({ requests: rows.map((r) => ({ ...r, ref: ref(r) })), ...pageMeta(total, p), sort, counts: statusCounts(q.all('SELECT status, COUNT(*) AS n FROM requests GROUP BY status')) });
 });
@@ -582,7 +584,7 @@ admin.get('/mails', (req, res) => {
   if (UUID.test(String(req.query.request || ''))) { where.push('m.request_id = ?'); params.push(req.query.request); }
   if (UUID.test(String(req.query.user || ''))) { where.push('m.user_id = ?'); params.push(req.query.user); }
   const base = `FROM mails m LEFT JOIN users u ON u.id = m.user_id LEFT JOIN requests r ON r.id = m.request_id${where.length ? ' WHERE ' + where.join(' AND ') : ''}`;
-  const total = q.get(`SELECT COUNT(*) AS c ${base}`, ...params).c;
+  const total = q.get(`SELECT COUNT(*) AS c ${base}`, ...params).c; fit(p, total);
   const rows = q.all(`SELECT m.id, m.to_addr, m.subject, m.mode, m.created_at, m.request_id, m.user_id, r.token, u.email AS user_email, length(m.body) AS size ${base} ORDER BY m.id DESC LIMIT ? OFFSET ?`, ...params, p.per, p.offset);
   res.json({ mails: rows.map((m) => ({ ...m, ref: m.token ? `OUBLI-${m.token}` : null })), ...pageMeta(total, p), modes: Object.fromEntries(q.all('SELECT mode, COUNT(*) AS n FROM mails GROUP BY mode').map((r) => [r.mode, r.n])) });
 });
@@ -607,14 +609,14 @@ admin.post('/inbound/simulate', (req, res) => {
 /* ---------- Prospects : newsletter, contacts, exports ---------- */
 admin.get('/newsletter', (req, res) => {
   const p = paging(req.query, 50);
-  const total = q.get('SELECT COUNT(*) AS c FROM newsletter').c;
+  const total = q.get('SELECT COUNT(*) AS c FROM newsletter').c; fit(p, total);
   res.json({ subscribers: q.all('SELECT email, created_at FROM newsletter ORDER BY created_at DESC LIMIT ? OFFSET ?', p.per, p.offset), ...pageMeta(total, p) });
 });
 admin.get('/contacts', (req, res) => {
   const p = paging(req.query);
   const status = clean(req.query.status, 10);
   const where = status === 'open' ? 'WHERE handled_at IS NULL' : status === 'handled' ? 'WHERE handled_at IS NOT NULL' : '';
-  const total = q.get(`SELECT COUNT(*) AS c FROM contacts ${where}`).c;
+  const total = q.get(`SELECT COUNT(*) AS c FROM contacts ${where}`).c; fit(p, total);
   res.json({
     contacts: q.all(`SELECT id, email, subject, message, created_at, handled_at FROM contacts ${where} ORDER BY (handled_at IS NOT NULL), id DESC LIMIT ? OFFSET ?`, p.per, p.offset),
     ...pageMeta(total, p),
@@ -732,7 +734,7 @@ admin.get('/audit', (req, res) => {
   const target = clean(req.query.target, 60);
   if (target) { where.push('a.target = ?'); params.push(target); }
   const base = `FROM admin_audit a LEFT JOIN users u ON u.id = a.admin_id${where.length ? ' WHERE ' + where.join(' AND ') : ''}`;
-  const total = q.get(`SELECT COUNT(*) AS c ${base}`, ...params).c;
+  const total = q.get(`SELECT COUNT(*) AS c ${base}`, ...params).c; fit(p, total);
   const rows = q.all(`SELECT a.id, a.admin_id, a.action, a.target, a.details, a.ip, a.created_at, u.email AS admin_email ${base} ORDER BY a.id DESC LIMIT ? OFFSET ?`, ...params, p.per, p.offset);
   res.json({ entries: rows.map((a) => ({ ...a, details: JSON.parse(a.details || '{}') })), ...pageMeta(total, p), actions: q.all('SELECT action, COUNT(*) AS n FROM admin_audit GROUP BY action ORDER BY action').map((r) => r.action) });
 });

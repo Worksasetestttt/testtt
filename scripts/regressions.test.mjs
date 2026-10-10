@@ -458,6 +458,21 @@ try {
   }
   step('application : session expirée → retour à la connexion ; abonnement impayé résiliable');
 
+  /* ---------- 15. Administration : page demandée au-delà de la dernière ---------- */
+  // ?page=99 (lien conservé après une réponse groupée qui vide la dernière page d'un filtre) renvoyait un tableau vide
+  // « Page 99 sur 18 » : la page est désormais ramenée à la dernière.
+  {
+    for (const [p, key] of [['/admin/requests?per=5&page=999', 'requests'], ['/admin/users?per=2&page=999', 'users'], ['/admin/mails?per=5&page=999', 'mails'], ['/admin/audit?per=5&page=999', 'entries']]) {
+      const r = await S.call('GET', p, undefined, ADM);
+      assert.equal(r.status, 200); assert.ok(r.data.total > 0, p);
+      assert.equal(r.data.page, r.data.pages, `${p} : page ramenée à la dernière`); assert.ok(r.data[key].length > 0, `${p} : la dernière page est remplie`);
+    }
+    await S.call('POST', '/contact', { email: 'visiteur@exemple.fr', message: 'Bonjour, une question.' });
+    let r = await S.call('GET', '/admin/contacts?page=50', undefined, ADM); assert.equal(r.data.page, r.data.pages); assert.equal(r.data.contacts.length, r.data.total);
+    r = await S.call('GET', '/admin/newsletter?page=50', undefined, ADM); assert.equal(r.data.page, r.data.pages);
+  }
+  step('administration : une page au-delà de la dernière affiche la dernière page (plus de tableau vide)');
+
   console.log(`✔ Régressions validées (${passed} groupes de vérifications).`);
 } catch (e) {
   console.error('✘ Échec :', e.message);
