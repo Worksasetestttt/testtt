@@ -68,15 +68,17 @@ export function buildDashboard(u, requestedProfileId) {
   const profiles = q.all('SELECT * FROM profiles WHERE user_id = ? ORDER BY is_primary DESC, created_at', u.id).map(parseProfile);
   const pid = requestedProfileId && profiles.some((p) => p.id === requestedProfileId) ? requestedProfileId : profiles[0]?.id;
   const rows = q.all(`SELECT r.*, b.name AS broker_name, b.category, b.domain, b.sensitivity, b.legal_basis, b.recheck_days, b.jurisdiction, b.custom, b.contact_source, b.contact_email AS broker_contact, b.contact_verified, b.discovery_status FROM requests r JOIN brokers b ON b.id = r.broker_id WHERE r.profile_id = ? ORDER BY CASE r.status WHEN 'action_required' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'sent' THEN 2 WHEN 'queued' THEN 3 WHEN 'refused' THEN 4 WHEN 'done' THEN 5 ELSE 6 END, b.sensitivity DESC, b.name`, pid);
-  const counts = { queued: 0, sent: 0, in_progress: 0, action_required: 0, done: 0, refused: 0 };
-  rows.forEach((r) => { counts[r.status] = (counts[r.status] || 0) + 1; });
   const total = rows.length;
   const latestByBroker = new Map();
   rows.forEach((r) => { const k = r.broker_id; if (!latestByBroker.has(k) || latestByBroker.get(k).cycle < r.cycle) latestByBroker.set(k, r); });
   const active = [...latestByBroker.values()];
+  // Compteurs sur le cycle en cours de chaque courtier (comme l'exposition) : après une revérification, l'ancien cycle
+  // effacé ne compte plus en plus de la nouvelle demande.
+  const counts = { queued: 0, sent: 0, in_progress: 0, action_required: 0, done: 0, refused: 0, error: 0 };
+  active.forEach((r) => { counts[r.status] = (counts[r.status] || 0) + 1; });
   const nowDate = new Date();
   const exposure = exposureAt(active, nowDate.toISOString());
-  const sentTotal = rows.filter((r) => r.sent_at).length;
+  const sentTotal = active.filter((r) => r.sent_at).length;
   const nextCheck = q.get('SELECT MIN(next_check_at) AS d FROM requests WHERE profile_id = ? AND next_check_at IS NOT NULL', pid)?.d || null;
   const nextDue = active.filter((r) => r.due_at && (r.status === 'sent' || r.status === 'in_progress')).map((r) => r.due_at).sort()[0] || null;
   const lastSent = active.filter((r) => r.sent_at).map((r) => r.sent_at).sort().pop() || null;
@@ -92,7 +94,7 @@ export function buildDashboard(u, requestedProfileId) {
   const profile = profiles.find((p) => p.id === pid);
   return {
     user: publicUser(u), profiles, profile_id: pid,
-    counters: { sent: sentTotal, in_progress: counts.sent + counts.in_progress, action_required: counts.action_required, done: counts.done, queued: counts.queued, refused: counts.refused, total, brokers, active: active.length },
+    counters: { sent: sentTotal, in_progress: counts.sent + counts.in_progress, action_required: counts.action_required, done: counts.done, queued: counts.queued, refused: counts.refused, error: counts.error, total, brokers, active: active.length },
     exposure, next_check_at: nextCheck,
     exposure_history: exposureHistory(active, nowDate),
     categories, sensitivity,
