@@ -154,6 +154,9 @@ ensureColumn('brokers', 'discovered_at', 'TEXT');
 ensureColumn('brokers', 'added_by', 'TEXT');
 ensureColumn('brokers', 'created_at', 'TEXT');
 ensureColumn('requests', 'source_url', 'TEXT');         // page où figure la fiche, citée dans le courrier
+// Rapport mensuel par e-mail (reports.js) : activé par défaut, désactivable dans les paramètres.
+ensureColumn('users', 'monthly_report', 'INTEGER NOT NULL DEFAULT 1');
+ensureColumn('users', 'last_report_at', 'TEXT');
 
 // Jeton de référence (OUBLI-XXXXXXXXXX) : il identifie une demande dans les réponses des courtiers, donc il est unique.
 export function newToken() {

@@ -7,6 +7,7 @@ export const publicUser = (u) => ({
   id: u.id, email: u.email, role: u.role, plan: u.plan, billing: u.billing,
   subscription_status: u.subscription_status, subscription_ends_at: u.subscription_ends_at, billing_mode: u.billing_mode,
   mandate_signed_at: u.mandate_signed_at, mandate_name: u.mandate_name, mandate_version: u.mandate_version, mandate_revoked_at: u.mandate_revoked_at, created_at: u.created_at,
+  monthly_report: u.monthly_report !== 0, last_report_at: u.last_report_at || null,
 });
 const parseList = (v) => { try { const a = JSON.parse(v || '[]'); return Array.isArray(a) ? a : []; } catch { return []; } };
 export const parseProfile = (p) => ({ ...p, emails: parseList(p.emails), phones: parseList(p.phones), addresses: parseList(p.addresses), aliases: parseList(p.aliases) });

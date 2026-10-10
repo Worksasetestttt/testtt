@@ -10,6 +10,7 @@ import { attachUser } from './auth.js';
 import { api, stripeWebhook } from './routes.js';
 import { startScheduler } from './scheduler.js';
 import { resumeDiscoveries } from './sites.js';
+import { startReports } from './reports.js';
 import { HttpError, isPlainObject } from './util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -162,6 +163,7 @@ const server = app.listen(PORT, () => {
   console.log(`Oubli · http://localhost:${PORT}  (landing)  ·  http://localhost:${PORT}/app/  (application)`);
   startScheduler();
   resumeDiscoveries();
+  startReports();
 });
 server.headersTimeout = 20000;   // en-têtes complets sous 20 s
 server.requestTimeout = 60000;   // requête complète sous 60 s

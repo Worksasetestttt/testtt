@@ -182,7 +182,7 @@
     if (!c.total) lead = 'Les premières demandes partiront dès que le dossier sera complet.';
     else if (c.active && c.done === c.active) lead = 'Les ' + c.active + NBSP + 'courtiers surveillés ont confirmé l’effacement.' + (d.next_check_at ? ' Prochaine vérification le ' + fmtDate(d.next_check_at) + '.' : '');
     else lead = c.brokers + NBSP + 'courtiers surveillés, ' + plural(c.done, 'effacement confirmé', 'effacements confirmés') + '.' + (c.in_progress ? ' ' + plural(c.in_progress, 'réponse attendue', 'réponses attendues') + (d.next_due_at ? ' avant le ' + fmtDate(d.next_due_at) : '') + '.' : '') + (d.next_check_at ? ' Prochaine vérification le ' + fmtDate(d.next_check_at) + '.' : '');
-    return tabs + '<div class="dash-head__main"><div><span class="mono">' + eyebrow + '</span><h1>' + esc(fullName(prof)) + '</h1><p class="lead">' + lead + '</p></div></div>';
+    return tabs + '<div class="dash-head__main"><div><span class="mono">' + eyebrow + '</span><h1>' + esc(fullName(prof)) + '</h1><p class="lead">' + lead + '</p></div><a class="btn btn--outline btn--sm" href="#report">Rapport imprimable</a></div>';
   }
   function sigHead(d) { var c = d.counters; return JSON.stringify([d.profile_id, d.profiles.map(function (p) { return p.id + fullName(p); }), c.total, c.done, c.in_progress, c.active, d.next_due_at, d.next_check_at, d.last_activity_at, d.onboarding]); }
 
@@ -280,6 +280,7 @@
     var c = d.counters;
     var f = [['all', 'Tous', c.active], ['action_required', 'Action requise', c.action_required], ['in_progress', 'En cours', c.in_progress + c.queued], ['done', 'Terminées', c.done]];
     if (c.refused) f.push(['refused', 'Refusées', c.refused]);
+    if (d.sites && d.sites.count) f.push(['sites', 'Sites ajoutés', d.sites.count]);
     return f;
   }
   function filtersHtml(d) { return filterDefs(d).map(function (f) { return '<button type="button" aria-pressed="' + (state.filter === f[0]) + '" data-filter="' + f[0] + '">' + f[1] + '<b>' + f[2] + '</b></button>'; }).join(''); }
@@ -288,7 +289,7 @@
       '<div class="tools__sort"><label for="broker-sort" class="mono">Trier</label><select id="broker-sort">' + [['status', 'par statut'], ['sensitivity', 'par sensibilité'], ['name', 'par nom'], ['date', 'par date']].map(function (o) { return '<option value="' + o[0] + '"' + (state.sort === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></div>' +
       '<div class="filters" id="dash-filters" role="group" aria-label="Filtrer par statut">' + filtersHtml(d) + '</div>';
   }
-  function matchesFilter(r) { return state.filter === 'all' || (state.filter === 'in_progress' ? (r.status === 'sent' || r.status === 'in_progress' || r.status === 'queued') : r.status === state.filter); }
+  function matchesFilter(r) { return state.filter === 'all' || (state.filter === 'sites' ? !!r.custom : state.filter === 'in_progress' ? (r.status === 'sent' || r.status === 'in_progress' || r.status === 'queued') : r.status === state.filter); }
   function visibleRequests(d) {
     var s = state.search.trim().toLowerCase();
     var list = d.requests.filter(matchesFilter).filter(function (r) { return !s || (r.broker + ' ' + r.category + ' ' + (r.domain || '')).toLowerCase().indexOf(s) >= 0; });
@@ -315,17 +316,27 @@
       : r.status === 'refused' ? '<span>Refusée</span><small>' + (r.sent_at ? 'demande du ' + fmtDay(r.sent_at) : basis) + '</small>'
       : r.sent_at ? '<span>Envoyée le ' + fmtDay(r.sent_at) + '</span><small>' + (r.due_at ? 'réponse due le ' + fmtDay(r.due_at) : basis) + '</small>'
       : '<span>Prochain envoi</span><small>' + basis + '</small>';
-    var act = r.sent_at ? '<button class="btn btn--outline btn--xs" type="button" data-mails="' + esc(r.id) + '" aria-expanded="false" aria-controls="mail-' + esc(r.id) + '">Courrier</button>' : '';
+    var act = '<button class="btn btn--outline btn--xs" type="button" data-mails="' + esc(r.id) + '" aria-expanded="false" aria-controls="mail-' + esc(r.id) + '">Détails<span class="vh"> ' + esc(r.broker) + '</span></button>';
     var note = '';
     if (r.status === 'action_required') {
       var what = r.note && r.note !== 'Le courtier demande une vérification.' ? esc(typo(r.note)) + ' ' : '';
       note = '<div class="row__note row__note--warn"><p><strong>Le courtier demande une vérification avant de supprimer vos données.</strong> ' + what + 'Nous vous avons transmis sa demande par e-mail (objet «' + NBSP + 'Action requise' + NBSP + '») ' + NBSP + ': suivez le lien de confirmation ou renvoyez la pièce demandée, puis confirmez ici pour que la demande reprenne son cours.</p><button class="btn btn--xs" type="button" data-resolve="' + esc(r.id) + '">Vérification faite</button></div>';
     } else if (r.status === 'refused') {
       note = '<div class="row__note row__note--danger"><p><strong>Le courtier refuse l’effacement.</strong> ' + (r.note ? esc(typo(r.note)) + ' ' : '') + 'Prochaine étape' + NBSP + ': nous préparons une réclamation auprès de l’autorité de contrôle (CNIL) et une nouvelle demande partira ' + (r.next_check_at ? 'le ' + fmtDate(r.next_check_at) : d.next_check_at ? 'au prochain cycle, le ' + fmtDate(d.next_check_at) : 'au prochain cycle de vérification') + '.</p></div>';
+    } else if (r.custom || r.source_url) {
+      note = siteNote(r);
     } else if (r.note && r.status !== 'done') {
       note = '<p class="row__note">' + esc(typo(r.note)) + '</p>';
     }
     return '<li class="row row--' + esc(r.status) + '" data-row="' + esc(r.id) + '">' + dots(r.sensitivity) + '<div class="row__who"><strong>' + esc(r.broker) + '</strong><small>' + esc(r.category) + '</small></div><div class="row__status">' + chip(r.status) + '</div><div class="row__when">' + when + '</div><div class="row__act">' + act + '</div>' + note + '</li>';
+  }
+  // Site ajouté par l'abonné : où en est le contact, et lien vers la fiche signalée.
+  function siteNote(r) {
+    var s = r.site || {}, txt = '', contact = s.contact ? esc(s.contact) : '';
+    if (r.custom && r.status === 'queued') txt = s.status === 'searching' ? 'Recherche du contact sur le site…' : s.status === 'review' ? 'Notre équipe vérifie le contact du site avant l’envoi.' : s.status === 'found' ? 'Contact publié par le site' + NBSP + ': ' + contact + '. Envoi imminent.' : s.status === 'presumed' ? 'Envoi à l’adresse présumée ' + contact + '.' : 'Envoi imminent.';
+    else if (r.custom && r.status !== 'done') txt = s.status === 'found' ? 'Contact publié par le site' + NBSP + ': ' + contact + '.' : s.status === 'presumed' || s.status === 'review' ? 'Adresse présumée' + NBSP + ': ' + contact + ' (aucune adresse publiée sur le site).' : '';
+    var link = r.source_url ? '<a class="row__url" href="' + esc(r.source_url) + '" target="_blank" rel="noopener noreferrer">Fiche signalée<span class="vh"> (nouvel onglet)</span></a>' : '';
+    return txt || link ? '<p class="row__note row__note--site">' + (txt ? '<span>' + txt + '</span>' : '') + link + '</p>' : '';
   }
   function rowsHtml(d) {
     var all = visibleRequests(d), list = all.slice(0, state.page * PAGE);
@@ -333,7 +344,7 @@
     return '<div class="row row--head" aria-hidden="true"><span>Sens.</span><span>Courtier</span><span>Statut</span><span>Suivi</span><span></span></div><ol class="rows__list" role="list">' + list.map(function (r) { return rowHtml(r, d); }).join('') + '</ol>' +
       (all.length > list.length ? '<div class="rows__more"><button type="button" class="btn btn--outline btn--sm" id="rows-more">Afficher plus</button><span class="mono mono--plain">' + list.length + ' sur ' + all.length + '</span></div>' : (all.length > PAGE ? '<div class="rows__more"><span class="mono mono--plain">' + all.length + ' sur ' + all.length + '</span></div>' : ''));
   }
-  function sigRows(d) { return d.requests.map(function (r) { return [r.id, r.status, r.note, r.sent_at, r.due_at, r.completed_at, r.next_check_at, r.cycle].join('|'); }).join(';') + '#' + [state.filter, state.search, state.sort, state.page, d.next_check_at].join('|'); }
+  function sigRows(d) { return d.requests.map(function (r) { return [r.id, r.status, r.note, r.sent_at, r.due_at, r.completed_at, r.next_check_at, r.cycle, r.source_url, r.site ? r.site.status + r.site.contact : ''].join('|'); }).join(';') + '#' + [state.filter, state.search, state.sort, state.page, d.next_check_at].join('|'); }
 
   function journalHtml(d) {
     var evs = d.events || [], list = state.journalAll ? evs : evs.slice(0, JOURNAL);
@@ -351,6 +362,12 @@
   }
   function sigDeadlines(d) { return JSON.stringify([d.next_due_at, d.next_check_at, d.counters.queued]); }
 
+  function siteCount(d) { return plural(d.sites.count, 'site ajouté', 'sites ajoutés') + ' sur ' + d.sites.max + ' pour ce profil'; }
+  function addSiteHtml(d) {
+    if (!d.sites || !d.onboarding.mandate || !d.onboarding.subscription) return '';
+    return '<section class="sheet addsite" aria-labelledby="addsite-h"><div class="addsite__intro"><h2 id="addsite-h">Un site manque' + NBSP + '?</h2><p>Collez l’adresse d’une page où apparaissent vos informations' + NBSP + ': nous cherchons le contact du site et la demande d’effacement part automatiquement.</p><span class="mono addsite__count" id="addsite-count">' + siteCount(d) + '</span></div>' +
+      '<form id="addsite-form" class="addsite__form" novalidate><div class="f"><label for="addsite-url">Adresse du site ou de la fiche</label><input id="addsite-url" name="url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://exemple.fr/fiche/votre-nom" required></div><button class="btn" type="submit">Demander l’effacement</button>' + msgEl('msg-addsite-form') + '</form></section>';
+  }
   function skeleton() {
     return '<div class="dash dash--loading" aria-busy="true"><h1 class="vh">Tableau de bord</h1><p class="vh">Chargement du tableau de bord…</p><div class="skel skel--eyebrow"></div><div class="skel skel--h1"></div><div class="skel skel--lead"></div><div class="sheet skel-sheet"><div class="skel skel--n"></div><div class="skel skel--n"></div><div class="skel skel--n"></div><div class="skel skel--n"></div></div><div class="dash-grid"><div class="sheet skel-sheet skel-sheet--tall"><div class="skel skel--row"></div><div class="skel skel--row"></div><div class="skel skel--row"></div><div class="skel skel--row"></div></div><div class="sheet skel-sheet"><div class="skel skel--row"></div><div class="skel skel--row"></div></div></div></div>';
   }
@@ -360,7 +377,7 @@
       '<header class="dash-head" id="dash-head">' + dashHead(d) + '</header>' +
       '<div id="dash-next">' + nextStep(d) + '</div>' +
       '<section class="sheet ledger" id="dash-ledger" aria-label="Synthèse">' + ledger(d) + '</section>' +
-      '<div class="insight" id="dash-insight">' + insight(d) + '</div>' +
+      '<div class="insight" id="dash-insight">' + insight(d) + '</div>' + addSiteHtml(d) +
       '<div class="dash-grid"><section class="sheet" aria-labelledby="brokers-h"><div class="sheet__head"><h2 id="brokers-h">Courtiers</h2><span class="mono">' + d.counters.brokers + NBSP + 'surveillés</span></div><div class="tools" id="dash-tools">' + toolsHtml(d) + '</div><div class="rows" id="rows">' + rowsHtml(d) + '</div></section>' +
       '<aside class="stack"><section class="sheet" aria-labelledby="journal-h"><div class="sheet__head"><h2 id="journal-h">Journal</h2><a class="btn btn--outline btn--xs" href="/api/export" target="_blank" rel="noopener">Exporter<span class="vh"> le dossier (JSON, nouvel onglet)</span></a></div><div id="dash-journal">' + journalHtml(d) + '</div></section>' +
       '<section class="sheet" aria-labelledby="deadlines-h"><div class="sheet__head"><h2 id="deadlines-h">Échéances</h2></div><div id="dash-deadlines">' + deadlinesHtml(d) + '</div></section></aside></div></div>';
@@ -394,6 +411,7 @@
     patch('rows', rowsHtml(d), sigRows(d));
     patch('dash-journal', journalHtml(d), sigJournal(d));
     patch('dash-deadlines', deadlinesHtml(d), sigDeadlines(d));
+    var cnt = $('#addsite-count'); if (cnt && d.sites && cnt.textContent !== siteCount(d)) cnt.textContent = siteCount(d);
     if (before && before !== sigs['dash-ledger']) {
       var c = d.counters, parts = [];
       if (c.done) parts.push(plural(c.done, 'effacement confirmé', 'effacements confirmés'));
@@ -423,9 +441,39 @@
     return '<div class="page-head"><div><span class="mono">Abonnement</span><h1>Un prix clair. Une <em>seule</em> mission.</h1></div></div><div class="stack">' + status + plansBlock() + '</div>';
   };
 
+  /* Rapport imprimable du dossier affiché (et export CSV) : impression navigateur ou « Enregistrer en PDF ». */
+  views.report = function () {
+    return '<div class="page-head report-head"><div><span class="mono" id="report-eyebrow">Rapport</span><h1>Rapport d’effacement</h1><p class="lead" id="report-lead">Préparation du rapport…</p></div>' +
+      '<div class="btn-row no-print"><button class="btn" type="button" id="report-print">Imprimer ou enregistrer en PDF</button><a class="btn btn--outline" id="report-csv" href="/api/requests.csv" download>Télécharger (CSV)</a><a class="btn btn--ghost" href="#dashboard">Retour au tableau de bord</a></div></div><div id="report-body" class="stack"><span class="spinner"></span></div>';
+  };
+  function reportHtml(d) {
+    var c = d.counters, u = d.user, prof = currentProfile(d);
+    var list = d.requests.slice().sort(function (a, b) { return a.broker.localeCompare(b.broker, 'fr'); });
+    var kv = [['Personne', esc(fullName(prof))], ['Mandat', u.mandate_signed_at ? 'signé le ' + fmtDate(u.mandate_signed_at) + (u.mandate_revoked_at ? ', révoqué le ' + fmtDate(u.mandate_revoked_at) : '') : 'non signé'], ['Courtiers surveillés', String(c.brokers)], ['Sites ajoutés', String(d.sites ? d.sites.count : 0)], ['Effacements confirmés', String(c.done)], ['Demandes en cours', String(c.in_progress + c.queued)], ['Vérifications à faire', String(c.action_required)], ['Refus', String(c.refused)], ['Exposition estimée', d.exposure + NNBSP + '%'], ['Prochaine vérification', d.next_check_at ? fmtDate(d.next_check_at) : '—']];
+    var rows = list.map(function (r) {
+      return '<tr><td><strong>' + esc(r.broker) + '</strong>' + (r.custom ? '<small>site ajouté</small>' : '') + '</td><td data-label="Catégorie">' + esc(r.category) + '</td><td>' + chip(r.status) + '</td><td data-label="Envoyée">' + (r.sent_at ? fmtDate(r.sent_at) : '—') + '</td><td data-label="Suivi">' + (r.status === 'done' ? 'effacée le ' + fmtDate(r.completed_at) : r.due_at ? 'due le ' + fmtDate(r.due_at) : '—') + '</td><td class="mono mono--plain" data-label="Réf.">' + esc(r.ref) + '</td></tr>';
+    }).join('');
+    return '<section class="sheet" aria-labelledby="rep-sum"><div class="sheet__head"><h2 id="rep-sum">Synthèse</h2><span class="mono">' + plural(c.total, 'demande', 'demandes') + '</span></div><div class="sheet__body"><dl class="kv kv--2">' + kv.map(function (x) { return '<dt>' + x[0] + '</dt><dd>' + x[1] + '</dd>'; }).join('') + '</dl></div></section>' +
+      '<section class="sheet" aria-labelledby="rep-list"><div class="sheet__head"><h2 id="rep-list">Demandes</h2><span class="mono">cycle en cours</span></div>' + (rows ? '<div class="report-wrap"><table class="report-table"><caption class="vh">Demandes d’effacement par courtier</caption><thead><tr><th scope="col">Courtier ou site</th><th scope="col">Catégorie</th><th scope="col">Statut</th><th scope="col">Envoyée</th><th scope="col">Suivi</th><th scope="col">Référence</th></tr></thead><tbody>' + rows + '</tbody></table></div>' : '<p class="empty">Aucune demande pour l’instant.</p>') + '</section>' +
+      '<p class="mono mono--plain report-foot">Demandes adressées par Oubli au nom de ' + esc(fullName(prof)) + ', en vertu du mandat de représentation (RGPD art. 17 et 21, CCPA). Chaque courrier et chaque réponse sont horodatés dans le journal du dossier.</p>';
+  }
+  function loadReport() {
+    var pid = state.profileId ? '?profile_id=' + encodeURIComponent(state.profileId) : '';
+    api('/dashboard' + pid).then(function (d) {
+      state.dash = d; state.profileId = d.profile_id;
+      var body = $('#report-body'); if (!body || params().route !== 'report') return;
+      var prof = currentProfile(d);
+      $('#report-eyebrow').textContent = 'Rapport' + SEP + 'Dossier ' + fileNo(d.profile_id);
+      $('#report-lead').textContent = fullName(prof) + SEP + 'édité le ' + fmtWhen(new Date().toISOString());
+      $('#report-csv').setAttribute('href', '/api/requests.csv?profile_id=' + encodeURIComponent(d.profile_id));
+      body.innerHTML = reportHtml(d);
+    }).catch(function (e) { if (e.status === 401) { resetSession(); go('login'); return; } var b = $('#report-body'); if (b) b.innerHTML = '<p class="notice" role="alert">' + esc(e.message) + '</p>'; });
+  }
+
   views.settings = function () {
     return '<div class="page-head"><div><span class="mono">Paramètres</span><h1>Votre compte, vos données, vos droits.</h1></div></div><div class="stack">' +
       '<form class="sheet" id="pwd-form" novalidate><div class="sheet__head"><h2>Mot de passe</h2></div><div class="sheet__body"><div class="fields">' + field('current', 'Mot de passe actuel', '', { extra: 'type="password" autocomplete="current-password" required' }) + field('next', 'Nouveau mot de passe', '', { extra: 'type="password" autocomplete="new-password" minlength="10" required' }, 'Au moins 10' + NBSP + 'caractères. Les autres sessions seront déconnectées.') + '</div>' + msgEl('msg-pwd-form', 'margin-top:16px') + '</div><div class="sheet__foot"><button class="btn btn--outline" type="submit">Changer le mot de passe</button></div></form>' +
+      '<section class="sheet" aria-labelledby="notif-h"><div class="sheet__head"><h2 id="notif-h">Notifications</h2></div><div class="sheet__body"><label class="check"><input type="checkbox" id="pref-report"' + (state.user.monthly_report !== false ? ' checked' : '') + '> <span>Recevoir chaque mois un rapport par e-mail' + NBSP + ': effacements confirmés, demandes en cours, vérifications à faire.</span></label><p class="hint notif-hint">Les alertes «' + NBSP + 'action requise' + NBSP + '» restent envoyées' + NBSP + ': elles demandent une intervention de votre part.</p></div></section>' +
       '<section class="sheet" aria-labelledby="data-h"><div class="sheet__head"><h2 id="data-h">Vos données chez Oubli</h2></div><div class="sheet__body"><p class="lead">Nous appliquons à nous-mêmes ce que nous demandons aux courtiers' + NBSP + ': export complet en un clic, suppression définitive sur demande.</p></div><div class="sheet__foot"><a class="btn btn--outline" href="/api/export" download="oubli-export.json">Exporter mes données (JSON)</a><span class="mono">RGPD art. 15 &amp; 20</span></div></section>' +
       '<form class="sheet" id="delete-form" novalidate><div class="sheet__head"><h2>Supprimer le compte</h2></div><div class="sheet__body"><p class="lead" style="margin-bottom:22px">Résilie l’abonnement, supprime vos profils, vos demandes et le journal. Irréversible.</p><div class="fields">' + field('password', 'Mot de passe', '', { extra: 'type="password" autocomplete="current-password" required' }) + '</div>' + msgEl('msg-delete-form', 'margin-top:16px') + '</div><div class="sheet__foot"><button class="btn btn--danger" type="submit">Supprimer définitivement</button><span class="mono">RGPD art. 17</span></div></form></div>';
   };
@@ -460,6 +508,7 @@
   function after(route, q) {
     if (route === 'dashboard') { drawChart(); loadDash(); pollTimer = setInterval(function () { if (!document.hidden) loadDash(); }, 6000); }
     if (route === 'onboarding' || route === 'dossier') loadMandateText();
+    if (route === 'report') loadReport();
     if (plugins[route]) plugins[route](q || {});
   }
   function loadDash(focusSel) {
@@ -524,6 +573,17 @@
       var mdd = formData(f); busy(f, true); showMsg(f, '');
       if (!f.querySelector('[name="accepted"]').checked) { showMsg(f, 'Cochez la case pour accepter le mandat.', true, null, f.querySelector('[name="accepted"]')); busy(f, false); return; }
       api('/mandate', { body: { full_name: mdd.full_name, accepted: true } }).then(function () { return loadMe(); }).then(function () { toast('Mandat signé.'); render(); if (onboardingDone()) launch(); }).catch(function (err) { showMsg(f, err.message, true, null, $('#f-full_name', f)); }).finally(function () { busy(f, false); });
+    } else if (f.id === 'addsite-form') {
+      var su = $('#addsite-url', f), sv = su.value.trim();
+      if (!sv) { showMsg(f, 'Collez l’adresse d’un site ou d’une page.', true, null, su); return; }
+      busy(f, true); showMsg(f, '');
+      api('/sites', { body: { url: sv, profile_id: state.profileId } }).then(function (r) {
+        var b = r.broker.name;
+        var text = r.status === 'already' ? b + ' fait déjà partie de vos demandes' + NBSP + ': l’adresse de la fiche a été ajoutée au dossier.' : r.status === 'relaunched' ? 'Fiche signalée chez ' + b + NBSP + ': une nouvelle demande d’effacement part.' : r.registry ? b + ' ajouté à votre dossier' + NBSP + ': la demande part.' : 'Site ajouté' + NBSP + ': nous cherchons le contact de ' + b + ', la demande part dès qu’il est connu.';
+        su.value = ''; showMsg(f, text); toast(text);
+        state.filter = 'all'; state.search = ''; state.page = 1; var si = $('#broker-search'); if (si) si.value = '';
+        return loadDash();
+      }).catch(function (err) { showMsg(f, err.message, true, null, su); }).finally(function () { busy(f, false); });
     } else if (f.id === 'pwd-form') {
       var pw = formData(f); busy(f, true); showMsg(f, '');
       api('/auth/password', { body: pw }).then(function () { toast('Mot de passe changé.'); f.reset(); showMsg(f, ''); }).catch(function (err) { showMsg(f, err.message, true, null, $('#f-current', f)); }).finally(function () { busy(f, false); });
@@ -540,7 +600,7 @@
   function closeMail(focusBack) {
     var open = $('.mail', view); if (!open) return false;
     var b = $('[data-mails="' + open.getAttribute('data-for') + '"]', view);
-    open.remove(); if (b) { b.setAttribute('aria-expanded', 'false'); b.textContent = 'Courrier'; if (focusBack) b.focus(); }
+    open.remove(); if (b) { b.setAttribute('aria-expanded', 'false'); b.innerHTML = b._label || 'Détails'; if (focusBack) b.focus(); }
     return true;
   }
   document.addEventListener('keydown', function (e) {
@@ -551,6 +611,7 @@
   document.addEventListener('click', function (e) {
     var t = e.target.closest('button, a'); if (!t) return;
     if (t.getAttribute('aria-disabled') === 'true') { e.preventDefault(); return; }
+    if (t.id === 'report-print') { window.print(); return; }
     if (t.id === 'support-stop') { lock(t, true); api('/auth/impersonate/stop', { method: 'POST' }).then(backToAdmin).catch(function () { backToAdmin(null); }); }
     else if (t.matches('.tags__add button')) { addTag(t.closest('.f--list')); }
     else if (t.matches('.tag button')) { var li = t.closest('.tag'), nx = li.nextElementSibling || li.previousElementSibling, lf = li.closest('.f--list'), label = li.querySelector('span').textContent; li.remove(); (nx ? nx.querySelector('button') : $('.tags__add input', lf)).focus(); announce('Retiré' + NBSP + ': ' + label); }
@@ -577,10 +638,13 @@
       var row = t.closest('.row'), id = t.getAttribute('data-mails');
       if ($('.mail', row)) { closeMail(false); return; }
       closeMail(false); lock(t, true);
-      api('/requests/' + id + '/mails').then(function (m) {
-        var box = document.createElement('div'); box.className = 'mail'; box.id = 'mail-' + id; box.setAttribute('data-for', id); box.setAttribute('role', 'region'); box.setAttribute('aria-label', 'Courriers' + NBSP + '— ' + $('.row__who strong', row).textContent);
-        box.innerHTML = m.mails.length ? m.mails.map(function (x) { return '<div class="mail__item"><p class="mono mono--plain">' + esc(fmtTime(x.created_at)) + SEP + 'à ' + esc(x.to_addr) + SEP + esc(x.mode === 'smtp' ? 'envoyé' : 'boîte d’envoi locale') + '</p><div class="mail-body" tabindex="0" role="region" aria-label="Courrier du ' + esc(fmtTime(x.created_at)) + '">' + esc(x.subject + '\n\n' + x.body) + '</div></div>'; }).join('') : '<p class="empty empty--sm">Aucun courrier.</p>';
-        row.appendChild(box); t.setAttribute('aria-expanded', 'true'); t.textContent = 'Fermer';
+      api('/requests/' + id + '/details').then(function (m) {
+        var box = document.createElement('div'); box.className = 'mail'; box.id = 'mail-' + id; box.setAttribute('data-for', id); box.setAttribute('role', 'region'); box.setAttribute('aria-label', 'Détails' + NBSP + '— ' + $('.row__who strong', row).textContent);
+        var q2 = m.request, head = '<p class="mono mono--plain mail__ref">Réf. ' + esc(q2.ref) + (q2.cycle > 1 ? SEP + 'cycle ' + q2.cycle : '') + (q2.source_url ? SEP + '<a href="' + esc(q2.source_url) + '" target="_blank" rel="noopener noreferrer">fiche signalée<span class="vh"> (nouvel onglet)</span></a>' : '') + '</p>';
+        var hist = m.events.length ? '<ol class="hist">' + m.events.map(function (e) { return '<li class="t-' + esc(e.type) + '"><time datetime="' + esc(e.created_at) + '">' + fmtTime(e.created_at) + '</time><span>' + esc(typo(e.message)) + '</span></li>'; }).join('') + '</ol>' : '<p class="empty empty--sm">Aucun événement.</p>';
+        var mails = m.mails.length ? m.mails.map(function (x) { return '<div class="mail__item"><p class="mono mono--plain">' + esc(fmtTime(x.created_at)) + SEP + 'à ' + esc(x.to_addr) + SEP + esc(x.mode === 'smtp' ? 'envoyé' : 'boîte d’envoi locale') + '</p><div class="mail-body" tabindex="0" role="region" aria-label="Courrier du ' + esc(fmtTime(x.created_at)) + '">' + esc(x.subject + '\n\n' + x.body) + '</div></div>'; }).join('') : '<p class="empty empty--sm">Pas encore de courrier envoyé.</p>';
+        box.innerHTML = head + '<div class="mail__cols"><div><h3 class="mono">Historique</h3>' + hist + '</div><div><h3 class="mono">Courriers</h3>' + mails + '</div></div>';
+        row.appendChild(box); t.setAttribute('aria-expanded', 'true'); t._label = t.innerHTML; t.textContent = 'Fermer';
       }).catch(function (err) { toast(err.message, true); }).finally(function () { lock(t, false); });
     }
     else if (t.hasAttribute('data-remove')) { if (!arm(t, 'Confirmer le retrait')) return; api('/profiles/' + t.getAttribute('data-remove'), { method: 'DELETE' }).then(loadMe).then(function () { state.dash = null; state.profileId = null; toast('Profil retiré.'); render(); }).catch(function (err) { toast(err.message, true); }); }
@@ -591,6 +655,10 @@
   });
   document.addEventListener('change', function (e) {
     if (e.target.id === 'broker-sort') { state.sort = e.target.value; state.page = 1; renderRows(); }
+    if (e.target.id === 'pref-report') {
+      var box = e.target, on = box.checked; box.disabled = true;
+      api('/preferences', { method: 'PUT', body: { monthly_report: on } }).then(function (r) { state.user = r.user; toast(on ? 'Rapport mensuel activé.' : 'Rapport mensuel désactivé.'); }).catch(function (err) { box.checked = !on; toast(err.message, true); }).finally(function () { box.disabled = false; box.focus(); });
+    }
   });
   window.addEventListener('hashchange', render);
   window.addEventListener('resize', function () { clearTimeout(resizeTimer); resizeTimer = setTimeout(function () { var h = $('#exp-chart'); if (h && h._size && Math.abs(h.clientWidth - h._size.W) > 8) drawChart(); }, 150); });

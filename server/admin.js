@@ -15,6 +15,7 @@ import { EMAIL, clean, parseProfile, wrap } from './util.js';
 import { isSuspended, isBlockedEmail, startImpersonation, SUPPORT_MINUTES } from './auth.js';
 import { exportData } from './dashboard.js';
 import { runDiscovery } from './sites.js';
+import { runMonthlyReports } from './reports.js';
 
 const { applyOutcome, tick, launchProfile, ref, DEMO } = scheduler;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -712,6 +713,11 @@ admin.get('/audit', (req, res) => {
   const rows = q.all(`SELECT a.id, a.admin_id, a.action, a.target, a.details, a.ip, a.created_at, u.email AS admin_email ${base} ORDER BY a.id DESC LIMIT ? OFFSET ?`, ...params, p.per, p.offset);
   res.json({ entries: rows.map((a) => ({ ...a, details: JSON.parse(a.details || '{}') })), ...pageMeta(total, p), actions: q.all('SELECT action, COUNT(*) AS n FROM admin_audit GROUP BY action ORDER BY action').map((r) => r.action) });
 });
+admin.post('/reports/run', wrap(async (req, res) => {
+  const r = await runMonthlyReports();
+  audit(req, 'system.reports', null, { sent: r.sent, failed: r.failed });
+  res.json(r);
+}));
 admin.post('/tick', wrap(async (req, res) => {
   await tick();
   lastManualTickAt = now();

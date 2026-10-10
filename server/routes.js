@@ -16,7 +16,7 @@ import { launchProfile, applyOutcome, tick, DEMO } from './scheduler.js';
 import { EMAIL, publicUser, parseProfile, wrap, isId, str, strList, oneOf } from './util.js';
 import { buildDashboard, exportData } from './dashboard.js';
 import { addSite } from './sites.js';
-import { admin, auditAs, currentAnnouncement } from './admin.js';
+import { admin, auditAs, currentAnnouncement, toCsv } from './admin.js';
 
 export const api = express.Router();
 const fresh = (req) => q.get('SELECT * FROM users WHERE id = ?', req.user.id);
@@ -208,6 +208,33 @@ api.post('/requests/:id/resolve', requireAuth, wrap(async (req, res) => {
   logEvent(req.user.id, 'in_progress', 'Vérification transmise : la demande reprend son cours.', { profile_id: r.profile_id, request_id: r.id });
   res.json({ ok: true });
 }));
+// Détail d'une demande : historique (événements liés) et courriers, pour le panneau « Détails » du tableau de bord.
+api.get('/requests/:id/details', requireAuth, (req, res) => {
+  const r = ownRequest(req);
+  if (!r) return bad(res, 'Demande introuvable.', 404);
+  const b = q.get('SELECT name, domain, category, custom, legal_basis FROM brokers WHERE id = ?', r.broker_id);
+  res.json({
+    request: { id: r.id, ref: `OUBLI-${r.token}`, status: r.status, cycle: r.cycle, created_at: r.created_at, sent_at: r.sent_at, due_at: r.due_at, followup_sent_at: r.followup_sent_at, completed_at: r.completed_at, next_check_at: r.next_check_at, note: r.note, source_url: r.source_url, broker: b?.name, domain: b?.domain, custom: !!b?.custom },
+    events: q.all('SELECT id, type, message, created_at FROM events WHERE request_id = ? AND user_id = ? ORDER BY id DESC LIMIT 50', r.id, req.user.id),
+    mails: q.all('SELECT id, to_addr, subject, body, mode, created_at FROM mails WHERE request_id = ? AND user_id = ? ORDER BY id', r.id, req.user.id),
+  });
+});
+// Demandes du profil en CSV (rapport imprimable) : cycle en cours, une ligne par courtier ou site.
+api.get('/requests.csv', requireAuth, rateLimit({ max: 30 }), (req, res) => {
+  const d = buildDashboard(fresh(req), isId(req.query.profile_id) ? req.query.profile_id : undefined);
+  const STATUS = { queued: 'À envoyer', sent: 'Envoyée', in_progress: 'En cours', action_required: 'Action requise', done: 'Effacée', refused: 'Refusée', error: 'Erreur d’envoi' };
+  const rows = d.requests.map((r) => ({ courtier: r.broker, domaine: r.domain, categorie: r.category, statut: STATUS[r.status] || r.status, base_legale: r.legal_basis === 'ccpa' ? 'CCPA' : r.legal_basis === 'both' ? 'RGPD et CCPA' : 'RGPD', cycle: r.cycle, envoyee_le: r.sent_at || '', echeance: r.due_at || '', effacee_le: r.completed_at || '', reverification: r.next_check_at || '', fiche: r.source_url || '', reference: r.ref }));
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="oubli-demandes-${now().slice(0, 10)}.csv"`);
+  res.send(toCsv(['courtier', 'domaine', 'categorie', 'statut', 'base_legale', 'cycle', 'envoyee_le', 'echeance', 'effacee_le', 'reverification', 'fiche', 'reference'], rows));
+});
+// Préférences de l'abonné (rapport mensuel par e-mail).
+api.put('/preferences', requireAuth, (req, res) => {
+  if (typeof req.body.monthly_report !== 'boolean') return bad(res, 'Préférence invalide.');
+  q.run('UPDATE users SET monthly_report = ? WHERE id = ?', req.body.monthly_report ? 1 : 0, req.user.id);
+  logEvent(req.user.id, 'account', req.body.monthly_report ? 'Rapport mensuel par e-mail activé.' : 'Rapport mensuel par e-mail désactivé.');
+  res.json({ user: publicUser(fresh(req)) });
+});
 api.get('/requests/:id/mails', requireAuth, (req, res) => {
   const r = ownRequest(req, 'id');
   if (!r) return bad(res, 'Demande introuvable.', 404);

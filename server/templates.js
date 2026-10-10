@@ -105,6 +105,32 @@ ${COMPANY}, mandataire — Référence : ${ref}`,
   };
 }
 
+// Rapport mensuel : un bloc par personne protégée, chiffres du cycle en cours et actions à faire.
+export function monthlyReport({ month, blocks }) {
+  const lines = blocks.map((b) => [
+    b.name,
+    `  • ${b.done} effacement${b.done > 1 ? 's' : ''} confirmé${b.done > 1 ? 's' : ''}${b.doneMonth ? ` (dont ${b.doneMonth} ce mois-ci)` : ''}`,
+    `  • ${b.inProgress} demande${b.inProgress > 1 ? 's' : ''} en cours`,
+    b.action ? `  • ${b.action} vérification${b.action > 1 ? 's' : ''} attend${b.action > 1 ? 'ent' : ''} votre action` : null,
+    b.refused ? `  • ${b.refused} refus : réclamation en préparation` : null,
+    `  • Exposition estimée : ${b.exposure} %`,
+  ].filter(Boolean).join('\n')).join('\n\n');
+  return {
+    subject: `Votre rapport mensuel Oubli — ${month}`,
+    text: `Bonjour,
+
+Voici où en est votre dossier.
+
+${lines}
+
+Le détail, demande par demande : ${APP_URL}/app/#dashboard
+Rapport imprimable : ${APP_URL}/app/#report
+
+Vous recevez ce rapport parce qu’il est activé dans vos paramètres (${APP_URL}/app/#settings).
+— L’équipe Oubli`,
+  };
+}
+
 export function welcomeMail({ email }) {
   return {
     subject: 'Bienvenue chez Oubli — votre dossier est ouvert',
