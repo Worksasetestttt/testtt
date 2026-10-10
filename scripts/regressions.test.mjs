@@ -473,6 +473,51 @@ try {
   }
   step('administration : une page au-delà de la dernière affiche la dernière page (plus de tableau vide)');
 
+  // Serveur à part pour les groupes 16 et 17 : leurs comptes seuls y sont « dus » pour le rapport mensuel.
+  const R = await start('reports');
+  const RADM = await adminOf(R), rdb = R.sql();
+  const ago = (days) => new Date(Date.now() - days * 86400000).toISOString();
+
+  /* ---------- 16. Rapport mensuel : un envoi refusé n'est pas retenté à chaque passage ---------- */
+  // Un échec d'envoi (adresse refusée par le serveur d'envoi, panne) laissait le compte « dû » : nouvel essai à chaque
+  // passage horaire, un courrier en échec de plus à chaque fois et, au-delà de 200 comptes en échec, plus aucun autre
+  // rapport (la sélection, limitée à 200, retombait toujours sur les mêmes). Désormais : nouvel essai le lendemain.
+  {
+    const m = await member(R);
+    rdb.prepare('UPDATE users SET created_at = ?, email = ? WHERE id = ?').run(ago(31), 'injoignable@exemple', m.id);   // domaine incomplet : refusée à l'envoi
+    let r = await R.call('POST', '/admin/reports/run', {}, RADM);
+    assert.deepEqual([r.data.sent, r.data.failed], [0, 1], 'échec compté');
+    r = await R.call('POST', '/admin/reports/run', {}, RADM);
+    assert.deepEqual([r.data.sent, r.data.failed], [0, 0], 'pas de nouvel essai dans la journée');
+    assert.equal(rdb.prepare('SELECT COUNT(*) AS c FROM mails WHERE to_addr = ?').get('injoignable@exemple').c, 1, 'un seul courrier en échec journalisé');
+    rdb.prepare('UPDATE users SET report_retry_at = ? WHERE id = ?').run(ago(0.001), m.id);   // le lendemain
+    r = await R.call('POST', '/admin/reports/run', {}, RADM);
+    assert.deepEqual([r.data.sent, r.data.failed], [0, 1], 'nouvel essai le lendemain');
+    rdb.prepare('UPDATE users SET email = ?, report_retry_at = ? WHERE id = ?').run(m.email, ago(0.001), m.id);   // adresse corrigée
+    r = await R.call('POST', '/admin/reports/run', {}, RADM);
+    assert.deepEqual([r.data.sent, r.data.failed], [1, 0], 'rapport envoyé');
+    assert.equal(rdb.prepare('SELECT report_retry_at FROM users WHERE id = ?').get(m.id).report_retry_at, null, 'plus d’essai en attente');
+  }
+  step('rapport mensuel : un envoi refusé est retenté le lendemain, pas à chaque passage horaire');
+
+  /* ---------- 17. Exposition sur 12 semaines : une revérification ne réécrit pas le passé ---------- */
+  // L'historique était calculé sur le dernier cycle de chaque courtier : dès qu'une revérification démarrait, le courtier
+  // redevenait « exposé » sur toutes les semaines passées, y compris celles où son effacement était confirmé.
+  {
+    const m = await member(R);
+    await settle(R);
+    rdb.prepare(`UPDATE requests SET status = 'done', created_at = ?, sent_at = ?, completed_at = ?, next_check_at = ? WHERE profile_id = ?`).run(ago(70), ago(70), ago(56), ago(-60), m.pid);
+    const one = rdb.prepare('SELECT id FROM requests WHERE profile_id = ? LIMIT 1').get(m.pid).id;
+    rdb.prepare('UPDATE requests SET next_check_at = ? WHERE id = ?').run(ago(0.001), one);   // revérification due : nouveau cycle
+    await R.call('POST', '/admin/tick', {}, RADM);
+    const d = (await R.call('GET', '/dashboard', undefined, m.cookie)).data;
+    assert.ok(d.requests.some((x) => x.cycle === 2), 'nouveau cycle créé');
+    assert.ok(d.exposure > 0, 'exposition courante : le courtier revérifié compte');
+    assert.equal(d.exposure_history[11].exposure, d.exposure, 'semaine en cours : valeur courante');
+    assert.deepEqual(d.exposure_history.slice(3, 11).map((w) => w.exposure), Array(8).fill(0), 'semaines passées (effacements confirmés il y a 8 semaines) : inchangées');
+  }
+  step('exposition sur 12 semaines : une revérification compte à partir de son début, les semaines passées restent inchangées');
+
   console.log(`✔ Régressions validées (${passed} groupes de vérifications).`);
 } catch (e) {
   console.error('✘ Échec :', e.message);

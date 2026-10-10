@@ -9,22 +9,29 @@ import { MAX_SITES_PER_PROFILE } from './sites.js';
 const DAY = 86400000;
 const isoDay = (d) => d.toISOString().slice(0, 10);
 
-// Part (en %) des courtiers du cycle courant dont l'effacement n'était pas encore confirmé à une date donnée.
-function exposureAt(active, atIso) {
-  if (!active.length) return 100;
-  const exposed = active.filter((r) => !(r.completed_at && r.completed_at <= atIso && r.status === 'done')).length;
-  return Math.round((exposed / active.length) * 100);
+// Part (en %) des courtiers du dossier dont l'effacement n'était pas confirmé à une date donnée. `cycles` : pour chaque
+// courtier, ses demandes par cycle croissant. On juge le cycle en cours à cette date (le dernier créé avant elle, le
+// premier si aucun ne l'était encore) : une revérification compte à partir de son début et ne réécrit pas les semaines
+// passées, où l'effacement du cycle précédent était confirmé. À la date courante, c'est le dernier cycle.
+function exposureAt(cycles, atIso) {
+  if (!cycles.length) return 100;
+  const exposed = cycles.filter((list) => {
+    let r = list[0];
+    for (const c of list) if (c.created_at <= atIso) r = c;
+    return !(r.status === 'done' && r.completed_at && r.completed_at <= atIso);
+  }).length;
+  return Math.round((exposed / cycles.length) * 100);
 }
 
 // 12 points hebdomadaires : la valeur d'une semaine est l'exposition à la fin de cette semaine (bornée à maintenant).
-function exposureHistory(active, nowDate) {
+function exposureHistory(cycles, nowDate) {
   const monday = new Date(Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth(), nowDate.getUTCDate()));
   monday.setTime(monday.getTime() - ((monday.getUTCDay() + 6) % 7) * DAY);
   const out = [];
   for (let k = 11; k >= 0; k -= 1) {
     const weekStart = new Date(monday.getTime() - k * 7 * DAY);
     const boundary = k === 0 ? nowDate : new Date(weekStart.getTime() + 7 * DAY);
-    out.push({ week_start: isoDay(weekStart), exposure: exposureAt(active, boundary.toISOString()) });
+    out.push({ week_start: isoDay(weekStart), exposure: exposureAt(cycles, boundary.toISOString()) });
   }
   return out;
 }
@@ -75,15 +82,16 @@ export function buildDashboard(u, requestedProfileId) {
   const pid = requestedProfileId && profiles.some((p) => p.id === requestedProfileId) ? requestedProfileId : profiles[0]?.id;
   const rows = q.all(`SELECT r.*, b.name AS broker_name, b.category, b.domain, b.sensitivity, b.legal_basis, b.recheck_days, b.jurisdiction, b.custom, b.contact_source, b.contact_email AS broker_contact, b.contact_verified, b.discovery_status FROM requests r JOIN brokers b ON b.id = r.broker_id WHERE r.profile_id = ? ORDER BY CASE r.status WHEN 'action_required' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'sent' THEN 2 WHEN 'queued' THEN 3 WHEN 'refused' THEN 4 WHEN 'done' THEN 5 ELSE 6 END, b.sensitivity DESC, b.name`, pid);
   const total = rows.length;
-  const latestByBroker = new Map();
-  rows.forEach((r) => { const k = r.broker_id; if (!latestByBroker.has(k) || latestByBroker.get(k).cycle < r.cycle) latestByBroker.set(k, r); });
-  const active = [...latestByBroker.values()];
+  const byBroker = new Map();
+  rows.forEach((r) => { if (!byBroker.has(r.broker_id)) byBroker.set(r.broker_id, []); byBroker.get(r.broker_id).push(r); });
+  const cycles = [...byBroker.values()].map((list) => list.sort((a, b) => a.cycle - b.cycle));
+  const active = cycles.map((list) => list[list.length - 1]);   // cycle en cours de chaque courtier
   // Compteurs sur le cycle en cours de chaque courtier (comme l'exposition) : après une revérification, l'ancien cycle
   // effacé ne compte plus en plus de la nouvelle demande.
   const counts = { queued: 0, sent: 0, in_progress: 0, action_required: 0, done: 0, refused: 0, error: 0, stopped: 0 };
   active.forEach((r) => { const st = isStopped(r) ? 'stopped' : r.status; counts[st] = (counts[st] || 0) + 1; });
   const nowDate = new Date();
-  const exposure = exposureAt(active, nowDate.toISOString());
+  const exposure = exposureAt(cycles, nowDate.toISOString());
   const sentTotal = active.filter((r) => r.sent_at).length;
   const nextCheck = q.get('SELECT MIN(next_check_at) AS d FROM requests WHERE profile_id = ? AND next_check_at IS NOT NULL', pid)?.d || null;
   const nextDue = active.filter((r) => r.due_at && (r.status === 'sent' || r.status === 'in_progress')).map((r) => r.due_at).sort()[0] || null;
@@ -102,7 +110,7 @@ export function buildDashboard(u, requestedProfileId) {
     user: publicUser(u), profiles, profile_id: pid,
     counters: { sent: sentTotal, in_progress: counts.sent + counts.in_progress, action_required: counts.action_required, done: counts.done, queued: counts.queued, refused: counts.refused, error: counts.error, stopped: counts.stopped, total, brokers, active: active.length },
     exposure, next_check_at: nextCheck,
-    exposure_history: exposureHistory(active, nowDate),
+    exposure_history: exposureHistory(cycles, nowDate),
     categories, sensitivity,
     next_due_at: nextDue, last_sent_at: lastSent,
     last_activity_at: events[0]?.created_at || null,
