@@ -201,10 +201,13 @@ async function scenario(browser, width) {
   await layout(page, 'paramètres : codes de secours', width);
   await page.click('#tfa-codes-done'); await page.waitForSelector('#tfa-regen');
   await layout(page, 'paramètres : double authentification active', width);
-  // Connexion en deux étapes : aucune session avant le code ; code faux annoncé ; code de secours.
+  // Connexion en deux étapes : aucune session avant le code ; code faux annoncé ; code de secours. L'horloge du navigateur
+  // est avancée d'une heure pendant la connexion : l'étape « code » doit s'afficher quand même (le serveur juge l'expiration).
   await page.click('#logout'); await page.waitForSelector('#login-form');
+  await page.evaluate(() => { window.__realNow = Date.now; Date.now = () => window.__realNow() + 3600000; });
   await page.fill('#f-email', email); await page.fill('#f-password', STRONG); await page.click('#login-form button[type=submit]');
-  await page.waitForSelector('#code-form');
+  await page.waitForSelector('#code-form', { timeout: 8000 });
+  await page.evaluate(() => { Date.now = window.__realNow; });
   const cs = await page.evaluate(() => { const i = document.getElementById('f-code'); return { focus: document.activeElement === i, mode: i.getAttribute('inputmode'), ac: i.getAttribute('autocomplete'), link: (document.getElementById('code-switch') || {}).textContent }; });
   if (!cs.focus || cs.mode !== 'numeric' || cs.ac !== 'one-time-code' || cs.link !== 'Utiliser un code de secours') note(`étape « code » : ${JSON.stringify(cs)}`); else ok('étape « code » : focus, inputmode="numeric", autocomplete="one-time-code", « Utiliser un code de secours »');
   if ((await api(page, 'GET', '/me')).data.user) note('session ouverte avant le code');

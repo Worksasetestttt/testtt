@@ -1186,7 +1186,13 @@
       var d = formData(f); busy(f, true); showMsg(f, '');
       api(f.id === 'login-form' ? '/auth/login' : '/auth/signup', { body: d }).then(function (r) {
         // Double authentification : le mot de passe est juste, reste le code (aucune session n'est ouverte avant).
-        if (r && r.two_factor) { setPendingMfa({ c: r.challenge, e: String(d.email || '').trim(), x: r.expires_at }); state.codeRecovery = false; render(); var cf = $('#f-code'); if (cf) cf.focus(); return; }
+        // Durée de vie comptée sur l'horloge de ce navigateur : une horloge décalée ne doit pas faire croire à un jeton
+        // expiré (le serveur reste seul juge et répond challenge_expired le moment venu).
+        if (r && r.two_factor) {
+          var ttl = Date.parse(r.expires_at) - Date.now(); if (!(ttl > 30000 && ttl <= 10 * 60000)) ttl = 5 * 60000;
+          setPendingMfa({ c: r.challenge, e: String(d.email || '').trim(), x: new Date(Date.now() + ttl).toISOString() }); state.codeRecovery = false;
+          render(); var cf = $('#f-code'); if (cf) cf.focus(); return;
+        }
         return signedIn(r, d.email, f.id === 'login-form');
       }).catch(function (err) { showMsg(f, err.message, true, null, $('#f-password', f)); }).finally(function () { busy(f, false); });
     } else if (f.id === 'code-form') {

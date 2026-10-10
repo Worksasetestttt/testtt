@@ -223,9 +223,6 @@ button.auth__link:hover { text-decoration-color: currentColor; }
 .tfa-codes li::marker { font-family: var(--font-mono); font-size: .8rem; color: var(--muted); }
 .tfa-codes code { font-family: var(--font-mono); font-size: 1rem; letter-spacing: .06em; }
 #twofa .kv dd { min-width: 0; }
-@media (max-width: 767px) {
-  #twofa .btn { height: 44px; }
-}
 @media (max-width: 559px) {
   .tfa-codes { grid-template-columns: minmax(0, 1fr); }
 }

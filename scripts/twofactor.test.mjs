@@ -17,12 +17,14 @@ import * as serverTotp from '../server/totp.js';
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'oubli-2fa-'));
 const STRONG = 'Corde-a-linge-78!', NEW_PW = 'Nouveau-mot-2-passe!';
 const SECRET = 'test-secret-for-twofactor-suite-0123456789';
-const LOCK_MSG = /^Trop de tentatives\. Réessayez dans \d+ minutes\.$/;
+const LOCK_MSG = /^Trop de tentatives\.\sRéessayez dans\s\d+\sminutes\.$/;   // \s : espace ordinaire ou insécable
 const RECOVERY = /^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/;
 const servers = [];
 let passed = 0;
 const step = (name) => { passed += 1; console.log(`  ✔ ${name}`); };
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+// Typographie française des messages du serveur : espace insécable (jamais ordinaire) avant « : ; ? ! », apostrophe ’.
+const assertTypo = (msg, where) => assert.ok(typeof msg === 'string' && msg.length > 0 && !/ [:;?!]/.test(msg) && !msg.includes("'"), `typographie (${where}) : ${JSON.stringify(msg)}`);
 
 /* ---------- TOTP (RFC 4226 et 6238), calculé dans le test ---------- */
 const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -168,9 +170,9 @@ try {
   r = await call(S, 'POST', '/auth/2fa/setup', {}, { cookie: alice.cookie });
   assert.equal(r.status, 400, 'mot de passe exigé pour commencer');
   r = await call(S, 'POST', '/auth/2fa/setup', { password: 'Mauvais-mot-de-passe-1' }, { cookie: alice.cookie });
-  assert.equal(r.status, 400); assert.match(r.data.error, /Mot de passe incorrect/);
+  assert.equal(r.status, 400); assert.match(r.data.error, /Mot de passe incorrect/); assertTypo(r.data.error, 'mot de passe incorrect');
   r = await call(S, 'POST', '/auth/2fa/enable', { code: '123456' }, { cookie: alice.cookie });
-  assert.equal(r.status, 400); assert.equal(r.data.code, 'no_setup', 'confirmation sans clé affichée');
+  assert.equal(r.status, 400); assert.equal(r.data.code, 'no_setup', 'confirmation sans clé affichée'); assertTypo(r.data.error, 'sans clé');
   r = await call(S, 'POST', '/auth/2fa/setup', { password: STRONG }, { cookie: alice.cookie });
   assert.equal(r.status, 200, JSON.stringify(r.data));
   const firstSecret = r.data.secret;
@@ -184,7 +186,7 @@ try {
   const other = await login(S, alice.email);
   assert.equal(other.status, 200); assert.ok(other.cookie, 'clé non confirmée : la connexion reste sans code');
   r = await call(S, 'POST', '/auth/2fa/enable', { code: wrongCode(alice.secret) }, { cookie: alice.cookie });
-  assert.equal(r.status, 400); assert.equal(r.data.code, 'invalid_code', 'code faux');
+  assert.equal(r.status, 400); assert.equal(r.data.code, 'invalid_code', 'code faux'); assertTypo(r.data.error, 'premier code faux');
   r = await call(S, 'POST', '/auth/2fa/enable', { code: totp(firstSecret) }, { cookie: alice.cookie });
   assert.equal(r.status, 400, 'code de la clé remplacée');
   r = await call(S, 'POST', '/auth/2fa/enable', { code: totp(alice.secret, stepNow() - 3) }, { cookie: alice.cookie });
@@ -198,7 +200,8 @@ try {
   assert.equal((await me(S, alice.cookie)).email, alice.email, 'la session courante est conservée');
   r = await call(S, 'GET', '/auth/2fa', undefined, { cookie: alice.cookie });
   assert.equal(r.data.enabled, true); assert.equal(r.data.pending, false); assert.equal(r.data.recovery_remaining, 10); assert.ok(r.data.enabled_at);
-  assert.equal((await call(S, 'POST', '/auth/2fa/setup', { password: STRONG }, { cookie: alice.cookie })).status, 409, 'déjà active : pas de nouvelle clé');
+  r = await call(S, 'POST', '/auth/2fa/setup', { password: STRONG }, { cookie: alice.cookie });
+  assert.equal(r.status, 409, 'déjà active : pas de nouvelle clé'); assert.equal(r.data.secret, undefined); assertTypo(r.data.error, 'déjà active');
   assert.equal((await call(S, 'POST', '/auth/2fa/enable', { code: totp(alice.secret) }, { cookie: alice.cookie })).status, 409);
   const adm = await signup(S, 'admin@test.fr');
   r = await call(S, 'GET', '/admin/stats', undefined, { cookie: adm.cookie });
@@ -256,6 +259,7 @@ try {
   let ch = r.data.challenge;
   r = await second(S, ch, wrongCode(bob.secret));
   assert.equal(r.status, 401); assert.equal(r.data.code, 'invalid_code'); assert.equal(r.setCookie, ''); assert.equal(sessionsOf(S, bob.id), n0);
+  assertTypo(r.data.error, 'code faux à la connexion');
   r = await second(S, ch, await freshCode(bob));
   assert.equal(r.status, 200, JSON.stringify(r.data)); assert.match(r.setCookie, /HttpOnly/); assert.equal(r.data.user.email, bob.email);
   assert.equal((await me(S, r.cookie)).email, bob.email, 'session ouverte après le code');
@@ -267,11 +271,11 @@ try {
   assert.equal(r.status, 401); assert.equal(r.data.code, 'invalid_code', 'code déjà utilisé refusé (anti-rejeu)');
   S.db.prepare('UPDATE login_challenges SET expires_at = ? WHERE user_id = ?').run(new Date(Date.now() - 1000).toISOString(), bob.id);
   r = await second(S, ch, wrongCode(bob.secret));
-  assert.equal(r.status, 401); assert.equal(r.data.code, 'challenge_expired', 'jeton expiré'); assert.match(r.data.error, /mot de passe/);
+  assert.equal(r.status, 401); assert.equal(r.data.code, 'challenge_expired', 'jeton expiré'); assert.match(r.data.error, /mot de passe/); assertTypo(r.data.error, 'jeton expiré');
   ch = (await login(S, bob.email)).data.challenge;
   for (let i = 1; i <= 4; i++) { r = await second(S, ch, wrongCode(bob.secret)); assert.equal(r.data.code, 'invalid_code', `essai ${i}`); }
   r = await second(S, ch, wrongCode(bob.secret));
-  assert.equal(r.status, 401); assert.equal(r.data.code, 'challenge_expired', 'cinquième code faux : le jeton est détruit'); assert.match(r.data.error, /Trop de codes incorrects/);
+  assert.equal(r.status, 401); assert.equal(r.data.code, 'challenge_expired', 'cinquième code faux : le jeton est détruit'); assert.match(r.data.error, /Trop de codes incorrects/); assertTypo(r.data.error, 'cinq codes faux');
   r = await second(S, ch, totp(bob.secret, bob.lastStep + 1));
   assert.equal(r.data.code, 'challenge_expired', 'même un bon code ne sert plus avec ce jeton');
   for (const bad of [undefined, 42, '', 'x'.repeat(43), ['a']]) {
@@ -312,13 +316,13 @@ try {
 
   /* ---------- 6. Désactivation : mot de passe et code obligatoires ---------- */
   r = await call(S, 'POST', '/auth/2fa/disable', {}, { cookie: alice.cookie });
-  assert.equal(r.status, 400, 'mot de passe et code exigés');
+  assert.equal(r.status, 400, 'mot de passe et code exigés'); assertTypo(r.data.error, 'champs manquants');
   r = await call(S, 'POST', '/auth/2fa/disable', { password: STRONG }, { cookie: alice.cookie });
   assert.equal(r.status, 400, 'code exigé');
   r = await call(S, 'POST', '/auth/2fa/disable', { password: 'Mauvais-mot-de-passe-1', code: totp(alice.secret, alice.lastStep + 1) }, { cookie: alice.cookie });
   assert.equal(r.status, 400); assert.match(r.data.error, /Mot de passe incorrect/);
   r = await call(S, 'POST', '/auth/2fa/disable', { password: STRONG, code: wrongCode(alice.secret) }, { cookie: alice.cookie });
-  assert.equal(r.status, 400); assert.equal(r.data.code, 'invalid_code');
+  assert.equal(r.status, 400); assert.equal(r.data.code, 'invalid_code'); assertTypo(r.data.error, 'code faux à la désactivation');
   r = await call(S, 'POST', '/auth/2fa/disable', { password: STRONG, code: alice.lastCode }, { cookie: alice.cookie });
   assert.equal(r.status, 400, 'code déjà utilisé (activation) refusé');
   assert.equal((await call(S, 'GET', '/auth/2fa', undefined, { cookie: alice.cookie })).data.enabled, true, 'toujours active après les refus');
@@ -331,7 +335,8 @@ try {
   r = await login(S, alice.email);
   assert.equal(r.status, 200); assert.ok(r.cookie, 'connexion directe une fois désactivée'); assert.equal(r.data.two_factor, undefined);
   assert.ok(S.db.prepare(`SELECT 1 FROM events WHERE user_id = ? AND message LIKE 'Double authentification désactivée%'`).get(alice.id), 'désactivation journalisée');
-  assert.equal((await call(S, 'POST', '/auth/2fa/disable', { password: STRONG, code: '123456' }, { cookie: alice.cookie })).status, 409, 'rien à désactiver');
+  r = await call(S, 'POST', '/auth/2fa/disable', { password: STRONG, code: '123456' }, { cookie: alice.cookie });
+  assert.equal(r.status, 409, 'rien à désactiver'); assertTypo(r.data.error, 'pas active');
   step('désactivation : mot de passe et code (ni faux ni rejoué) obligatoires, clé et codes supprimés, journalisée');
 
   /* ---------- 7. Réinitialisation du mot de passe : aucune session sans le code ---------- */
@@ -340,7 +345,7 @@ try {
   const token = await resetToken(S, carol.email);
   r = await call(S, 'POST', '/auth/reset', { token, password: NEW_PW });
   assert.equal(r.status, 200, JSON.stringify(r.data)); assert.equal(r.data.signed_in, false); assert.equal(r.data.two_factor, true);
-  assert.match(r.data.message, /double authentification/);
+  assert.match(r.data.message, /double authentification/); assertTypo(r.data.message, 'réinitialisation');
   assert.equal(r.setCookie, '', 'aucune session ouverte sans le code');
   assert.equal(sessionsOf(S, carol.id), 0, 'toutes les sessions fermées, aucune ouverte');
   assert.equal(await me(S, carol.cookie), null);
@@ -460,7 +465,7 @@ try {
     P.db.prepare(`UPDATE users SET role = 'admin', email_verified_at = ? WHERE id = ?`).run(new Date().toISOString(), chef.id);   // comme « npm run admin -- promote »
     for (const [m, p] of [['GET', '/admin/stats'], ['GET', '/admin/users'], ['POST', '/admin/tick']]) {
       r = await call(P, m, p, m === 'POST' ? {} : undefined, { cookie: chef.cookie });
-      assert.equal(r.status, 403, `${m} ${p}`); assert.equal(r.data.code, 'two_factor_required'); assert.match(r.data.error, /double authentification/);
+      assert.equal(r.status, 403, `${m} ${p}`); assert.equal(r.data.code, 'two_factor_required'); assert.match(r.data.error, /double authentification/); assertTypo(r.data.error, 'administration');
     }
     const member = await signup(P, 'membre@test.fr');
     r = await call(P, 'GET', '/admin/stats', undefined, { cookie: member.cookie });
