@@ -304,3 +304,30 @@ export async function cancelSubscription(user) {
   if (user.subscription_status !== 'canceled') logEvent(user.id, 'billing', 'Abonnement résilié.');
   return { ends_at: ends };
 }
+
+// Suppression du compte : l'abonnement Stripe est annulé tout de suite (DELETE, sans facture finale ni prorata), même
+// s'il était déjà résilié en fin de période, puis ses factures encore ouvertes sont annulées (void) : un compte supprimé
+// n'est plus jamais prélevé. Toute erreur est propagée (la route répond 502 et ne supprime rien), y compris l'absence de
+// clé Stripe. Rejouable après un échec partiel : un abonnement déjà annulé ne l'est pas deux fois, seules les factures
+// restées ouvertes le sont. Sans abonnement Stripe (simulé, équipe, clé) : résiliation locale, comme cancelSubscription.
+export async function endSubscriptionNow(user) {
+  if (!user.stripe_subscription_id) return ['active', 'past_due'].includes(user.subscription_status) ? cancelSubscription(user) : { ends_at: user.subscription_ends_at || null };
+  if (!STRIPE_KEY) throw new Error('STRIPE_SECRET_KEY absent : l’abonnement Stripe du compte ne peut pas être annulé.');
+  const id = user.stripe_subscription_id, path = `/subscriptions/${encodeURIComponent(id)}`;
+  let sub;
+  try { sub = await stripe('GET', path); } catch (e) { if (e.stripeStatus === 404) return { ends_at: null }; throw e; }   // inconnu de Stripe : rien à prélever
+  if (!['canceled', 'incomplete_expired'].includes(sub.status)) {
+    sub = await stripe('DELETE', path);
+    q.run(`UPDATE users SET subscription_status = 'canceled', subscription_ends_at = ? WHERE id = ?`, iso(sub.ended_at) || iso(sub.canceled_at) || now(), user.id);
+    touch(user.id, answeredAt.get(sub));
+    logEvent(user.id, 'billing', `Abonnement arrêté immédiatement pour la suppression du compte${NB}: plus aucun prélèvement.`);
+  }
+  // Une facture annulée sort de la liste des factures ouvertes : la première page est relue jusqu'à épuisement.
+  for (let page = 0; page < 10; page += 1) {
+    const open = await stripe('GET', '/invoices', { subscription: id, status: 'open', limit: 100 });
+    const ids = (Array.isArray(open.data) ? open.data : []).map(sid).filter(Boolean);
+    for (const inv of ids) await stripe('POST', `/invoices/${encodeURIComponent(inv)}/void`, undefined, crypto.randomUUID());
+    if (!open.has_more || !ids.length) break;
+  }
+  return { ends_at: iso(sub.ended_at) || iso(sub.canceled_at) || now() };
+}

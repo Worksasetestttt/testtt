@@ -547,6 +547,100 @@ try {
   }
   step('webhooks en retard : ancien checkout, mise à jour ou facture ignorés (autre identifiant), même seconde appliquée, déduplication, ancien abonnement et clé, réponses de l’API datées');
 
+  /* ---------- 7. Suppression du compte : abonnement annulé tout de suite, factures ouvertes annulées ---------- */
+  // La suppression résiliait en fin de période (cancel_at_period_end) et seulement un abonnement « actif » ou « impayé » :
+  // une facture ouverte restait prélevable, et un abonnement résilié mais encore en cours n'était pas arrêté.
+  {
+    const deleted = (id) => { const r = row(id); return !!r.deleted_at && r.stripe_subscription_id === null && r.email === `deleted-${id}@oubli.invalid`; };
+    const remove = (a) => a.call('DELETE', '/account', { password: STRONG });
+    const voided = (calls) => calls.filter((c) => c.method === 'POST' && /\/void$/.test(c.path)).map((c) => c.path.split('/')[3]).sort();
+    // a. Abonnement actif, deux factures ouvertes, une payée.
+    const D = await actor('suppression@exemple.fr', { complete: true });
+    const subD = await paid(D, 'individuel');
+    const open1 = fake.addInvoice(subD), open2 = fake.addInvoice(subD), paidInv = fake.addInvoice(subD, { status: 'paid' });
+    let m = fake.mark();
+    let r = await D.call('DELETE', '/account', { password: 'mauvais-mot-de-passe' });
+    assert.equal(r.status, 400); assert.equal(fake.since(m).length, 0, 'mot de passe incorrect : aucun appel');
+    r = await remove(D);
+    assert.equal(r.status, 200, r.text);
+    let calls = fake.since(m);
+    assert.deepEqual(sig(calls).filter((x) => !/\/void$/.test(x)), [`GET /v1/subscriptions/${subD.id}`, `DELETE /v1/subscriptions/${subD.id}`, 'GET /v1/invoices']);
+    assert.equal(calls[1].raw, '', 'annulation immédiate, sans facture finale ni prorata');
+    assert.deepEqual({ subscription: calls[2].query.subscription, status: calls[2].query.status }, { subscription: subD.id, status: 'open' });
+    assert.deepEqual(voided(calls), [open1.id, open2.id].sort(), 'seules les factures ouvertes sont annulées');
+    assert.ok(!calls.some((c) => c.form.cancel_at_period_end), 'pas de résiliation en fin de période');
+    assert.equal(fake.subs.get(subD.id).status, 'canceled');
+    assert.deepEqual([fake.invoices.get(open1.id).status, fake.invoices.get(open2.id).status, fake.invoices.get(paidInv.id).status], ['void', 'void', 'paid']);
+    assert.ok(deleted(D.id), 'compte supprimé et anonymisé');
+    assert.equal((await D.call('GET', '/me')).data.user, null, 'session fermée');
+
+    // b. Abonnement résilié mais encore en cours (fin de période) : arrêté tout de suite lui aussi.
+    const C = await actor('suppression-resilie@exemple.fr');
+    const subC = await paid(C, 'individuel');
+    await cancelNow(C, subC);
+    m = fake.mark();
+    assert.equal((await remove(C)).status, 200);
+    assert.deepEqual(sig(fake.since(m)), [`GET /v1/subscriptions/${subC.id}`, `DELETE /v1/subscriptions/${subC.id}`, 'GET /v1/invoices']);
+    assert.equal(fake.subs.get(subC.id).status, 'canceled'); assert.ok(deleted(C.id));
+
+    // c. Paiement en attente : la facture impayée n'est plus représentée.
+    const P = await actor('suppression-impaye@exemple.fr');
+    const subP = await paid(P, 'individuel');
+    const unpaid = fake.addInvoice(subP);
+    fake.subs.get(subP.id).status = 'past_due';
+    await stripeEvent('customer.subscription.updated', structuredClone(fake.subs.get(subP.id)));
+    assert.equal((await P.me()).subscription_status, 'past_due');
+    m = fake.mark();
+    assert.equal((await remove(P)).status, 200);
+    assert.deepEqual(voided(fake.since(m)), [unpaid.id]);
+    assert.deepEqual([fake.subs.get(subP.id).status, fake.invoices.get(unpaid.id).status], ['canceled', 'void']); assert.ok(deleted(P.id));
+
+    // d. Stripe refuse l'annulation : 502, rien n'est supprimé ; un nouvel essai aboutit.
+    const F = await actor('suppression-echec@exemple.fr');
+    const subF = await paid(F, 'individuel');
+    fake.fail('DELETE', `/v1/subscriptions/${subF.id}`, 500);
+    r = await remove(F);
+    assert.equal(r.status, 502, r.text); assert.match(r.data.error, /pas été supprimé/); assert.ok(!r.text.includes('faux Stripe'));
+    assert.equal((await F.me()).email, 'suppression-echec@exemple.fr', 'compte et session intacts');
+    assert.equal(row(F.id).deleted_at, null); assert.equal(fake.subs.get(subF.id).status, 'active');
+    assert.equal((await remove(F)).status, 200); assert.ok(deleted(F.id)); assert.equal(fake.subs.get(subF.id).status, 'canceled');
+
+    // e. Abonnement annulé mais facture impossible à annuler : 502, rien n'est supprimé, le compte affiche la fin de
+    // l'abonnement ; le nouvel essai n'annule pas deux fois l'abonnement et annule la facture.
+    const V = await actor('suppression-facture@exemple.fr');
+    const subV = await paid(V, 'individuel');
+    const invV = fake.addInvoice(subV);
+    fake.fail('POST', `/v1/invoices/${invV.id}/void`, 500);
+    r = await remove(V);
+    assert.equal(r.status, 502, r.text); assert.equal(row(V.id).deleted_at, null);
+    assert.equal(fake.subs.get(subV.id).status, 'canceled', 'abonnement déjà arrêté');
+    const uv = await V.me();
+    assert.equal(uv.subscription_status, 'canceled', 'le compte reflète l’arrêt de l’abonnement');
+    m = fake.mark();
+    assert.equal((await remove(V)).status, 200);
+    assert.deepEqual(sig(fake.since(m)), [`GET /v1/subscriptions/${subV.id}`, 'GET /v1/invoices', `POST /v1/invoices/${invV.id}/void`], 'pas de seconde annulation');
+    assert.equal(fake.invoices.get(invV.id).status, 'void'); assert.ok(deleted(V.id));
+
+    // f. Abonnement inconnu de Stripe (404) : rien à arrêter, la suppression a lieu.
+    const G = await actor('suppression-inconnu@exemple.fr');
+    const subG = await paid(G, 'individuel');
+    fake.subs.delete(subG.id);
+    m = fake.mark();
+    assert.equal((await remove(G)).status, 200);
+    assert.deepEqual(sig(fake.since(m)), [`GET /v1/subscriptions/${subG.id}`]); assert.ok(deleted(G.id));
+
+    // g. La résiliation normale reste en fin de période : bouton « Résilier » (groupe 1) et administration.
+    const ADM = await actor('admin@test.fr');
+    const H = await actor('resiliation-admin@exemple.fr');
+    const subH = await paid(H, 'individuel');
+    m = fake.mark();
+    r = await ADM.call('POST', `/admin/users/${H.id}/subscription`, { status: 'canceled' });
+    assert.equal(r.status, 200, r.text);
+    assert.deepEqual(sig(fake.since(m)), [`POST /v1/subscriptions/${subH.id}`]); assert.deepEqual(fake.since(m)[0].form, { cancel_at_period_end: 'true' });
+    assert.equal(fake.subs.get(subH.id).status, 'active', 'accès jusqu’à la fin de la période');
+  }
+  step('suppression du compte : abonnement Stripe annulé tout de suite (même résilié en fin de période ou impayé), factures ouvertes annulées, 502 sans suppression si Stripe échoue, essai suivant sans double annulation ; résiliation normale en fin de période');
+
   db.close();
   assert.ok(!(serverOut + serverErr).includes(SK), 'la clé secrète n’apparaît jamais dans la console du serveur');
   console.log(`✔ Facturation Stripe validée (${passed} groupes de vérifications).`);

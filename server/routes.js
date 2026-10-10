@@ -11,7 +11,7 @@ import {
 } from './auth.js';
 import { sendMail, mailMode } from './mailer.js';
 import { welcomeMail, mandateText, complaintDraft, passwordChangedMail, MANDATE_VERSION } from './templates.js';
-import { PLANS, BILLING_PERIODS, billingMode, startCheckout, cancelSubscription, verifyStripeSignature, handleStripeEvent } from './billing.js';
+import { PLANS, BILLING_PERIODS, billingMode, startCheckout, cancelSubscription, endSubscriptionNow, verifyStripeSignature, handleStripeEvent } from './billing.js';
 import { launchProfile, applyOutcome, tick, ref, DEMO, schedulerState } from './scheduler.js';
 import { EMAIL, publicUser, parseProfile, wrap, isId, str, strList, oneOf, HttpError } from './util.js';
 import { buildDashboard, exportData, complaintReady } from './dashboard.js';
@@ -362,10 +362,11 @@ api.get('/export', requireAuth, rateLimit({ max: 10 }), (req, res) => {
 api.delete('/account', requireAuth, rateLimit({ max: 5 }), wrap(async (req, res) => {
   const u = fresh(req);
   if (typeof req.body.password !== 'string' || !(await verifyPassword(req.body.password, u.password_hash))) return bad(res, 'Mot de passe incorrect.');
-  // Abonnement en cours ou en attente de paiement : résilié avant toute suppression. Si Stripe ne confirme pas, rien
-  // n'est supprimé : sans compte, plus personne ne pourrait arrêter les prélèvements.
-  if (['active', 'past_due'].includes(u.subscription_status)) {
-    try { await cancelSubscription(u); }
+  // Abonnement arrêté avant toute suppression : chez Stripe, tout de suite (pas en fin de période), factures ouvertes
+  // annulées (endSubscriptionNow). Si Stripe ne confirme pas, rien n'est supprimé : sans compte, plus personne ne
+  // pourrait arrêter les prélèvements.
+  if (u.stripe_subscription_id || ['active', 'past_due'].includes(u.subscription_status)) {
+    try { await endSubscriptionNow(u); }
     catch (e) { console.error(`[billing] résiliation à la suppression (${req.id}) :`, e.message); return bad(res, 'La résiliation de l’abonnement n’a pas pu être confirmée : le compte n’a pas été supprimé. Réessayez dans quelques instants.', 502); }
   }
   db.exec('BEGIN');
