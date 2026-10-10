@@ -63,7 +63,9 @@ export async function startCheckout(user, plan, billing) {
       product_data: { name: `Oubli ${p.name}` },
     } } },
   }, crypto.randomUUID());
-  q.run('UPDATE users SET plan = ?, billing = ? WHERE id = ?', plan, billing, user.id);
+  // Offre retenue avant le paiement, sauf pendant un abonnement en cours (clé, équipe) : il garderait sinon l'offre
+  // choisie sans payer si le paiement est abandonné. Le webhook pose l'offre payée (métadonnées).
+  if (user.subscription_status !== 'active') q.run('UPDATE users SET plan = ?, billing = ? WHERE id = ?', plan, billing, user.id);
   return { mode: 'stripe', url: session.url };
 }
 
@@ -97,7 +99,12 @@ function userByMetadata(uid, customer) {
   return u;
 }
 
+// Abonnement offert par clé en cours (keys.js) : un événement tardif sur un ancien abonnement payé (résiliation, impayé)
+// ne l’écrase pas. Seul un abonnement payé redevenu actif le remplace (l’abonné a choisi de payer).
+const keyRunning = (u) => u.billing_mode === 'key' && u.subscription_status === 'active' && !!u.subscription_ends_at && u.subscription_ends_at > now();
+
 function setStatus(u, status, ends, message, extra = {}) {
+  if (status !== 'active' && keyRunning(u)) return;
   const changed = status !== u.subscription_status || (ends || null) !== (u.subscription_ends_at || null);
   q.run(`UPDATE users SET subscription_status = ?, subscription_ends_at = ?, billing_mode = 'stripe', stripe_customer_id = COALESCE(?, stripe_customer_id), stripe_subscription_id = COALESCE(?, stripe_subscription_id), plan = COALESCE(?, plan), billing = COALESCE(?, billing) WHERE id = ?`,
     status, ends || null, extra.customer || null, extra.subscription || null, extra.plan || null, extra.billing || null, u.id);

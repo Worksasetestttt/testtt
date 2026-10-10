@@ -26,8 +26,13 @@ export const STATUSES = ['queued', 'sent', 'in_progress', 'action_required', 'do
 export const ref = (r) => `OUBLI-${r.token}`;
 // Compte suspendu par l'administration : plus aucun envoi tant que la suspension court (même règle que auth.js).
 const suspended = (u) => !!(u.suspended_at && (!u.suspended_until || u.suspended_until > now()));
-export const isEligible = (u) => !!(u && !u.deleted_at && !suspended(u) && u.mandate_signed_at && !u.mandate_revoked_at
-  && (u.subscription_status === 'active' || (u.subscription_status === 'canceled' && u.subscription_ends_at && u.subscription_ends_at > now())));
+// Abonnement actif. Un abonnement offert par clé d’activation (billing_mode 'key', voir keys.js) cesse à sa date de fin,
+// même avant que le balayage (expireKeySubscriptions) ne le passe en « canceled ».
+export const subscriptionActive = (u) => !!(u && u.subscription_status === 'active'
+  && (u.billing_mode !== 'key' || (u.subscription_ends_at && u.subscription_ends_at > now())));
+// Accès au service : abonnement actif, ou résilié avec un accès maintenu jusqu’à la fin de la période payée.
+export const hasAccess = (u) => subscriptionActive(u) || !!(u && u.subscription_status === 'canceled' && u.subscription_ends_at && u.subscription_ends_at > now());
+export const isEligible = (u) => !!(u && !u.deleted_at && !suspended(u) && u.mandate_signed_at && !u.mandate_revoked_at && hasAccess(u));
 // Sécurité : en SMTP réel, jamais d’envoi vers un contact non vérifié par l’administrateur. Exception réglable pour un site
 // ajouté par un abonné : l’adresse publiée par le site lui-même, sur son propre domaine (AUTO_SEND_SITE_CONTACTS, actif
 // par défaut). Une adresse seulement présumée (privacy@domaine) attend toujours la vérification de l’équipe.
@@ -183,6 +188,21 @@ async function simulateReplies() {
   }
 }
 
+// Fin des abonnements offerts par clé : passés en « canceled » une fois leur date de fin atteinte (elle reste affichée
+// comme fin d’accès). Les demandes en file attendent un nouvel abonnement, comme après une résiliation.
+const longDate = (iso) => new Date(iso).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+export function expireKeySubscriptions(at = now()) {
+  const rows = q.all(`SELECT id, subscription_ends_at FROM users WHERE billing_mode = 'key' AND subscription_status = 'active' AND (subscription_ends_at IS NULL OR subscription_ends_at <= ?) AND deleted_at IS NULL`, at);
+  let expired = 0;
+  for (const u of rows) {
+    const r = q.run(`UPDATE users SET subscription_status = 'canceled' WHERE id = ? AND billing_mode = 'key' AND subscription_status = 'active' AND (subscription_ends_at IS NULL OR subscription_ends_at <= ?)`, u.id, at);
+    if (!r.changes) continue;
+    expired += 1;
+    logEvent(u.id, 'account', `Abonnement offert par clé arrivé à échéance${u.subscription_ends_at ? ` le ${longDate(u.subscription_ends_at)}` : ''}\u00a0: plus aucune demande ne part. Choisissez une offre ou activez une nouvelle clé pour reprendre la surveillance.`);
+  }
+  return expired;
+}
+
 function autoLaunch() {
   const profiles = q.all(`SELECT p.* FROM profiles p JOIN users u ON u.id = p.user_id WHERE u.deleted_at IS NULL AND u.mandate_signed_at IS NOT NULL AND u.mandate_revoked_at IS NULL AND u.subscription_status = 'active' AND p.first_name <> '' AND p.last_name <> '' AND NOT EXISTS (SELECT 1 FROM requests r WHERE r.profile_id = p.id)`);
   for (const p of profiles) {
@@ -199,7 +219,7 @@ export function tick() {
   inflight = (async () => {
     do {
       again = false;
-      try { autoLaunch(); await sendQueued(); await followUps(); rechecks(); if (DEMO) await simulateReplies(); }
+      try { expireKeySubscriptions(); autoLaunch(); await sendQueued(); await followUps(); rechecks(); if (DEMO) await simulateReplies(); }
       catch (e) { console.error('[scheduler]', e); }
       lastTick = now();
     } while (again);

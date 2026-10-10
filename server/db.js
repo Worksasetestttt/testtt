@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS users (
   billing TEXT,                      -- monthly | annual
   subscription_status TEXT NOT NULL DEFAULT 'none', -- none | active | past_due | canceled
   subscription_ends_at TEXT,
-  billing_mode TEXT,                 -- stripe | simulated
+  billing_mode TEXT,                 -- stripe | simulated | manual | key (clé d’activation, fin à subscription_ends_at)
   stripe_customer_id TEXT,
   stripe_subscription_id TEXT,
   mandate_signed_at TEXT,
@@ -193,6 +193,41 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_users_stripe_customer ON users(stripe_customer_id);
 CREATE INDEX IF NOT EXISTS idx_users_stripe_subscription ON users(stripe_subscription_id);
+`);
+
+/* ---------- Clés d’activation (keys.js) ---------- */
+// Abonnement offert sans paiement. La clé en clair (OUBLI-XXXX-XXXX-XXXX) n’est jamais stockée : seulement l’empreinte
+// SHA-256 de sa forme normalisée et ses 4 derniers caractères (hint), pour la reconnaître. Le CHECK sur uses garantit
+// au niveau de la base qu’une clé ne dépasse jamais son nombre d’utilisations.
+db.exec(`
+CREATE TABLE IF NOT EXISTS activation_keys (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  key_hash TEXT NOT NULL UNIQUE,
+  hint TEXT NOT NULL,
+  plan TEXT NOT NULL,                -- individuel | famille
+  days INTEGER NOT NULL CHECK (days BETWEEN 1 AND 730),
+  max_uses INTEGER NOT NULL DEFAULT 1 CHECK (max_uses BETWEEN 1 AND 1000),
+  uses INTEGER NOT NULL DEFAULT 0 CHECK (uses >= 0 AND uses <= max_uses),
+  expires_at TEXT,                   -- date limite d’utilisation (facultative)
+  note TEXT,
+  batch TEXT NOT NULL,               -- lot de création
+  created_by TEXT,
+  created_at TEXT NOT NULL,
+  revoked_at TEXT,
+  revoked_by TEXT
+);
+CREATE TABLE IF NOT EXISTS key_redemptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  key_id INTEGER NOT NULL REFERENCES activation_keys(id),
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  redeemed_at TEXT NOT NULL,
+  ends_at TEXT NOT NULL,
+  UNIQUE (key_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_activation_keys_batch ON activation_keys(batch);
+CREATE INDEX IF NOT EXISTS idx_activation_keys_created ON activation_keys(created_at);
+CREATE INDEX IF NOT EXISTS idx_key_redemptions_user ON key_redemptions(user_id);
+CREATE INDEX IF NOT EXISTS idx_users_key_ends ON users(subscription_ends_at) WHERE billing_mode = 'key' AND subscription_status = 'active';
 `);
 
 /* ---------- Registre de courtiers ---------- */

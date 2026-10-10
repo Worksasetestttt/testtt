@@ -1,5 +1,6 @@
 // Rapport mensuel par e-mail : une fois tous les 30 jours au plus par compte, pour les abonnés qui l'ont laissé activé,
-// dont le mandat est signé et l'abonnement en cours, et qui ont au moins une demande. Vérifié toutes les heures.
+// dont le mandat est signé et l'abonnement en cours (même règle que isEligible, scheduler.js : un abonnement offert par
+// clé cesse à sa date de fin), et qui ont au moins une demande. Vérifié toutes les heures.
 import { q, now, addDays } from './db.js';
 import { buildDashboard } from './dashboard.js';
 import { sendMail } from './mailer.js';
@@ -11,10 +12,10 @@ let running = false;
 export function dueUsers(at = now()) {
   return q.all(`SELECT u.* FROM users u WHERE u.deleted_at IS NULL AND u.monthly_report = 1 AND u.mandate_signed_at IS NOT NULL AND u.mandate_revoked_at IS NULL
       AND (u.suspended_at IS NULL OR (u.suspended_until IS NOT NULL AND u.suspended_until <= ?))
-      AND (u.subscription_status = 'active' OR (u.subscription_status = 'canceled' AND u.subscription_ends_at > ?))
+      AND ((u.subscription_status = 'active' AND (u.billing_mode IS NOT 'key' OR u.subscription_ends_at > ?)) OR (u.subscription_status = 'canceled' AND u.subscription_ends_at > ?))
       AND COALESCE(u.last_report_at, u.created_at) <= ?
       AND EXISTS (SELECT 1 FROM requests r WHERE r.user_id = u.id)
-    ORDER BY u.created_at LIMIT 200`, at, at, addDays(at, -PERIOD_DAYS));
+    ORDER BY u.created_at LIMIT 200`, at, at, at, addDays(at, -PERIOD_DAYS));
 }
 export async function runMonthlyReports() {
   if (running) return { sent: 0, skipped: true };

@@ -9,6 +9,7 @@
   var TABS = [
     ['overview', 'Vue d’ensemble', 'Abonnés, demandes, courtiers et santé du service, en un coup d’œil.'],
     ['users', 'Utilisateurs', 'Comptes, abonnements, mandats et sessions.'],
+    ['keys', 'Clés d’activation', 'Abonnements offerts sans paiement' + NB + ': création par lot, activations et révocation.', 'Clés'],
     ['requests', 'Demandes', 'Toutes les demandes d’effacement, leur statut et leurs courriers.'],
     ['brokers', 'Courtiers', 'Le registre des courtiers' + NB + ': contacts, juridictions, résultats.'],
     ['mails', 'Courriers', 'Chaque courrier envoyé, avec son contenu exact.'],
@@ -19,7 +20,7 @@
     ['audit', 'Journal d’audit', 'Chaque action d’un administrateur, horodatée et attribuée.'],
   ];
   var TAB = {}; TABS.forEach(function (t) { TAB[t[0]] = t; });
-  var BADGE = { users: ' comptes', requests: ' à traiter', brokers: ' contacts non vérifiés', contacts: ' messages à traiter', security: ' comptes suspendus' };
+  var BADGE = { users: ' comptes', keys: ' clés actives', requests: ' à traiter', brokers: ' contacts non vérifiés', contacts: ' messages à traiter', security: ' comptes suspendus' };
   var STATUSES = ['queued', 'sent', 'in_progress', 'action_required', 'done', 'refused', 'error'];
   var OUTCOMES = [['done', 'Effacée'], ['in_progress', 'En cours'], ['action_required', 'Vérification demandée'], ['refused', 'Refus']];
   var SUBS = [['active', 'Actif'], ['past_due', 'Paiement en attente'], ['canceled', 'Résilié'], ['none', 'Aucun abonnement']];
@@ -28,8 +29,8 @@
   var SENS = [['1', 'Faible'], ['2', 'Moyenne'], ['3', 'Élevée']];
   var SORTS = [['created_desc', 'Plus récentes'], ['created_asc', 'Plus anciennes'], ['status', 'Par statut'], ['due_asc', 'Échéance proche'], ['sent_desc', 'Envoi récent'], ['broker', 'Par courtier'], ['user', 'Par abonné']];
   var ACTIONS = { 'user.role': 'Rôle modifié', 'user.subscription': 'Abonnement modifié', 'user.logout_all': 'Sessions fermées', 'user.launch': 'Demandes lancées', 'user.delete': 'Compte supprimé', 'request.outcome': 'Réponse enregistrée', 'request.resend': 'Demande renvoyée', 'request.bulk': 'Réponses groupées', 'broker.create': 'Courtier créé', 'broker.update': 'Courtier modifié', 'broker.deactivate': 'Courtier désactivé', 'broker.test_mail': 'Courrier de test', 'contact.handled': 'Message traité', 'export.csv': 'Export CSV', 'system.tick': 'Planificateur exécuté',
-    'user.suspend': 'Compte suspendu', 'user.unsuspend': 'Compte réactivé', 'user.impersonate': 'Accès au compte', 'user.impersonate_stop': 'Fin de l’accès au compte', 'user.session_revoke': 'Session fermée', 'user.note': 'Note ajoutée', 'note.delete': 'Note supprimée', 'user.message': 'Message envoyé', 'user.email': 'Adresse modifiée', 'user.export': 'Données exportées', 'blocklist.add': 'Adresse bloquée', 'blocklist.remove': 'Blocage retiré', 'settings.announcement': 'Annonce modifiée', 'broker.discover': 'Recherche du contact', 'system.reports': 'Rapports mensuels envoyés' };
-  var KEYS = { until: 'jusqu’au', blocked: 'adresse bloquée', pattern: 'motif bloqué', subject: 'objet', text: 'texte', level: 'niveau', removed: 'retirée', minutes: 'minutes', note_id: 'note', was: 'motif levé', stripe: 'Stripe', note: 'note', reason: 'motif', sessions: 'sessions', created: 'créées', updated: 'mises à jour', missing: 'introuvables', rows: 'lignes', to: 'destinataire', mode: 'mode', ref: 'réf.', slug: 'slug', name: 'nom', handled: 'traité', outcome: 'résultat' };
+    'user.suspend': 'Compte suspendu', 'user.unsuspend': 'Compte réactivé', 'user.impersonate': 'Accès au compte', 'user.impersonate_stop': 'Fin de l’accès au compte', 'user.session_revoke': 'Session fermée', 'user.note': 'Note ajoutée', 'note.delete': 'Note supprimée', 'user.message': 'Message envoyé', 'user.email': 'Adresse modifiée', 'user.export': 'Données exportées', 'blocklist.add': 'Adresse bloquée', 'blocklist.remove': 'Blocage retiré', 'settings.announcement': 'Annonce modifiée', 'broker.discover': 'Recherche du contact', 'system.reports': 'Rapports mensuels envoyés', 'key.create': 'Clés d’activation créées', 'key.revoke': 'Clé d’activation révoquée' };
+  var KEYS = { count: 'nombre', plan: 'offre', days: 'jours', max_uses: 'utilisations par clé', uses: 'utilisations', expires_at: 'date limite', hint: 'indice', batch: 'lot', until: 'jusqu’au', blocked: 'adresse bloquée', pattern: 'motif bloqué', subject: 'objet', text: 'texte', level: 'niveau', removed: 'retirée', minutes: 'minutes', note_id: 'note', was: 'motif levé', stripe: 'Stripe', note: 'note', reason: 'motif', sessions: 'sessions', created: 'créées', updated: 'mises à jour', missing: 'introuvables', rows: 'lignes', to: 'destinataire', mode: 'mode', ref: 'réf.', slug: 'slug', name: 'nom', handled: 'traité', outcome: 'résultat' };
   var seq = 0, brokersById = {};
 
   /* ---------- utilitaires ---------- */
@@ -102,6 +103,9 @@
     if (v === true) return 'oui'; if (v === false) return 'non'; if (v == null || v === '') return '—';
     if (typeof v === 'object') return [v.status && O.subLabel(v.status), v.plan && planName(v.plan), v.billing && (v.billing === 'annual' ? 'annuel' : 'mensuel'), v.ends_at && 'fin ' + date(v.ends_at)].filter(Boolean).join(SEP) || '—';
     if ((k === 'from' || k === 'to' || k === 'outcome') && STATUSES.indexOf(v) >= 0) return O.statusLabel(v);
+    if (k === 'plan') return planName(v);
+    if (k === 'expires_at') return date(v);
+    if (k === 'hint') return '…' + v;
     return String(v);
   }
   function summary(a) {
@@ -115,8 +119,9 @@
   function targetLink(a) {
     var t = a.target, d = a.details || {}, p = String(a.action || '').split('.')[0];
     if (!t) return '—';
-    var txt = '<span class="mono mono--plain" title="' + esc(t) + '">' + esc(d.token ? 'OUBLI-' + d.token : d.slug || short(t)) + '</span>';
+    var txt = '<span class="mono mono--plain" title="' + esc(t) + '">' + esc(d.token ? 'OUBLI-' + d.token : p === 'key' ? (d.hint ? 'clé …' + d.hint : 'lot ' + t) : d.slug || short(t)) + '</span>';
     if (p === 'user') return '<a href="' + esc(link('users', { id: t })) + '">' + txt + '</a>';
+    if (p === 'key') return '<a href="' + esc(link('keys', d.hint ? { q: d.hint } : { batch: t })) + '">' + txt + '</a>';
     if (p === 'request') return '<a href="' + esc(link('requests', { q: d.token || '', open: t })) + '">' + txt + '</a>';
     if (p === 'broker') return '<a href="' + esc(link('brokers', { q: d.slug || '' })) + '">' + txt + '</a>';
     if (p === 'contact') return '<a href="' + esc(link('contacts')) + '">' + txt + '</a>';
@@ -200,7 +205,7 @@
   function health(v, text) { return '<div class="deadline"><b>' + v + '</b><span>' + text + '</span></div>'; }
   function outcomeButtons(id, note) { return '<div class="btn-row adm-quick">' + [['done', 'Effacée', ''], ['in_progress', 'En cours', ' btn--outline'], ['refused', 'Refus', ' btn--danger']].map(function (o) { return '<button class="btn btn--sm' + o[2] + '" type="button" data-outcome="' + o[0] + '" data-req="' + esc(id) + '"' + (note ? ' data-note="' + esc(note) + '"' : '') + '>' + o[1] + '</button>'; }).join('') + '</div>'; }
   function vOverview(s) {
-    var rs = s.requests_by_status || {}, b = s.brokers || {}, sc = s.scheduler || {}, act = s.action_required || [], unverified = (b.active || 0) - (b.verified || 0);
+    var rs = s.requests_by_status || {}, b = s.brokers || {}, sc = s.scheduler || {}, act = s.action_required || [], unverified = (b.active || 0) - (b.verified || 0), ks = s.keys || {};
     var notes = (s.demo ? '<p class="notice notice--info">Mode démo actif' + NB + ': les réponses des courtiers sont simulées.</p>' : '') +
       (s.mail_mode === 'smtp' && unverified > 0 ? '<p class="notice">' + pl(unverified, 'courtier actif a', 'courtiers actifs ont') + ' un contact non vérifié' + NB + ': aucune demande ne leur part en SMTP réel. <a href="' + esc(link('brokers', { f: 'unverified' })) + '">Vérifier les contacts</a></p>' : '');
     var ledger = '<section class="sheet adm-ledger" aria-label="Chiffres clés">' + stat('Utilisateurs', num(s.users), s.past_due ? pl(s.past_due, 'paiement en attente', 'paiements en attente') : 'comptes ouverts') + stat('Abonnés actifs', num(s.active), s.users ? Math.round(s.active / s.users * 100) + NNB + '% des comptes' : '—') + stat('Revenu mensuel', O.money(s.mrr_cents || 0), 'récurrent, TTC', 'is-money') + stat('Courriers', num(s.mails), 'envoyés au total') + '</section>';
@@ -210,6 +215,7 @@
       health(pct(s.done_rate), 'des demandes envoyées sont effacées') + health(days(s.median_days_to_done), 'délai médian avant effacement') +
       health(num(b.verified) + NB + '/' + NB + num(b.active), 'contacts de courtiers vérifiés') + health(sc.last_tick_at ? esc(O.fmtTime(sc.last_tick_at)) : '—', 'dernier passage du planificateur') +
       health(num(s.contacts_open), '<a href="' + esc(link('contacts', { status: 'open' })) + '">' + (s.contacts_open > 1 ? 'messages de contact à traiter' : 'message de contact à traiter') + '</a>') + health(num(s.newsletter), (s.newsletter > 1 ? 'inscrits' : 'inscrit') + ' à la lettre d’information') +
+      health(num(ks.active), '<a href="' + esc(link('keys', { status: 'active' })) + '">' + (ks.active > 1 ? 'clés d’activation actives' : 'clé d’activation active') + '</a>') + health(num(ks.subscriptions), (ks.subscriptions > 1 ? 'abonnements offerts par clé en cours' : 'abonnement offert par clé en cours') + ', hors revenu') +
       (s.suspended ? health(num(s.suspended), '<a href="' + esc(link('security')) + '">' + (s.suspended > 1 ? 'comptes suspendus' : 'compte suspendu') + '</a>') : '') + (s.support_sessions ? health(num(s.support_sessions), s.support_sessions > 1 ? 'accès support en cours' : 'accès support en cours') : '') + '</div>');
     var shown = act.slice(0, 12);
     var ar = sheet('adm-ar-h', 'Vérifications en attente', meta(pl(act.length, 'demande', 'demandes')), table('Demandes en attente de vérification', [th('Courtier'), th('Abonné'), th('<span class="vh">Réponse</span>', 'act')], shown.map(function (r) {
@@ -227,7 +233,7 @@
     var rows = d.users.map(function (u) {
       var del = !!u.deleted_at;
       return '<tr' + (del ? ' class="is-off"' : '') + '>' + td('Compte', '<a href="' + esc(href({ id: u.id })) + '" data-nav data-k="u-' + esc(u.id) + '"><strong>' + esc(del ? 'Compte supprimé' : u.email) + '</strong></a>' + (u.role === 'admin' ? ' <span class="badge">admin</span>' : '') + (u.suspended ? ' ' + chip('refused', 'Suspendu') : '') + '<span class="sub">' + esc(u.name || (del ? short(u.id) : 'Profil non renseigné')) + '</span>') +
-        td('Offre', u.plan ? esc(planName(u.plan)) + '<span class="sub">' + (u.billing === 'annual' ? 'annuel' : u.billing === 'monthly' ? 'mensuel' : '') + '</span>' : '—') + td('Abonnement', chip(u.subscription_status, O.subLabel(u.subscription_status))) +
+        td('Offre', u.plan ? esc(planName(u.plan)) + '<span class="sub">' + (u.billing_mode === 'key' ? 'offerte par clé' : u.billing === 'annual' ? 'annuel' : u.billing === 'monthly' ? 'mensuel' : '') + '</span>' : '—') + td('Abonnement', chip(u.subscription_status, O.subLabel(u.subscription_status))) +
         td('Mandat', esc(mandate(u))) + td('Demandes', '<span class="num">' + num(u.done_n) + NB + '/' + NB + num(u.requests_n) + '</span><span class="sub">effacées</span>' + (u.action_required_n ? chip('action_required', num(u.action_required_n) + ' à vérifier') : '')) + td('Créé le', '<span class="num">' + date(u.created_at) + '</span>') + '</tr>';
     }).join('');
     return bar + f + sheet('adm-users-h', 'Comptes', meta(pl(d.total, 'résultat', 'résultats')), table('Liste des comptes', [th('Compte'), th('Offre'), th('Abonnement'), th('Mandat'), th('Demandes'), th('Créé le')], rows, 'Aucun compte ne correspond.') + pager(d));
@@ -238,8 +244,10 @@
     var head = '<div class="adm-main-title"><div><a class="adm-back" href="' + esc(link('users')) + '" data-nav data-k="back"><span aria-hidden="true">←</span> Tous les utilisateurs</a><h2>' + esc(del ? 'Compte supprimé' : u.email) + '</h2></div><div class="btn-row">' + (u.suspended ? chip('refused', 'Suspendu') : '') + chip(u.subscription_status, O.subLabel(u.subscription_status)) + (u.role === 'admin' ? '<span class="badge">administrateur</span>' : '') + '</div></div>';
     var protectedAcc = del || self || u.role === 'admin', uid = esc(u.id);
     var susp = u.suspended ? '<div class="notice adm-banner" role="status"><p><strong>Compte suspendu</strong> depuis le ' + date(u.suspended_at) + (u.suspended_until ? ', jusqu’au ' + date(u.suspended_until) : ', sans date de fin') + '.' + (u.suspended_reason ? ' Motif' + NB + ': ' + esc(fr(u.suspended_reason)) + '.' : '') + ' La connexion est refusée et aucune demande ne part.</p><button class="btn btn--sm" type="button" data-unsuspend="' + uid + '" data-k="unsuspend">Réactiver le compte</button></div>' : '';
-    var kv = '<dl class="kv"><dt>Identifiant</dt><dd class="mono mono--plain">' + esc(u.id) + '</dd><dt>Offre</dt><dd>' + (u.plan ? esc(planName(u.plan)) + SEP + (u.billing === 'annual' ? 'annuel' : 'mensuel') : '—') + '</dd><dt>Paiement</dt><dd>' + esc(u.billing_mode === 'stripe' ? 'Stripe' : u.billing_mode === 'simulated' ? 'Simulé' : u.billing_mode === 'manual' ? 'Activé par l’équipe' : '—') + (u.stripe_customer ? '<span class="adm-sub">client ' + esc(u.stripe_customer) + (u.stripe_subscription ? SEP + 'abonnement ' + esc(u.stripe_subscription) : '') + '</span>' : '') + '</dd>' +
-      (u.subscription_ends_at ? '<dt>Fin d’accès</dt><dd>' + date(u.subscription_ends_at) + '</dd>' : '') + '<dt>Mandat</dt><dd>' + esc(mandate(u)) + (u.mandate_version ? '<span class="adm-sub">version ' + esc(u.mandate_version) + (u.mandate_name ? SEP + 'signé «' + NB + esc(u.mandate_name) + NB + '»' : '') + '</span>' : '') + '</dd>' +
+    var keyed = u.billing_mode === 'key', ks = d.keys || [], k0 = ks[0];
+    var kv = '<dl class="kv"><dt>Identifiant</dt><dd class="mono mono--plain">' + esc(u.id) + '</dd><dt>Offre</dt><dd>' + (u.plan ? esc(planName(u.plan)) + SEP + (keyed ? 'offerte par clé' : u.billing === 'annual' ? 'annuel' : 'mensuel') : '—') + '</dd><dt>Paiement</dt><dd>' + esc(u.billing_mode === 'stripe' ? 'Stripe' : u.billing_mode === 'simulated' ? 'Simulé' : u.billing_mode === 'manual' ? 'Activé par l’équipe' : keyed ? 'Clé d’activation' + (k0 ? ' …' + k0.hint : '') : '—') + (u.stripe_customer ? '<span class="adm-sub">client ' + esc(u.stripe_customer) + (u.stripe_subscription ? SEP + 'abonnement ' + esc(u.stripe_subscription) : '') + '</span>' : '') + (keyed && k0 ? '<span class="adm-sub">activée le ' + esc(date(k0.redeemed_at)) + SEP + esc(planName(k0.plan)) + ', ' + esc(pl(k0.days, 'jour', 'jours')) + (k0.note ? SEP + esc(k0.note) : '') + '</span>' : '') + '</dd>' +
+      (u.subscription_ends_at ? '<dt>Fin d’accès</dt><dd>' + date(u.subscription_ends_at) + '</dd>' : '') +
+      (ks.length ? '<dt>Clés utilisées</dt><dd><ul class="adm-keyuses">' + ks.map(function (k) { return '<li><a class="mono mono--plain" href="' + esc(link('keys', { q: k.hint })) + '">…' + esc(k.hint) + '</a> ' + esc(planName(k.plan)) + ', ' + esc(pl(k.days, 'jour', 'jours')) + '<span class="adm-sub">activée le ' + esc(date(k.redeemed_at)) + ', jusqu’au ' + esc(date(k.ends_at)) + (k.revoked_at ? SEP + 'clé révoquée depuis' : '') + '</span></li>'; }).join('') + '</ul></dd>' : '') + '<dt>Mandat</dt><dd>' + esc(mandate(u)) + (u.mandate_version ? '<span class="adm-sub">version ' + esc(u.mandate_version) + (u.mandate_name ? SEP + 'signé «' + NB + esc(u.mandate_name) + NB + '»' : '') + '</span>' : '') + '</dd>' +
       '<dt>Créé le</dt><dd>' + stamp(u.created_at) + '</dd>' + (del ? '<dt>Supprimé le</dt><dd>' + stamp(u.deleted_at) + '</dd>' : '') + '<dt>Sessions</dt><dd>' + pl(d.sessions_n, 'session active', 'sessions actives') + '</dd><dt>Courriers</dt><dd><a href="' + esc(link('mails', { user: u.id })) + '">' + pl(d.mails_n, 'courrier', 'courriers') + '</a></dd></dl>';
     var acts = del ? '<p class="empty empty--sm">Compte supprimé' + NB + ': aucune action possible.</p>' : '<div class="adm-actions">' +
       action('Lancer les demandes', 'Crée les demandes manquantes pour les profils complets (mandat signé et abonnement actif requis).', '<button class="btn btn--outline btn--sm" type="button" data-user-act="launch" data-user="' + esc(u.id) + '" data-k="act-launch">Lancer</button>') +
@@ -249,7 +257,7 @@
         action('Supprimer le compte', 'Résilie l’abonnement, efface profils, demandes, courriers et journal. Irréversible.', '<button class="btn btn--danger btn--sm" type="button" data-user-act="delete" data-user="' + esc(u.id) + '" data-k="act-delete">Supprimer</button>')) + '</div>';
     var subForm = del ? '' : '<form class="adm-subform adm-subform--plain" id="adm-sub-form" data-user="' + esc(u.id) + '" novalidate><div class="fields">' +
       sel('sub-status', 'Statut', 'status', SUBS, u.subscription_status) + sel('sub-plan', 'Offre', 'plan', [['', '—']].concat(planOpts()), u.plan) + sel('sub-billing', 'Périodicité', 'billing', [['monthly', 'Mensuelle']].concat(u.billing === 'annual' ? [['annual', 'Annuelle (ancienne formule)']] : []), u.billing || 'monthly') +
-      inp('sub-ends', 'Fin d’accès', 'ends_at', u.subscription_ends_at ? u.subscription_ends_at.slice(0, 10) : '', ' type="date"', 'Pour un abonnement résilié.') + inp('sub-note', 'Note interne', 'note', '', ' maxlength="200" autocomplete="off"', 'Visible dans le journal d’audit.') + '</div>' + msg() + '<div class="btn-row"><button class="btn btn--outline btn--sm" type="submit">Enregistrer l’abonnement</button></div></form>';
+      inp('sub-ends', 'Fin d’accès', 'ends_at', u.subscription_ends_at ? u.subscription_ends_at.slice(0, 10) : '', ' type="date"', keyed ? 'Abonnement offert par clé' + NB + ': il s’arrête à cette date (videz-la pour un abonnement sans limite).' : 'Pour un abonnement résilié.') + inp('sub-note', 'Note interne', 'note', '', ' maxlength="200" autocomplete="off"', 'Visible dans le journal d’audit.') + '</div>' + msg() + '<div class="btn-row"><button class="btn btn--outline btn--sm" type="submit">Enregistrer l’abonnement</button></div></form>';
     var profiles = d.profiles.map(function (p) {
       var name = ((p.first_name || '') + ' ' + (p.last_name || '')).trim(), r = p.requests || {}, open = (r.queued || 0) + (r.sent || 0) + (r.in_progress || 0);
       return '<div class="adm-profile"><span class="avatar" aria-hidden="true">' + esc(initials(name)) + '</span><div><strong>' + esc(name || 'Profil non renseigné') + '</strong><small>' + (p.is_primary ? 'Profil principal' : 'Proche') + SEP + pl(p.emails.length, 'e-mail', 'e-mails') + SEP + pl(p.phones.length, 'téléphone', 'téléphones') + SEP + pl(p.addresses.length, 'adresse', 'adresses') + SEP + esc(p.country || '') + '</small></div><div class="adm-profile__st">' + (r.done ? chip('done', num(r.done) + ' effacées') : '') + (r.action_required ? chip('action_required', num(r.action_required) + ' à vérifier') : '') + (open ? chip('sent', num(open) + ' en cours') : '') + (r.refused ? chip('refused', num(r.refused) + ' refus') : '') + '</div></div>';
@@ -299,6 +307,79 @@
     }).join(''), 'Aucun accès support.'));
     var ses = sheet('adm-sc4', 'Sessions actives', meta(pl(d.sessions_total, 'session', 'sessions') + ', 50 plus récentes'), sessionsTable(d.sessions, true));
     return sus + block + imp + ses;
+  }
+
+  /* ---------- Clés d’activation ---------- */
+  // Le dernier lot créé (clés en clair) ne vit qu'en mémoire : affiché au-dessus de la liste jusqu'à « Masquer les clés »
+  // ou jusqu'à la sortie de l'onglet. Le serveur ne le renverra jamais.
+  var freshKeys = null;
+  var KEY_ST = { active: ['active', 'Active'], used: ['sent', 'Utilisée'], expired: ['none', 'Expirée'], revoked: ['refused', 'Révoquée'] };
+  var DAYS_SHORTCUTS = [30, 90, 365];
+  function keyChip(st) { var k = KEY_ST[st] || ['none', st]; return chip(k[0], k[1]); }
+  function shareLink(key) { return location.origin + '/app/#signup?key=' + encodeURIComponent(key); }
+  function keyForm() {
+    return '<form class="sheet" id="adm-key-form" aria-labelledby="adm-kf-h" novalidate><div class="sheet__head"><h2 id="adm-kf-h">Créer des clés</h2>' + meta('Abonnement offert, sans paiement') + '</div><div class="sheet__body"><div class="fields adm-keyfields">' +
+      inp('key-count', 'Nombre de clés', 'count', '1', ' type="number" inputmode="numeric" min="1" max="100" step="1" required', 'De 1 à 100 par lot.') + sel('key-plan', 'Offre', 'plan', planOpts(), 'individuel') +
+      '<div class="f"><label for="key-days">Durée offerte (jours)</label><input id="key-days" name="days" value="30" type="number" inputmode="numeric" min="1" max="730" step="1" required aria-describedby="key-days-hint"><span class="hint" id="key-days-hint">De 1 à 730' + NB + 'jours, comptés depuis l’activation.</span>' +
+      '<div class="adm-days" role="group" aria-label="Durées courantes">' + DAYS_SHORTCUTS.map(function (n) { return '<button class="btn btn--outline btn--xs" type="button" data-key-days="' + n + '" aria-pressed="' + (n === 30) + '">' + n + NB + 'jours</button>'; }).join('') + '</div></div>' +
+      inp('key-uses', 'Utilisations par clé', 'max_uses', '1', ' type="number" inputmode="numeric" min="1" max="1000" step="1" required', '1 pour une clé personnelle, jusqu’à 1' + NNB + '000.') +
+      inp('key-until', 'Date limite (facultative)', 'expires_at', '', ' type="date"', 'Passé ce jour, la clé ne s’active plus.') +
+      inp('key-note', 'Note', 'note', '', ' maxlength="120" autocomplete="off" placeholder="ex. amis, Noël 2026"', 'Visible par l’équipe seulement (120' + NB + 'caractères au plus).') +
+      '</div>' + msg() + '</div><div class="sheet__foot"><button class="btn" type="submit">Créer les clés</button><span class="mono">Affichées une seule fois</span></div></form>';
+  }
+  function freshPanel(f) {
+    var rows = f.keys.map(function (k, i) {
+      return '<tr>' + td('Clé', '<code class="adm-key">' + esc(k.key) + '</code>') + td('Lien de partage', '<span class="adm-link">' + esc(shareLink(k.key)) + '</span>') +
+        td('', '<button class="btn btn--outline btn--xs" type="button" data-key-copy="' + i + '">Copier le lien<span class="vh"> de la clé …' + esc(k.hint) + '</span></button>', 'act') + '</tr>';
+    }).join('');
+    var what = planName(f.plan) + SEP + pl(f.days, 'jour', 'jours') + SEP + pl(f.max_uses, 'utilisation', 'utilisations') + ' par clé' + (f.expires_at ? SEP + 'jusqu’au ' + date(f.expires_at) : '');
+    return '<section class="sheet adm-fresh" aria-labelledby="adm-fresh-h" tabindex="-1" data-k="keys-fresh"><div class="sheet__head"><h2 id="adm-fresh-h">' + pl(f.keys.length, 'clé créée', 'clés créées') + '</h2>' + meta('Lot ' + esc(f.batch)) + '</div>' +
+      '<div class="sheet__body sheet__body--tight"><p class="notice"><strong>Copiez-les maintenant' + NB + ':</strong> elles ne seront plus affichées. Seul leur indice (les 4' + NB + 'derniers caractères) reste visible ensuite.</p><p class="adm-sub adm-fresh__what">' + esc(what) + '</p></div>' +
+      table('Clés créées et liens de partage', [th('Clé'), th('Lien de partage'), th('<span class="vh">Copier</span>', 'act')], rows, '') +
+      '<div class="sheet__foot"><div class="btn-row"><button class="btn btn--sm" type="button" data-keys-copy>Copier tout</button><button class="btn btn--outline btn--sm" type="button" data-keys-csv>Télécharger (CSV)</button></div><button class="btn btn--ghost" type="button" data-keys-hide>Masquer les clés</button></div></section>';
+  }
+  function vKeys(d, q) {
+    var c = d.counts || {};
+    var bar = '<div class="adm-bar">' + searchForm('Rechercher une clé', inp('adm-q', 'Rechercher', 'q', q.q, ' type="search" placeholder="indice, note, lot ou e-mail" autocomplete="off" maxlength="120" data-k="q"')) + '</div>';
+    var f = filters('Filtrer les clés par statut', 'status', [['', 'Toutes', c.all], ['active', 'Actives', c.active], ['used', 'Utilisées', c.used], ['expired', 'Expirées', c.expired], ['revoked', 'Révoquées', c.revoked]], q.status);
+    var scope = /^[0-9A-F]{8}$/.test(String(q.batch || '')) ? '<p class="notice notice--info">Clés du lot ' + esc(q.batch) + SEP + '<a href="' + esc(href({ batch: null, page: null })) + '" data-nav data-k="scope-batch">retirer ce filtre</a></p>' : '';
+    var rows = d.keys.map(function (k) {
+      var id = esc(k.id), reds = k.redemptions || [];
+      var who = reds.length ? '<ul class="adm-redeemers">' + reds.map(function (r) { return '<li>' + (r.deleted ? '<span>Compte supprimé</span>' : '<a href="' + esc(link('users', { id: r.user_id })) + '"><span class="ell">' + esc(r.email) + '</span></a>') + '<span class="sub">le ' + esc(date(r.redeemed_at)) + '</span></li>'; }).join('') +
+        (k.uses > reds.length ? '<li class="sub">et ' + pl(k.uses - reds.length, 'autre compte', 'autres comptes') + '</li>' : '') + '</ul>' : '<span>Aucune activation</span>';
+      var revoke = k.status === 'active' ? '<button class="btn btn--outline btn--xs adm-revoke" type="button" data-key-revoke="' + id + '" data-hint="' + esc(k.hint) + '" data-k="krev-' + id + '">Révoquer<span class="vh"> la clé …' + esc(k.hint) + '</span></button>' : '';
+      return '<tr' + (k.status === 'active' ? '' : ' class="is-off"') + '>' +
+        td('Indice', '<strong class="mono mono--plain adm-k" tabindex="-1" data-k="kb-' + id + '">…' + esc(k.hint) + '</strong><span class="sub">lot' + NB + esc(k.batch) + '</span>') +
+        td('Offre', esc(planName(k.plan)) + '<span class="sub">' + pl(k.days, 'jour', 'jours') + '</span>') +
+        td('Note', k.note ? '<span class="adm-details">' + esc(k.note) + '</span>' : '—') +
+        td('Dates', '<span class="num">créée le ' + esc(date(k.created_at)) + '</span><span class="sub">' + (k.expires_at ? 'limite ' + esc(date(k.expires_at)) : 'sans date limite') + '</span>') +
+        td('Statut', keyChip(k.status) + '<span class="sub num">' + num(k.uses) + NB + '/' + NB + pl(k.max_uses, 'utilisation', 'utilisations') + '</span>' + revoke) +
+        td('Comptes', who) + '</tr>';
+    }).join('');
+    var heads = [th('Indice'), th('Offre et durée'), th('Note'), th('Création et limite'), th('Statut et utilisations'), th('Comptes')];
+    return (freshKeys ? freshPanel(freshKeys) : '') + keyForm() + bar + f + scope +
+      sheet('adm-keys-h', 'Clés', meta(pl(d.total, 'résultat', 'résultats') + SEP + pl(d.subscriptions, 'abonnement offert en cours', 'abonnements offerts en cours')), table('Clés d’activation', heads, rows, 'Aucune clé ne correspond.') +
+        '<p class="adm-keys__foot">La révocation empêche toute nouvelle activation' + NB + '; les abonnements déjà accordés vont à leur terme (modifiables depuis la fiche du compte).</p>' + pager(d));
+  }
+  function csvCell(v) { var s = v == null ? '' : String(v); if (/^[=+\-@\t\r]/.test(s)) s = '\'' + s; return /[",;\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }
+  function keysCsv(f) {
+    var rows = f.keys.map(function (k) { return [k.key, shareLink(k.key), planName(f.plan), f.days, f.max_uses, f.expires_at ? f.expires_at.slice(0, 10) : '', f.note || '', f.batch]; });
+    return '\ufeff' + [['cle', 'lien', 'offre', 'jours', 'utilisations', 'date_limite', 'note', 'lot']].concat(rows).map(function (r) { return r.map(csvCell).join(','); }).join('\r\n') + '\r\n';
+  }
+  function downloadText(name, text, type) {
+    var url = URL.createObjectURL(new Blob([text], { type: type })), a = document.createElement('a');
+    a.href = url; a.download = name; a.hidden = true; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+  }
+  // Presse-papiers (contexte sécurisé), sinon copie par sélection ; le focus revient au bouton.
+  function copyText(text, okText, btn) {
+    function fallback() {
+      var ta = document.createElement('textarea'), ok = false; ta.value = text; ta.setAttribute('readonly', ''); ta.className = 'vh'; document.body.appendChild(ta); ta.select();
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      ta.remove(); if (btn) btn.focus();
+      if (ok) toast(okText); else toast('Copie impossible' + NB + ': sélectionnez le texte à la main.', true);
+    }
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(function () { toast(okText); }, fallback); else fallback();
   }
 
   /* ---------- Demandes ---------- */
@@ -502,6 +583,7 @@
   var VIEWS = {
     overview: function () { return api('/admin/stats').then(function (s) { setBadges(s); return vOverview(s); }); },
     users: function (q) { if (safeId(q.id)) return api('/admin/users/' + q.id).then(vUser); return api('/admin/users' + qs({ q: q.q, status: q.status, plan: q.plan, page: q.page })).then(function (d) { return vUsers(d, q); }); },
+    keys: function (q) { return api('/admin/keys' + qs({ q: q.q, status: q.status, batch: q.batch, page: q.page })).then(function (d) { return vKeys(d, q); }); },
     requests: function (q) { return api('/admin/requests' + qs({ q: q.q, status: q.status, sort: q.sort, broker: q.broker, user: q.user, page: q.page })).then(function (d) { return vRequests(d, q); }); },
     brokers: function (q) { return api('/admin/brokers').then(function (d) { return vBrokers(d, q); }); },
     mails: function (q) { return api('/admin/mails' + qs({ q: q.q, mode: q.mode, user: q.user, request: q.request, page: q.page })).then(function (d) { return vMails(d, q); }); },
@@ -514,6 +596,7 @@
   function loadMain(q, focusKey) {
     var main = $('#adm-main'); if (!main) return Promise.resolve();
     var my = ++seq, t = curTab(q);
+    if (t !== 'keys') freshKeys = null;   // les clés en clair ne survivent pas à la sortie de l'onglet
     main.setAttribute('aria-busy', 'true');
     return VIEWS[t](q).then(function (html) {
       if (my !== seq || !document.body.contains(main)) return;
@@ -531,7 +614,7 @@
   function reload(changes, focusKey) { history.replaceState(null, '', href(changes || {})); return loadMain(O.params().q, focusKey); }
   function setBadges(s) {
     var rs = s.requests_by_status || {}, b = s.brokers || {};
-    var v = { users: s.users, requests: (rs.action_required || 0) + (rs.error || 0), brokers: (b.active || 0) - (b.verified || 0), contacts: s.contacts_open, security: s.suspended };
+    var v = { users: s.users, keys: (s.keys || {}).active, requests: (rs.action_required || 0) + (rs.error || 0), brokers: (b.active || 0) - (b.verified || 0), contacts: s.contacts_open, security: s.suspended };
     var hot = { requests: v.requests > 0, brokers: s.mail_mode === 'smtp' && v.brokers > 0, contacts: v.contacts > 0 };
     Object.keys(v).forEach(function (k) { var el = $('[data-badge="' + k + '"]'); if (!el) return; el.innerHTML = '<span class="vh">,' + NB + '</span>' + num(v[k]) + '<span class="vh">' + BADGE[k] + '</span>'; el.hidden = !v[k]; el.classList.toggle('is-hot', !!hot[k]); });
   }
@@ -539,6 +622,7 @@
 
   function render(q) {
     var t = TAB[curTab(q)];
+    freshKeys = null;   // nouvelle navigation dans l'administration : les clés en clair ne sont plus affichées
     return '<div class="page-head"><div><span class="mono">Administration</span><h1>' + t[1] + '</h1><p class="lead">' + t[2] + '</p></div><div class="btn-row"><button class="btn btn--outline btn--sm" type="button" id="admin-tick">Exécuter le planificateur</button></div></div>' +
       '<div class="adm"><nav class="adm__rail" aria-label="Sections de l’administration">' + TABS.map(function (x) { return '<a class="adm__tab" href="#admin?tab=' + x[0] + '"' + (x[0] === t[0] ? ' aria-current="page"' : '') + '><span>' + (x[3] || x[1]) + '</span><b data-badge="' + x[0] + '" hidden></b></a>'; }).join('') + '</nav>' +
       '<div class="adm__main" id="adm-main" tabindex="-1" aria-busy="true"><p class="empty"><span class="spinner"></span><span class="vh">Chargement…</span></p></div></div>';
@@ -633,7 +717,23 @@
       var ctid = t.getAttribute('data-contact'), handled = t.getAttribute('data-handled') === 'true'; lock(t, true);
       api('/admin/contacts/' + ctid + '/handled', { body: { handled: handled } }).then(function () { done(handled ? 'Message marqué traité.' : 'Message rouvert.', 'c-' + ctid); }).catch(function (err) { fail(err); lock(t, false); });
     }
+    else if (t.hasAttribute('data-key-days')) { var kd = $('#key-days'); if (kd) { kd.value = t.getAttribute('data-key-days'); syncDays(); } }
+    else if (t.hasAttribute('data-keys-copy') && freshKeys) copyText(freshKeys.keys.map(function (k) { return k.key + '\t' + shareLink(k.key); }).join('\n') + '\n', pl(freshKeys.keys.length, 'clé copiée', 'clés copiées') + ' avec leur lien de partage.', t);
+    else if (t.hasAttribute('data-key-copy') && freshKeys) { var fk = freshKeys.keys[Number(t.getAttribute('data-key-copy'))]; if (fk) copyText(shareLink(fk.key), 'Lien de la clé …' + fk.hint + ' copié.', t); }
+    else if (t.hasAttribute('data-keys-csv') && freshKeys) { downloadText('oubli-cles-' + freshKeys.batch + '.csv', keysCsv(freshKeys), 'text/csv;charset=utf-8'); toast('Fichier CSV téléchargé' + NB + ': conservez-le en lieu sûr.'); }
+    else if (t.hasAttribute('data-keys-hide')) {
+      freshKeys = null; var panel = t.closest('.adm-fresh'); if (panel) panel.remove();
+      var kc = $('#key-count'); if (kc) kc.focus(); O.announce('Clés masquées' + NB + ': elles ne seront plus affichées.');
+    }
+    else if (t.hasAttribute('data-key-revoke')) {
+      if (!arm(t, 'Confirmer la révocation')) return;
+      var kid = t.getAttribute('data-key-revoke'), khint = t.getAttribute('data-hint'); lock(t, true);
+      api('/admin/keys/' + encodeURIComponent(kid) + '/revoke', { body: {} }).then(function () { done('Clé …' + khint + ' révoquée' + NB + ': elle ne peut plus être activée.', 'kb-' + kid); }).catch(function (err) { fail(err); lock(t, false); });
+    }
   });
+  /* Raccourcis de durée : le bouton correspondant à la valeur saisie est marqué enfoncé. */
+  function syncDays() { var kd = $('#key-days'); if (!kd) return; $$('[data-key-days]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.getAttribute('data-key-days') === String(kd.value).trim())); }); }
+  document.addEventListener('input', function (e) { if (onAdmin() && e.target.id === 'key-days') syncDays(); });
 
   document.addEventListener('submit', function (e) {
     if (!onAdmin()) return;
@@ -684,6 +784,19 @@
       var an = fd(f); if (an.text.length < 3) { formError(f, 'Annonce trop courte.', $('[name="text"]', f)); return; }
       var ab = $('button[type="submit"]', f); lock(ab, true); formOk(f);
       api('/admin/announcement', { method: 'PUT', body: an }).then(function (r) { O.state.config.announcement = r.announcement; O.chrome(); done('Annonce publiée.'); }).catch(function (err) { formError(f, err.message); lock(ab, false); });
+    } else if (f.id === 'adm-key-form') {
+      var kr = fd(f), kb = $('button[type="submit"]', f);
+      var invalid = [['count', 1, 100, 'Nombre de clés invalide' + NB + ': de 1 à 100 par lot.'], ['days', 1, 730, 'Durée invalide' + NB + ': de 1 à 730 jours.'], ['max_uses', 1, 1000, 'Nombre d’utilisations invalide' + NB + ': de 1 à 1' + NNB + '000 par clé.']].filter(function (x) { var n = Number(kr[x[0]]); return !/^\d+$/.test(kr[x[0]]) || n < x[1] || n > x[2]; })[0];
+      if (invalid) { formError(f, invalid[3], $('[name="' + invalid[0] + '"]', f)); return; }
+      if (kr.note.length > 120) { formError(f, 'Note trop longue' + NB + ': 120 caractères au plus.', $('[name="note"]', f)); return; }
+      lock(kb, true); formOk(f);
+      api('/admin/keys', { body: { count: Number(kr.count), plan: kr.plan, days: Number(kr.days), max_uses: Number(kr.max_uses), expires_at: kr.expires_at || null, note: kr.note } }).then(function (r) {
+        freshKeys = r;
+        done(pl(r.keys.length, 'clé créée', 'clés créées') + NB + ': copiez-les maintenant, elles ne seront plus affichées.', 'keys-fresh', { batch: r.batch, status: null, q: null, page: null });
+      }).catch(function (err) {
+        var fieldName = /nombre de clés/i.test(err.message) ? 'count' : /offre/i.test(err.message) ? 'plan' : /durée/i.test(err.message) ? 'days' : /utilisations/i.test(err.message) ? 'max_uses' : /date/i.test(err.message) ? 'expires_at' : /note/i.test(err.message) ? 'note' : '';
+        formError(f, err.message, fieldName ? $('[name="' + fieldName + '"]', f) : null); lock(kb, false);
+      });
     } else if (f.id === 'inbound-form') {
       var ib = {}; new FormData(f).forEach(function (v, k) { ib[k] = String(v); }); var ibtn = $('button[type="submit"]', f), res = $('#inbound-result');
       if (!ib.text.trim() && !ib.subject.trim() && !ib.token.trim()) { formError(f, 'Collez au moins l’objet ou le texte de la réponse.', $('#ib-text', f)); return; }

@@ -197,6 +197,28 @@ textarea.adm-textarea:focus { outline: none; border-color: var(--accent); box-sh
 .adm-health { display: grid; gap: 14px; padding: 20px 32px 24px; }
 .adm-health .deadline b { font-size: 1.1rem; }
 
+/* ---------- Clés d’activation : création par lot, lot créé (affiché une fois), liste ---------- */
+.adm-keyfields { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 22px 28px; }
+.adm-days { display: flex; flex-wrap: wrap; gap: 6px 8px; margin-top: 4px; }
+.adm-days .btn[aria-pressed="true"] { background: var(--text); border-color: var(--text); color: var(--bg); }
+.adm-fresh { border-color: var(--accent); }
+.adm-fresh:focus { outline: none; }
+.adm-fresh:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.adm-fresh__what { margin-top: 12px; word-break: normal; }
+.adm-key { font-family: var(--font-mono); font-size: .92rem; letter-spacing: .04em; white-space: nowrap; color: var(--text); background: var(--surface-2); padding: 3px 8px; border-radius: 6px; -webkit-user-select: all; user-select: all; }
+.adm-link { display: block; max-width: 440px; font-family: var(--font-mono); font-size: .78rem; letter-spacing: .02em; color: var(--muted); overflow-wrap: anywhere; -webkit-user-select: all; user-select: all; }
+.adm-k { font-size: .95rem; letter-spacing: .04em; }
+.adm-redeemers, .adm-keyuses { display: grid; gap: 8px; }
+.adm-redeemers li { line-height: 1.3; }
+.adm-revoke { margin-top: 8px; }
+.adm-keys__foot { padding: 14px 32px; border-top: 1px solid var(--border); color: var(--muted); font-size: .85rem; line-height: 1.45; }
+@media (max-width: 767px) {
+  .adm-keyuses a { display: inline-block; padding: 14px 6px; margin: -14px -6px; }   /* zone de clic de 44 px, sans décaler la ligne */
+  .adm-keys__foot { padding: 12px 20px; }
+  .adm-link { max-width: none; }
+  .adm-key { font-size: .85rem; letter-spacing: .02em; white-space: normal; overflow-wrap: anywhere; }
+}
+
 /* ---------- Réactif ---------- */
 @media (max-width: 1150px) {
   .adm { grid-template-columns: 170px minmax(0, 1fr); gap: 28px; }

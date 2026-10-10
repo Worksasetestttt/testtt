@@ -18,6 +18,7 @@ import { buildDashboard, exportData, complaintReady } from './dashboard.js';
 import { addSite, relaunchRequest } from './sites.js';
 import { admin, auditAs, currentAnnouncement, toCsv } from './admin.js';
 import { account } from './account.js';
+import { redeemKey, cancelRefusal } from './keys.js';
 
 export const api = express.Router();
 const fresh = (req) => q.get('SELECT * FROM users WHERE id = ?', req.user.id);
@@ -269,9 +270,18 @@ api.post('/billing/checkout', requireAuth, rateLimit({ max: 10 }), wrap(async (r
   catch (e) { console.error(`[billing] checkout impossible (${req.id}) :`, e.message); bad(res, 'Le paiement n’a pas pu être initialisé. Réessayez dans quelques instants.', 502); }
 }));
 api.post('/billing/cancel', requireAuth, rateLimit({ max: 10 }), wrap(async (req, res) => {
-  try { res.json(await cancelSubscription(fresh(req))); }
+  const u = fresh(req);
+  const keyed = cancelRefusal(u);   // abonnement offert par clé : rien à résilier (voir keys.js)
+  if (keyed) return bad(res, keyed, 409);
+  try { res.json(await cancelSubscription(u)); }
   catch (e) { console.error(`[billing] résiliation impossible (${req.id}) :`, e.message); bad(res, 'La résiliation n’a pas pu être transmise. Réessayez dans quelques instants.', 502); }
 }));
+// Clé d'activation (abonnement offert) : limitation stricte par adresse IP et par compte. La clé n'est jamais journalisée.
+const redeemPerIp = rateLimit({ windowMs: 60 * 60000, max: 10, name: 'redeem-ip' });
+const redeemPerAccount = rateLimit({ windowMs: 60 * 60000, max: 10, name: 'redeem-account', by: (req) => `u:${req.user.id}` });
+api.post('/billing/redeem', requireAuth, redeemPerIp, redeemPerAccount, (req, res) => {
+  res.json(redeemKey(req.user.id, str(req.body.key, 'key', 80)));
+});
 // Webhook Stripe : corps brut uniquement, signature obligatoire, cookies ignorés (voir index.js).
 export function stripeWebhook(req, res) {
   if (!Buffer.isBuffer(req.body)) return bad(res, 'Corps de requête invalide.');

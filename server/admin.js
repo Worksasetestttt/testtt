@@ -16,6 +16,7 @@ import { isSuspended, isBlockedEmail, startImpersonation, SUPPORT_MINUTES } from
 import { exportData } from './dashboard.js';
 import { runDiscovery } from './sites.js';
 import { runMonthlyReports } from './reports.js';
+import { KEY_STATUS_SQL, keyStatus, keyCounts, keySubscriptions, parseKeyBatch, createKeys, revokeKey, keysOfUser } from './keys.js';
 
 const { applyOutcome, tick, launchProfile, ref, DEMO } = scheduler;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -131,7 +132,8 @@ admin.get('/stats', (_req, res) => {
   const days = Array.from({ length: 14 }, (_, i) => new Date(start.getTime() + i * 86400000).toISOString().slice(0, 10));
   const byDay = (rows) => { const m = new Map(rows.map((r) => [r.day, r.n])); return days.map((day) => ({ day, n: m.get(day) || 0 })); };
   let mrr = 0;
-  for (const u of q.all(`SELECT plan, billing FROM users WHERE deleted_at IS NULL AND subscription_status = 'active'`)) { const p = PLANS[u.plan]; if (p) mrr += p.monthly; }  // formule unique : le prix mensuel en vigueur
+  // Formule unique : le prix mensuel en vigueur. Un abonnement offert par clé ne rapporte rien : hors revenu.
+  for (const u of q.all(`SELECT plan, billing FROM users WHERE deleted_at IS NULL AND subscription_status = 'active' AND billing_mode IS NOT 'key'`)) { const p = PLANS[u.plan]; if (p) mrr += p.monthly; }
   const requests = q.all('SELECT status, COUNT(*) AS n FROM requests GROUP BY status');
   const sentTotal = q.get('SELECT COUNT(*) AS c FROM requests WHERE sent_at IS NOT NULL').c;
   const doneTotal = q.get(`SELECT COUNT(*) AS c FROM requests WHERE status = 'done'`).c;
@@ -162,6 +164,7 @@ admin.get('/stats', (_req, res) => {
     newsletter: q.get('SELECT COUNT(*) AS c FROM newsletter').c,
     suspended: q.get(`SELECT COUNT(*) AS c FROM users u WHERE u.deleted_at IS NULL AND ${SUSPENDED_SQL}`, now()).c,
     support_sessions: q.get('SELECT COUNT(*) AS c FROM sessions WHERE impersonator_id IS NOT NULL AND expires_at > ?', now()).c,
+    keys: { ...keyCounts(), subscriptions: keySubscriptions() },
     scheduler: { ...(lastTickAt() ? { last_tick_at: lastTickAt() } : {}), last_manual_tick_at: lastManualTickAt, interval_ms: Number(process.env.SCHEDULER_INTERVAL_MS || (DEMO ? 20000 : 60000)) },
     mail_mode: mailMode, billing_mode: billingMode, demo: DEMO, generated_at: now(),
   });
@@ -211,6 +214,7 @@ admin.get('/users/:id', (req, res) => {
     notes: q.all('SELECT n.id, n.body, n.created_at, a.email AS admin_email FROM admin_notes n LEFT JOIN users a ON a.id = n.admin_id WHERE n.user_id = ? ORDER BY n.id DESC LIMIT 100', u.id),
     mails_n: q.get('SELECT COUNT(*) AS c FROM mails WHERE user_id = ?', u.id).c,
     audit: q.all('SELECT a.id, a.action, a.details, a.created_at, ad.email AS admin_email FROM admin_audit a LEFT JOIN users ad ON ad.id = a.admin_id WHERE a.target = ? ORDER BY a.id DESC LIMIT 20', u.id).map((a) => ({ ...a, details: JSON.parse(a.details || '{}') })),
+    keys: keysOfUser(u.id),   // clés d’activation utilisées (indice seulement)
   });
 });
 admin.post('/users/:id/role', (req, res) => {
@@ -233,7 +237,12 @@ admin.post('/users/:id/subscription', wrap(async (req, res) => {
   if (b.plan != null && b.plan !== '') { if (!PLANS[b.plan]) return bad(res, 'Offre inconnue.'); plan = b.plan; }
   if (b.billing != null && b.billing !== '') { if (!['monthly', 'annual'].includes(b.billing)) return bad(res, 'Périodicité inconnue (monthly ou annual).'); billing = b.billing; }
   if (b.ends_at !== undefined) { if (b.ends_at === null || b.ends_at === '') ends = null; else { ends = isoDate(b.ends_at); if (!ends) return bad(res, 'Date de fin invalide.'); } }
-  if (status === 'active') { if (!plan) return bad(res, 'Choisissez une offre pour activer l’abonnement.'); billing = billing || 'monthly'; ends = null; }
+  // Abonnement offert par clé : il reste « par clé » tant qu’une date de fin est donnée (le formulaire la pré-remplit ;
+  // même jour = heure conservée) ; sans date, il devient un abonnement sans limite activé par l’équipe.
+  if (u.billing_mode === 'key' && ends && u.subscription_ends_at && String(b.ends_at ?? '').slice(0, 10) === u.subscription_ends_at.slice(0, 10)) ends = u.subscription_ends_at;
+  const keyed = status === 'active' && u.billing_mode === 'key' && !!ends;
+  if (keyed && ends <= now()) return bad(res, 'La date de fin d’un abonnement offert par clé doit être dans le futur (videz-la pour un abonnement sans limite).');
+  if (status === 'active') { if (!plan) return bad(res, 'Choisissez une offre pour activer l’abonnement.'); billing = keyed ? null : billing || 'monthly'; if (!keyed) ends = null; }
   if (status === 'none') ends = null;
   // Un abonnement payé par Stripe se résilie chez Stripe (sinon les prélèvements continueraient) ; fin = fin de période.
   let viaStripe = false;
@@ -241,10 +250,11 @@ admin.post('/users/:id/subscription', wrap(async (req, res) => {
     try { ends = (await cancelSubscription(u)).ends_at; viaStripe = true; }
     catch (e) { console.error(`[admin] résiliation Stripe impossible (${req.id}) :`, e.message); return bad(res, 'Stripe n’a pas confirmé la résiliation : rien n’a été modifié. Réessayez dans quelques instants.', 502); }
   }
-  const mode = status === 'active' ? (u.billing_mode === 'stripe' ? 'stripe' : 'manual') : u.billing_mode;
+  const mode = status === 'active' ? (u.billing_mode === 'stripe' ? 'stripe' : keyed ? 'key' : 'manual') : u.billing_mode;
   q.run('UPDATE users SET subscription_status = ?, plan = ?, billing = ?, subscription_ends_at = ?, billing_mode = ? WHERE id = ?', status, plan, billing, ends, mode, u.id);
   const fmt = (iso) => new Date(iso).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
-  const msg = status === 'active' ? `Abonnement ${PLANS[plan].name} (${billing === 'annual' ? 'annuel' : 'mensuel'}) activé par l’équipe Oubli.`
+  const msg = keyed ? `Abonnement ${PLANS[plan].name} offert par clé, jusqu’au ${fmt(ends)} (modifié par l’équipe Oubli).`
+    : status === 'active' ? `Abonnement ${PLANS[plan].name} (${billing === 'annual' ? 'annuel' : 'mensuel'}) activé par l’équipe Oubli.`
     : status === 'canceled' ? `Abonnement résilié par l’équipe Oubli${ends ? ` ; accès maintenu jusqu’au ${fmt(ends)}` : ''}.`
     : status === 'past_due' ? 'Abonnement marqué « paiement en attente » par l’équipe Oubli.' : 'Abonnement retiré par l’équipe Oubli.';
   if (!viaStripe) logEvent(u.id, 'billing', msg);
@@ -658,6 +668,44 @@ admin.delete('/blocklist/:id', (req, res) => {
   q.run('DELETE FROM blocked_emails WHERE id = ?', b.id);
   audit(req, 'blocklist.remove', b.id, { pattern: b.pattern });
   res.json({ ok: true });
+});
+
+/* ---------- Clés d’activation (abonnements offerts, voir keys.js) ---------- */
+// Les clés en clair n’existent que dans la réponse de création ; ni la liste, ni l’audit, ni la base ne les contiennent
+// (pas plus que leur empreinte, qui ne sort jamais de la base).
+admin.post('/keys', (req, res) => {
+  const r = createKeys(parseKeyBatch(req.body), req.user.id);
+  audit(req, 'key.create', r.batch, { count: r.keys.length, plan: r.plan, days: r.days, max_uses: r.max_uses, expires_at: r.expires_at || undefined, note: r.note || undefined });
+  res.status(201).json(r);
+});
+const KEY_COLS = 'k.id, k.hint, k.plan, k.days, k.max_uses, k.uses, k.expires_at, k.note, k.batch, k.created_at, k.revoked_at, c.email AS created_by_email, rv.email AS revoked_by_email';
+admin.get('/keys', (req, res) => {
+  const p = paging(req.query), at = now();
+  const where = [], params = [];
+  const status = clean(req.query.status, 20), st = Object.hasOwn(KEY_STATUS_SQL, status) ? KEY_STATUS_SQL[status] : null;
+  if (st) { where.push(st.sql); if (st.dated) params.push(at); }
+  const batch = clean(req.query.batch, 20).toUpperCase();
+  if (/^[0-9A-F]{8}$/.test(batch)) { where.push('k.batch = ?'); params.push(batch); }
+  const search = clean(req.query.q, 120).replace(/^[….\s]+/, '');   // « …K7QZ » : l’indice tel qu’il est affiché
+  if (search) { const l = like(search); where.push(`(k.hint LIKE ? ESCAPE '\\' OR k.note LIKE ? ESCAPE '\\' OR k.batch LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM key_redemptions kr JOIN users u ON u.id = kr.user_id WHERE kr.key_id = k.id AND u.email LIKE ? ESCAPE '\\'))`); params.push(l, l, l, l); }
+  const base = `FROM activation_keys k LEFT JOIN users c ON c.id = k.created_by LEFT JOIN users rv ON rv.id = k.revoked_by${where.length ? ' WHERE ' + where.join(' AND ') : ''}`;
+  const total = q.get(`SELECT COUNT(*) AS c ${base}`, ...params).c;
+  const rows = q.all(`SELECT ${KEY_COLS} ${base} ORDER BY k.id DESC LIMIT ? OFFSET ?`, ...params, p.per, p.offset);
+  // Comptes qui ont utilisé chaque clé : les cinq plus récents (uses donne le total).
+  const used = new Map(rows.map((k) => [k.id, []]));
+  if (rows.length) {
+    for (const x of q.all(`SELECT * FROM (SELECT kr.key_id, kr.user_id, u.email, u.deleted_at, kr.redeemed_at, kr.ends_at, ROW_NUMBER() OVER (PARTITION BY kr.key_id ORDER BY kr.id DESC) AS rn
+        FROM key_redemptions kr JOIN users u ON u.id = kr.user_id WHERE kr.key_id IN (${rows.map(() => '?').join(', ')})) WHERE rn <= 5 ORDER BY key_id, rn`, ...rows.map((k) => k.id))) {
+      used.get(x.key_id).push({ user_id: x.user_id, email: x.deleted_at ? null : x.email, deleted: !!x.deleted_at, redeemed_at: x.redeemed_at, ends_at: x.ends_at });
+    }
+  }
+  res.json({ keys: rows.map((k) => ({ ...k, status: keyStatus(k, at), redemptions: used.get(k.id) })), ...pageMeta(total, p), counts: keyCounts(at), subscriptions: keySubscriptions(at) });
+});
+admin.post('/keys/:id/revoke', (req, res) => {
+  if (!INT.test(req.params.id)) return bad(res, 'Clé introuvable.', 404);
+  const k = revokeKey(Number(req.params.id), req.user.id);
+  audit(req, 'key.revoke', k.id, { hint: k.hint, batch: k.batch, uses: k.uses, max_uses: k.max_uses });
+  res.json({ key: { id: k.id, hint: k.hint, uses: k.uses, max_uses: k.max_uses, revoked_at: k.revoked_at, status: keyStatus(k) } });
 });
 
 /* ---------- Annonce affichée dans l'application (bandeau) ---------- */
