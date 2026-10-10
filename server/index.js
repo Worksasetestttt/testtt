@@ -144,8 +144,10 @@ app.use('/api', (err, req, res, next) => {
 const staticOpts = { maxAge: PROD ? '1h' : 0, extensions: ['html'], dotfiles: 'ignore' };
 app.use('/assets', express.static(path.join(ROOT, 'assets'), staticOpts));
 app.use('/app', express.static(path.join(ROOT, 'app'), staticOpts));
-app.get(['/app', '/app/*splat'], (_req, res) => res.sendFile(path.join(ROOT, 'app', 'index.html')));
-app.get('/', (_req, res) => res.sendFile(path.join(ROOT, 'index.html')));
+// Chemin relatif + root : la règle « dotfiles » ne s'applique qu'au chemin servi, pas au dossier d'installation
+// (un chemin absolu sous ~/.local ou .claude/worktrees donnerait 404).
+app.get(['/app', '/app/*splat'], (_req, res) => res.sendFile('index.html', { root: path.join(ROOT, 'app') }));
+app.get('/', (_req, res) => res.sendFile('index.html', { root: ROOT }));
 app.use((_req, res) => res.redirect('/'));
 // Erreur hors API (chemin indéchiffrable, fichier illisible…) : page minimale sans détail.
 app.use((err, req, res, next) => {
