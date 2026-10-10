@@ -162,7 +162,8 @@ ${user.email}`;
 }
 
 // Rapport mensuel : un bloc par personne protégée, chiffres du cycle en cours et actions à faire.
-export function monthlyReport({ month, blocks }) {
+// unsubscribe : lien de la page de désinscription (application), sans session (reports.js).
+export function monthlyReport({ month, blocks, unsubscribe = null }) {
   const lines = blocks.map((b) => [
     b.name,
     `  • ${b.done} effacement${b.done > 1 ? 's' : ''} confirmé${b.done > 1 ? 's' : ''}${b.doneMonth ? ` (dont ${b.doneMonth} ce mois-ci)` : ''}`,
@@ -182,7 +183,7 @@ ${lines}
 Le détail, demande par demande : ${APP_URL}/app/#dashboard
 Rapport imprimable : ${APP_URL}/app/#report
 
-Vous recevez ce rapport parce qu’il est activé dans vos paramètres (${APP_URL}/app/#settings).
+Vous recevez ce rapport parce qu’il est activé dans vos paramètres (${APP_URL}/app/#settings).${unsubscribe ? `\nNe plus le recevoir, en un clic : ${unsubscribe}` : ''}
 — L’équipe Oubli`),
   };
 }

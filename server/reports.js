@@ -5,6 +5,15 @@ import { q, now, addDays } from './db.js';
 import { buildDashboard } from './dashboard.js';
 import { sendMail } from './mailer.js';
 import { monthlyReport } from './templates.js';
+import { linkToken } from './auth.js';
+
+const APP_URL = (process.env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
+// Désinscription en un clic (RFC 8058) : la messagerie appelle l'API en POST (« Se désabonner ») ; le lien du message mène
+// à une page de confirmation de l'application. Jeton signé, propre à ce but (auth.js, linkToken).
+export function unsubscribeLinks(userId) {
+  const qs = new URLSearchParams({ u: userId, t: linkToken('report-unsub', userId) }).toString();
+  return { page: `${APP_URL}/app/#unsubscribe?${qs}`, oneClick: `${APP_URL}/api/unsubscribe/report?${qs}` };
+}
 
 const PERIOD_DAYS = 30;
 let running = false;
@@ -30,8 +39,10 @@ export async function runMonthlyReports() {
         return { name: `${prof.first_name || ''} ${prof.last_name || ''}`.trim() || 'Votre dossier', done: c.done, doneMonth: d.requests.filter((r) => r.status === 'done' && r.completed_at >= since).length, inProgress: c.in_progress + c.queued, action: c.action_required, refused: c.refused, exposure: d.exposure, total: c.total };
       }).filter((b) => b.total);
       if (!blocks.length) continue;
-      const m = monthlyReport({ month, blocks });
-      try { await sendMail({ to: u.email, subject: m.subject, text: m.text, user_id: u.id }); q.run('UPDATE users SET last_report_at = ? WHERE id = ?', now(), u.id); sent += 1; }
+      const links = unsubscribeLinks(u.id);
+      const m = monthlyReport({ month, blocks, unsubscribe: links.page });
+      const headers = { 'List-Unsubscribe': `<${links.oneClick}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' };
+      try { await sendMail({ to: u.email, subject: m.subject, text: m.text, headers, user_id: u.id }); q.run('UPDATE users SET last_report_at = ? WHERE id = ?', now(), u.id); sent += 1; }
       catch (e) { failed += 1; console.error('[rapports] envoi impossible :', e.message); }
     }
   } finally { running = false; }

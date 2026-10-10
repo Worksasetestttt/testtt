@@ -85,6 +85,13 @@ export function passwordProblem(password, email = '') {
 
 /* ---------- Cookie et sessions ---------- */
 const sign = (v) => crypto.createHmac('sha256', SECRET).update(v).digest('base64url');
+// Jeton d'un lien d'e-mail utilisable sans session (désinscription du rapport mensuel…) : HMAC de « but:valeur » avec
+// SESSION_SECRET. Il ne sert qu'à ce but et ne vaut plus si le secret change.
+export const linkToken = (purpose, value) => sign(`${purpose}:${value}`);
+export function checkLinkToken(purpose, value, token) {
+  const ref = Buffer.from(linkToken(purpose, String(value))), test = Buffer.from(String(token ?? ''));
+  return ref.length === test.length && crypto.timingSafeEqual(ref, test);
+}
 const ID_RE = /^[A-Za-z0-9_-]{32}$/;
 const SIG_RE = /^[A-Za-z0-9_-]{43}$/;
 function parseCookies(header) {

@@ -85,7 +85,7 @@ app.use('/api', compressApi({ skip: (req) => TOKEN_ROUTES.has((req.baseUrl + req
 app.use('/api', express.json({ limit: '200kb' }));
 
 // Routes authentifiées par jeton : les cookies y sont ignorés (aucune session attachée, pas de garde CSRF).
-const TOKEN_ROUTES = new Set(['/api/inbound', '/api/billing/webhook']);
+const TOKEN_ROUTES = new Set(['/api/inbound', '/api/billing/webhook', '/api/unsubscribe/report']);   // désinscription : lien signé (routes.js)
 app.use((req, res, next) => {
   if (TOKEN_ROUTES.has(req.path.toLowerCase().replace(/\/+$/, ''))) { req.user = null; req.sessionId = null; req.tokenRoute = true; return next(); }
   attachUser(req, res, next);

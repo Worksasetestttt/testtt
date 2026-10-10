@@ -73,7 +73,19 @@ try {
   assert.match(mail[0].body, /Léa Moreau/); assert.match(mail[0].body, /Exposition estimée\u00a0: \d+\u00a0%/, 'typographie française : espace insécable avant « : » et « % »'); assert.match(mail[0].body, /#settings/);
   r = await call('POST', '/admin/reports/run', {}, admin); assert.equal(r.data.sent, 0, 'pas de second rapport dans les 30 jours');
   assert.equal(db.prepare(`SELECT COUNT(*) AS c FROM mails WHERE subject LIKE 'Votre rapport mensuel%'`).get().c, 1);
-  step('rapport mensuel : activé par défaut, envoyé après 30 jours, désinscription respectée, pas de doublon');
+  // Désinscription en un clic (RFC 8058) : en-têtes du message, lien de la page de confirmation, POST sans session.
+  const eml = fs.readdirSync(path.join(tmp, 'outbox')).filter((f) => f.endsWith('-lea@exemple.fr.eml')).map((f) => fs.readFileSync(path.join(tmp, 'outbox', f), 'utf8')).find((t) => /Subject: Votre rapport mensuel/.test(t));
+  const oneClick = (eml.match(/^List-Unsubscribe: <([^>]+)>$/m) || [])[1];
+  assert.ok(oneClick && /\/api\/unsubscribe\/report\?u=/.test(oneClick), 'en-tête List-Unsubscribe'); assert.match(eml, /^List-Unsubscribe-Post: List-Unsubscribe=One-Click$/m);
+  assert.match(mail[0].body, /\/app\/#unsubscribe\?u=[^&\s]+&t=[A-Za-z0-9_-]{43}/, 'lien de désinscription dans le message');
+  const unsubPath = '/unsubscribe/report' + oneClick.slice(oneClick.indexOf('?'));
+  const get = await fetch(base + unsubPath, { redirect: 'manual' });
+  assert.equal(get.status, 303); assert.match(get.headers.get('location'), /#unsubscribe\?u=/); assert.equal((await call('GET', '/me', undefined, A.cookie)).data.user.monthly_report, true, 'un GET ne désinscrit pas');
+  assert.equal((await call('POST', unsubPath.replace(/t=[^&]+/, 't=' + 'x'.repeat(43)), undefined)).status, 400, 'jeton faux');
+  const post = await fetch(base + unsubPath, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'List-Unsubscribe=One-Click' });
+  assert.equal(post.status, 200, 'POST en un clic, sans session ni JSON');
+  assert.equal((await call('GET', '/me', undefined, A.cookie)).data.user.monthly_report, false, 'désinscrit');
+  step('rapport mensuel : activé par défaut, envoyé après 30 jours, désinscription respectée (paramètres et lien en un clic), pas de doublon');
 
   /* ---------- 4. Refus : nouvelle demande programmée, plainte prête à déposer ---------- */
   r = await call('GET', '/dashboard', undefined, A.cookie);

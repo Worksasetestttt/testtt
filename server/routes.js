@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { q, now, logEvent, db, dbPing } from './db.js';
 import {
   hashPassword, verifyPassword, verifyDecoy, passwordProblem, createSession, destroySession, destroyOtherSessions,
-  requireAuth, requireAdmin, rateLimit, isAdminEmail, promoteIfAdmin, adminPending, ADMIN_VERIFY, loginLockRemaining, noteLoginFailure, clearLoginFailures, fmtWait,
+  requireAuth, requireAdmin, rateLimit, isAdminEmail, promoteIfAdmin, adminPending, ADMIN_VERIFY, checkLinkToken, loginLockRemaining, noteLoginFailure, clearLoginFailures, fmtWait,
   isSuspended, isBlockedEmail, endImpersonation,
 } from './auth.js';
 import { sendMail, mailMode } from './mailer.js';
@@ -352,6 +352,22 @@ api.post('/contact', rateLimit({ windowMs: 60 * 60000, max: 10 }), (req, res) =>
   const email = str(req.body.email, 'email', 160).toLowerCase(), message = str(req.body.message, 'message', 4000), subject = str(req.body.subject, 'subject', 200);
   if (!EMAIL.test(email) || message.length < 5) return bad(res, 'Adresse ou message invalide.');
   q.run('INSERT INTO contacts (email, subject, message, created_at) VALUES (?, ?, ?, ?)', email, subject, message, now());
+  res.json({ ok: true });
+});
+// Désinscription du rapport mensuel depuis l'e-mail, sans session (lien signé, voir reports.js). POST : bouton
+// « Se désabonner » de la messagerie (RFC 8058, corps « List-Unsubscribe=One-Click ») ou page de confirmation de
+// l'application. GET : renvoie vers cette page sans rien changer (un antivirus qui suit le lien ne désinscrit personne).
+const unsubQuery = (req) => (isId(req.query.u) && checkLinkToken('report-unsub', req.query.u, req.query.t) ? req.query.u : null);
+api.get('/unsubscribe/report', (req, res) => res.redirect(303, `/app/#unsubscribe?${new URLSearchParams({ u: String(req.query.u ?? '').slice(0, 64), t: String(req.query.t ?? '').slice(0, 64) })}`));
+api.post('/unsubscribe/report', rateLimit({ windowMs: 15 * 60000, max: 30 }), (req, res) => {
+  const id = unsubQuery(req);
+  if (!id) return bad(res, 'Lien de désinscription invalide : désactivez le rapport depuis vos paramètres.');
+  const u = q.get('SELECT id, monthly_report FROM users WHERE id = ? AND deleted_at IS NULL', id);
+  if (!u) return bad(res, 'Compte introuvable.', 404);
+  if (u.monthly_report) {
+    q.run('UPDATE users SET monthly_report = 0 WHERE id = ?', u.id);
+    logEvent(u.id, 'account', 'Rapport mensuel désactivé depuis le lien de désinscription de l’e-mail.');
+  }
   res.json({ ok: true });
 });
 api.get('/export', requireAuth, rateLimit({ max: 10 }), (req, res) => {

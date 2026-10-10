@@ -206,6 +206,21 @@
     }).catch(function (err) { var box = $('#verify-box'); if (box) swapState(box, verifyState(/^(invalid|expired|used)$/.test(err.code || '') ? err.code : 'invalid')); });
   }
 
+  /* ---------- désinscription du rapport mensuel (#unsubscribe?u=…&t=…), lien reçu par e-mail, sans session ---------- */
+  /* La page demande une confirmation : un antivirus ou un aperçu qui suit le lien ne désinscrit personne. */
+  function unsubQs(q) { return /^[A-Za-z0-9_-]{1,64}$/.test(q.u || '') && /^[A-Za-z0-9_-]{43}$/.test(q.t || '') ? new URLSearchParams({ u: q.u, t: q.t }).toString() : ''; }
+  views.unsubscribe = function (q) {
+    var ok = !!unsubQs(q);
+    return '<section class="auth"><div class="auth__mark">' + MARK + '</div><h1>Rapport mensuel</h1><div id="unsub-box">' +
+      (q.done ? unsubState('done') : ok ? '<div class="sheet"><div class="sheet__body auth__state"><p>Ne plus recevoir le rapport mensuel par e-mail' + NBSP + '? Les alertes «' + NBSP + 'action requise' + NBSP + '» restent envoyées' + NBSP + ': elles demandent une intervention de votre part.</p><button class="btn btn--block" type="button" id="unsub-go">Me désinscrire</button></div></div>' : unsubState('invalid')) +
+      '</div><p class="switch"><a class="auth__link" href="#' + (state.user ? 'settings' : 'login') + '">' + (state.user ? 'Gérer mes notifications' : 'Se connecter') + '</a></p></section>';
+  };
+  function unsubState(code, text) {
+    var done = code === 'done';
+    return '<div class="sheet"><div class="sheet__body auth__state"><h2 id="auth-state-h" tabindex="-1">' + (done ? 'Désinscription enregistrée' : 'Ce lien n’est pas valable') + '</h2><p>' +
+      esc(text || (done ? 'Vous ne recevrez plus le rapport mensuel. Vous pouvez le réactiver à tout moment dans vos paramètres.' : 'Il est incomplet ou ne correspond à aucun compte' + NBSP + ': désactivez le rapport depuis vos paramètres.')) + '</p></div></div>';
+  }
+
   /* Remplace le contenu d'une zone (formulaire → état) : le focus va au titre, le message suit en annonce polie. */
   function swapState(box, html) {
     box.innerHTML = html;
@@ -876,6 +891,15 @@
   document.addEventListener('click', function (e) {
     var t = e.target.closest('button, a'); if (!t || t.getAttribute('aria-disabled') === 'true') return;
     if (t.id === 'forgot-link') { var le = $('#f-email'); state.forgotEmail = le ? le.value.trim() : ''; }   // adresse reprise, sans passer par l'URL
+    else if (t.id === 'unsub-go') {
+      var uq = unsubQs(params().q); if (!uq) return;
+      lock(t, true);
+      api('/unsubscribe/report?' + uq, { method: 'POST', body: {} }).then(function () {
+        if (state.user) state.user.monthly_report = false;
+        history.replaceState(null, '', location.pathname + location.search + '#unsubscribe?done=1');   // le jeton sort de l'adresse et de l'historique
+        swapState($('#unsub-box'), unsubState('done'));
+      }).catch(function (err) { swapState($('#unsub-box'), unsubState('invalid', typo(err.message))); });
+    }
     else if (t.id === 'forgot-again') { var box = $('#forgot-box'); box.innerHTML = forgotForm(t.getAttribute('data-email') || ''); $('#f-email', box).focus(); }
     else if (t.hasAttribute('data-session')) {
       var rank = $$('#devices-body [data-session]').indexOf(t), label = t.getAttribute('data-device');
@@ -913,7 +937,7 @@
     if (route === 'billing-success') { toast('Paiement confirmé. Les demandes partent automatiquement.'); location.hash = 'dashboard'; return; }
     // Sans session : connexion, inscription, mot de passe oublié et réinitialisation. Avec une session, #reset reste ouvert
     // (le lien reçu par e-mail vaut pour son compte, qui peut être un autre que celui connecté).
-    if (!state.user && !/^(login|signup|forgot|reset|verify)$/.test(route)) { location.hash = 'login' + (location.hash.indexOf('?') > 0 ? location.hash.slice(location.hash.indexOf('?')) : ''); return; }
+    if (!state.user && !/^(login|signup|forgot|reset|verify|unsubscribe)$/.test(route)) { location.hash = 'login' + (location.hash.indexOf('?') > 0 ? location.hash.slice(location.hash.indexOf('?')) : ''); return; }
     if (state.user && /^(login|signup|forgot)$/.test(route)) { location.hash = pendingKey() && onboardingDone() ? 'billing' : home(); return; }
     if (state.user && route === 'dashboard' && !onboardingDone() && !(state.dash && state.dash.counters.total)) { if (!state.user.mandate_signed_at || !state.profiles[0].first_name) { location.hash = 'onboarding'; return; } }
     if (route === 'admin' && (!state.user || state.user.role !== 'admin')) { location.hash = 'dashboard'; return; }

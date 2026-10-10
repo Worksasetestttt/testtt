@@ -82,7 +82,7 @@ async function scenario(browser, width) {
   const ctx = await browser.newContext({ viewport: { width, height: 900 } }), page = await ctx.newPage(), errors = [];
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); }); page.on('pageerror', (e) => errors.push(e.message));
   page.on('response', (r) => { if (r.status() >= 400) errors.push(`HTTP ${r.status()} ${new URL(r.url()).pathname}`); });
-  for (const route of ['login', 'signup', 'forgot', 'reset', 'verify']) {
+  for (const route of ['login', 'signup', 'forgot', 'reset', 'verify', 'unsubscribe']) {
     await page.goto(`${BASE}/app/?auth=${width}#${route}`); await page.waitForSelector('.auth'); await shot(page, `${route}-${width}`, true);
     await layout(page, `#${route}`, width);
   }
