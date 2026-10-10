@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { q, now, logEvent, db, dbPing } from './db.js';
 import {
   hashPassword, verifyPassword, verifyDecoy, passwordProblem, createSession, destroySession, destroyOtherSessions,
-  requireAuth, requireAdmin, rateLimit, isAdminEmail, promoteIfAdmin, adminPending, ADMIN_VERIFY, loginLockRemaining, noteLoginFailure, clearLoginFailures, fmtWait,
+  requireAuth, requireAdmin, rateLimit, isAdminEmail, promoteIfAdmin, adminPending, ADMIN_VERIFY, loginLockRemaining, noteLoginFailure, clearClientLoginFailures, fmtWait,
   isSuspended, isBlockedEmail, endImpersonation,
 } from './auth.js';
 import { sendMail, mailMode } from './mailer.js';
@@ -21,6 +21,10 @@ import { account, sendAdminVerification } from './account.js';
 import { redeemKey, cancelRefusal } from './keys.js';
 import { evaluateHealth } from './health.js';
 import { sendJsonConditional } from './compress.js';
+import {
+  twofactor, twoFactorEnabled, createLoginChallenge, findLoginChallenge, failLoginChallenge, useLoginChallenge, dropLoginChallenges,
+  checkSecondFactor, secondFactorLockRemaining, noteSecondFactorFailure, requireAdminTwoFactor,
+} from './twofactor.js';
 
 export const api = express.Router();
 const fresh = (req) => q.get('SELECT * FROM users WHERE id = ?', req.user.id);
@@ -66,23 +70,55 @@ api.post('/auth/signup', rateLimit({ windowMs: 60 * 60000, max: 20 }), wrap(asyn
   sendAdminVerification(user);   // adresse de ADMIN_EMAILS (production) : lien de confirmation avant tout accès administrateur
   res.status(201).json({ user: publicUser(user), ...adminNotice(user) });
 }));
-api.post('/auth/login', rateLimit({ max: 50 }), wrap(async (req, res) => {
-  const email = str(req.body.email, 'email', 160).toLowerCase();
-  const password = req.body.password;
-  if (!EMAIL.test(email) || typeof password !== 'string' || !password.length) return bad(res, 'E-mail ou mot de passe incorrect.', 401);
-  const locked = loginLockRemaining(email);
-  if (locked) return tooMany(res, locked);
-  const user = q.get('SELECT * FROM users WHERE email = ? AND deleted_at IS NULL', email);
-  const ok = user ? await verifyPassword(password, user.password_hash) : await verifyDecoy(password);
-  if (!ok) { noteLoginFailure(email); return bad(res, 'E-mail ou mot de passe incorrect.', 401); }
-  clearLoginFailures(email);
-  // Mot de passe correct seulement : la suspension n'est jamais révélée à qui ne connaît pas le mot de passe.
+const NBSP = ' ';   // espace insécable avant « : » et « ; » dans les messages
+// Fin d'une connexion réussie (mot de passe, et code quand la double authentification est active). La suspension n'est
+// annoncée qu'ici : jamais à qui ne connaît pas ces secrets.
+function finishLogin(req, res, user, extra = {}) {
   if (isSuspended(user)) return bad(res, 'Ce compte est suspendu. Pour toute question, écrivez au support.', 403);
   promoteIfAdmin(user);
   sendAdminVerification(user);   // un envoi par jour au plus tant que l'adresse n'est pas confirmée
   createSession(res, user, req);
-  res.json({ user: publicUser(user), ...adminNotice(user) });
+  res.json({ user: publicUser(user), ...adminNotice(user), ...extra });
+}
+// Verrouillage par couple (adresse, client) et plafond global par adresse : voir auth.js.
+api.post('/auth/login', rateLimit({ max: 50 }), wrap(async (req, res) => {
+  const email = str(req.body.email, 'email', 160).toLowerCase();
+  const password = req.body.password;
+  if (!EMAIL.test(email) || typeof password !== 'string' || !password.length) return bad(res, 'E-mail ou mot de passe incorrect.', 401);
+  const locked = loginLockRemaining(email, req.ip);
+  if (locked) return tooMany(res, locked);
+  const user = q.get('SELECT * FROM users WHERE email = ? AND deleted_at IS NULL', email);
+  const ok = user ? await verifyPassword(password, user.password_hash) : await verifyDecoy(password);
+  if (!ok) { noteLoginFailure(email, req.ip); return bad(res, 'E-mail ou mot de passe incorrect.', 401); }
+  // Double authentification : le mot de passe seul n'ouvre aucune session, il donne un jeton de 5 minutes pour l'étape
+  // « code ». Les échecs de ce client ne repartent à zéro qu'après le code : sinon, en intercalant le bon mot de passe
+  // entre des codes faux, on échapperait au verrouillage.
+  if (twoFactorEnabled(user.id)) return res.json({ two_factor: true, ...createLoginChallenge(user.id) });
+  clearClientLoginFailures(email, req.ip);
+  finishLogin(req, res, user);
 }));
+// Étape « code » : code de l'application ou code de secours, avec le jeton remis par /auth/login. Limitée en débit ;
+// chaque code faux compte dans le verrouillage de connexion (ce client, et le plafond global de l'adresse) et dans le
+// plafond de la seconde étape du compte (twofactor.js).
+const loginExpired = (res, msg = `Votre connexion a expiré${NBSP}: saisissez de nouveau votre mot de passe.`) => res.status(401).json({ error: msg, code: 'challenge_expired' });
+api.post('/auth/login/2fa', rateLimit({ max: 30 }), (req, res) => {
+  const ch = findLoginChallenge(req.body.challenge);
+  const user = ch ? q.get('SELECT * FROM users WHERE id = ? AND deleted_at IS NULL', ch.user_id) : null;
+  if (!user || !twoFactorEnabled(user.id)) { if (ch) useLoginChallenge(ch); return loginExpired(res); }
+  const locked = Math.max(loginLockRemaining(user.email, req.ip), secondFactorLockRemaining(user.id));
+  if (locked) return tooMany(res, locked);
+  const r = checkSecondFactor(user.id, req.body.code);
+  if (!r.ok) {
+    noteLoginFailure(user.email, req.ip);
+    noteSecondFactorFailure(user.id);
+    if (!failLoginChallenge(ch)) return loginExpired(res, `Trop de codes incorrects${NBSP}: saisissez de nouveau votre mot de passe.`);
+    return res.status(401).json({ error: `Code incorrect ou déjà utilisé${NBSP}: saisissez le code affiché en ce moment par l’application, ou un code de secours.`, code: 'invalid_code' });
+  }
+  if (!useLoginChallenge(ch)) return loginExpired(res);
+  clearClientLoginFailures(user.email, req.ip);
+  if (r.method === 'recovery') logEvent(user.id, 'account', `Connexion avec un code de secours${NBSP}: ${r.remaining > 1 ? `il en reste ${r.remaining}` : r.remaining ? 'il en reste un' : 'il n’en reste aucun'}.`);
+  finishLogin(req, res, user, r.method === 'recovery' ? { recovery_remaining: r.remaining } : {});
+});
 // Pendant un accès support, se déconnecter ramène l'administrateur à sa propre session.
 const stopSupport = (req, res) => { auditAs(req.impersonator.id, 'user.impersonate_stop', req.user.id, {}, req.ip); return { ok: true, ...endImpersonation(req, res) }; };
 api.post('/auth/logout', (req, res) => { if (req.impersonator) return res.json(stopSupport(req, res)); destroySession(req, res); res.json({ ok: true }); });
@@ -104,6 +140,7 @@ api.post('/auth/password', requireAuth, rateLimit({ max: 10 }), wrap(async (req,
   if (next === current) return bad(res, 'Le nouveau mot de passe doit être différent de l’actuel.');
   q.run('UPDATE users SET password_hash = ? WHERE id = ?', await hashPassword(next), u.id);
   destroyOtherSessions(u.id, req.sessionId);
+  dropLoginChallenges(u.id);   // jetons de l'étape « code » obtenus avec l'ancien mot de passe
   logEvent(u.id, 'account', 'Mot de passe modifié ; les autres sessions ont été déconnectées.');
   setImmediate(() => {   // le titulaire est prévenu, comme après une réinitialisation par e-mail
     const m = passwordChangedMail({ changedAt: now(), via: 'settings' });
@@ -113,6 +150,8 @@ api.post('/auth/password', requireAuth, rateLimit({ max: 10 }), wrap(async (req,
 }));
 // Mot de passe oublié (/auth/forgot, /auth/reset) et appareils connectés (/sessions) : voir server/account.js.
 api.use(account);
+// Double authentification (/auth/2fa, /auth/2fa/setup · enable · disable · recovery) : voir server/twofactor.js.
+api.use(twofactor);
 
 /* ---------- Profils (personnes protégées) ---------- */
 const ownProfile = (req) => (isId(req.params.id) ? q.get('SELECT * FROM profiles WHERE id = ? AND user_id = ?', req.params.id, req.user.id) : null);
@@ -380,4 +419,6 @@ api.delete('/account', requireAuth, rateLimit({ max: 5 }), wrap(async (req, res)
 }));
 
 /* ---------- Administration (voir server/admin.js) ---------- */
-api.use('/admin', requireAuth, requireAdmin, admin);
+// ADMIN_REQUIRE_2FA (actif par défaut en production) : 403 two_factor_required tant que la double authentification de
+// l'administrateur n'est pas active (twofactor.js).
+api.use('/admin', requireAuth, requireAdmin, requireAdminTwoFactor, admin);

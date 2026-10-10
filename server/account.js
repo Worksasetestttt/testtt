@@ -13,6 +13,7 @@ import {
 import { sendMail } from './mailer.js';
 import { passwordResetMail, passwordChangedMail, adminVerifyMail } from './templates.js';
 import { EMAIL, str, wrap, publicUser, sessionHandle, deviceLabel } from './util.js';
+import { twoFactorEnabled, dropLoginChallenges, clearSecondFactorFailures } from './twofactor.js';
 
 export const account = express.Router();
 const NBSP = ' ';
@@ -117,6 +118,8 @@ account.post('/auth/reset', rateLimit({ windowMs: 15 * 60000, max: 20 }), wrap(a
   });
   if (!changed) return linkError(res, 'used');
   clearLoginFailures(user.email);
+  clearSecondFactorFailures(user.id);   // l'ancien mot de passe ne mène plus à l'étape « code »
+  dropLoginChallenges(user.id);         // ni ses jetons en cours
   logEvent(user.id, 'account', `Mot de passe réinitialisé avec le lien reçu par e-mail${NBSP}; tous les appareils ont été déconnectés.`);
   setImmediate(() => {
     const m = passwordChangedMail({ changedAt: at });
@@ -129,6 +132,11 @@ account.post('/auth/reset', rateLimit({ windowMs: 15 * 60000, max: 20 }), wrap(a
     return res.json({ ok: true, signed_in: false, suspended: true, message: `Votre mot de passe est changé, mais ce compte est suspendu${NBSP}: la connexion reste impossible pour le moment. Pour toute question, écrivez au support.` });
   }
   const updated = promoteIfAdmin(q.get('SELECT * FROM users WHERE id = ?', user.id));   // adresse prouvée : promotion possible
+  // Double authentification active : le lien prouve la boîte, pas la possession du téléphone. Aucune session sans le code :
+  // l'abonné se connecte avec son nouveau mot de passe, puis le code (ou un code de secours).
+  if (twoFactorEnabled(user.id)) {
+    return res.json({ ok: true, signed_in: false, two_factor: true, message: `Votre mot de passe est changé. Connectez-vous avec ce nouveau mot de passe, puis le code de votre application de double authentification.` });
+  }
   createSession(res, updated, req);
   res.json({ ok: true, signed_in: true, user: publicUser(updated) });
 }));
