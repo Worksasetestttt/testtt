@@ -331,8 +331,15 @@ try {
   }
   r = await call('POST', '/contact', { email: 'a,b@exemple.fr', message: 'Bonjour, une question.' });
   assert.equal(r.status, 400, 'formulaire de contact : même règle');
+  // Dossier : la règle ne s'applique qu'aux adresses envoyées ; une adresse enregistrée avant elle ne bloque pas le reste.
+  const pid = (await call('GET', '/me', undefined, { cookie: apos.cookie })).data.profiles[0].id;
+  db.prepare('UPDATE profiles SET emails = ? WHERE id = ?').run(JSON.stringify(['ancienne(perso)@exemple.fr']), pid);
+  r = await call('PUT', `/profiles/${pid}`, { first_name: 'Sean', last_name: 'O’Neil' }, { cookie: apos.cookie });
+  assert.equal(r.status, 200, `adresse ancienne conservée, nom modifié : ${JSON.stringify(r.data)}`);
+  r = await call('PUT', `/profiles/${pid}`, { emails: ['a(b)@exemple.fr'] }, { cookie: apos.cookie });
+  assert.equal(r.status, 400, 'adresse envoyée : même règle qu’à l’inscription');
   db.close();
-  step('adresses : apostrophe acceptée et courriers envoyés ; virgule, point-virgule, chevrons, guillemets, parenthèses ou domaine incomplet refusés dès l’inscription');
+  step('adresses : apostrophe acceptée et courriers envoyés ; virgule, point-virgule, chevrons, guillemets, parenthèses ou domaine incomplet refusés dès l’inscription ; adresse ancienne d’un dossier non bloquante');
 
   console.log(`✔ Comptes validés (${passed} groupes de vérifications).`);
 } catch (e) {

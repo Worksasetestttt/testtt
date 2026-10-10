@@ -141,7 +141,8 @@ api.put('/profiles/:id', requireAuth, (req, res) => {
   const country = (b.country === undefined ? p.country : str(b.country, 'country', 2)).toUpperCase() || 'FR';
   if (!COUNTRY.test(country)) return bad(res, 'Pays invalide (code à deux lettres).');
   const emails = b.emails === undefined ? cur.emails : strList(b.emails, 'emails', 10);
-  if (emails.some((e) => !MAIL_ADDRESS.test(e))) return bad(res, 'Une adresse e-mail est invalide.');
+  // Adresses envoyées seulement : une adresse enregistrée avant la règle actuelle ne bloque pas le reste du dossier.
+  if (b.emails !== undefined && emails.some((e) => !MAIL_ADDRESS.test(e))) return bad(res, 'Une adresse e-mail est invalide.');
   const phones = b.phones === undefined ? cur.phones : strList(b.phones, 'phones', 10, 40);
   if (phones.some((t) => !PHONE.test(t))) return bad(res, 'Un numéro de téléphone est invalide.');
   const addresses = b.addresses === undefined ? cur.addresses : strList(b.addresses, 'addresses', 6, 160);
