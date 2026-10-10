@@ -11,6 +11,8 @@ import { api, stripeWebhook } from './routes.js';
 import { startScheduler } from './scheduler.js';
 import { resumeDiscoveries } from './sites.js';
 import { startReports } from './reports.js';
+import { compressApi } from './compress.js';
+import { createStatic } from './static.js';
 import { HttpError, isPlainObject } from './util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -73,6 +75,8 @@ app.use((req, res, next) => {
 app.use('/api', (_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
 // Webhook Stripe : monté avant la session et l'analyse JSON → corps brut, cookies ignorés, signature seule.
 app.post('/api/billing/webhook', express.raw({ type: '*/*', limit: '1mb' }), stripeWebhook);
+// Compression des réponses (brotli ou gzip, 1 Ko à 2 Mo), sauf routes à jeton et téléchargements (compress.js).
+app.use('/api', compressApi({ skip: (req) => TOKEN_ROUTES.has((req.baseUrl + req.path).toLowerCase().replace(/\/+$/, '')) }));
 app.use('/api', express.json({ limit: '200kb' }));
 
 // Routes authentifiées par jeton : les cookies y sont ignorés (aucune session attachée, pas de garde CSRF).
@@ -141,11 +145,13 @@ app.use('/api', (err, req, res, next) => {
 });
 
 /* ---------- Pages et ressources statiques ---------- */
+// Texte (HTML, CSS, JS, SVG…) : en mémoire, précompressé, versionné par ?v=<empreinte>, routes /app/… de
+// l'application comprises (static.js). express.static ne sert plus que les autres types de fichiers.
+const site = createStatic(ROOT);
+app.use(site);
 const staticOpts = { maxAge: PROD ? '1h' : 0, extensions: ['html'], dotfiles: 'ignore' };
 app.use('/assets', express.static(path.join(ROOT, 'assets'), staticOpts));
 app.use('/app', express.static(path.join(ROOT, 'app'), staticOpts));
-app.get(['/app', '/app/*splat'], (_req, res) => res.sendFile(path.join(ROOT, 'app', 'index.html')));
-app.get('/', (_req, res) => res.sendFile(path.join(ROOT, 'index.html')));
 app.use((_req, res) => res.redirect('/'));
 // Erreur hors API (chemin indéchiffrable, fichier illisible…) : page minimale sans détail.
 app.use((err, req, res, next) => {
@@ -164,6 +170,7 @@ const server = app.listen(PORT, () => {
   startScheduler();
   resumeDiscoveries();
   startReports();
+  site.warm();
 });
 server.headersTimeout = 20000;   // en-têtes complets sous 20 s
 server.requestTimeout = 60000;   // requête complète sous 60 s
