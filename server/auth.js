@@ -234,9 +234,12 @@ export function noteLoginFailure(email) {
 export function clearLoginFailures(email) { failures.delete(lockKey(email)); }
 
 const buckets = new Map(); // « METHOD route|ip » → { n, reset }
+// Clé de route : le motif Express (req.route.path), sinon le chemin. Express ignore la casse et la barre finale du chemin ;
+// la clé aussi, sinon chaque écriture (/api/Contact, /API/contact/…) aurait son propre compteur et le plafond tomberait.
+const routeKey = (req) => `${req.method} ${`${req.baseUrl}${req.route ? req.route.path : req.path}`.toLowerCase().replace(/\/+$/, '')}`;
 export function rateLimit({ windowMs = 15 * 60000, max = 30, name } = {}) {
   return (req, res, next) => {
-    const key = `${name || `${req.method} ${req.baseUrl}${req.path}`}|${req.ip}`;
+    const key = `${name || routeKey(req)}|${req.ip}`;
     const t = Date.now();
     let b = buckets.get(key);
     if (!b || t >= b.reset) b = { n: 0, reset: t + windowMs };

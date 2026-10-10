@@ -1,6 +1,7 @@
 // Tests de sécurité, seconde série (audit) : découverte des sites ajoutés (expressions à coût quadratique, durée totale
-// d'une lecture, adresses IPv6 qui encapsulent une IPv4 privée).
+// d'une lecture, adresses IPv6 qui encapsulent une IPv4 privée) et limitation de débit (casse et barre finale du chemin).
 // Les groupes réseau démarrent leurs propres serveurs sur des ports libres, avec une base et une boîte d'envoi temporaires.
+import { spawn } from 'node:child_process';
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -14,6 +15,35 @@ let passed = 0;
 const step = (name) => { passed += 1; console.log(`  ✔ ${name}`); };
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const elapsed = async (fn) => { const t = performance.now(); await fn(); return performance.now() - t; };
+
+// Serveur de test : port libre, base temporaire, découverte désactivée (aucun accès réseau), variables en plus.
+async function startServer(name, extra = {}) {
+  const port = 5100 + Math.floor(Math.random() * 800);
+  const dir = path.join(tmp, name);
+  const env = {
+    ...process.env, PORT: String(port), DATABASE_PATH: path.join(dir, 'test.sqlite'), OUTBOX_DIR: path.join(dir, 'outbox'), DEMO_MODE: 'false', SMTP_URL: '',
+    STRIPE_SECRET_KEY: '', STRIPE_WEBHOOK_SECRET: '', SESSION_SECRET: 'test-secret-for-security2-suite-0123456789', ADMIN_EMAILS: 'admin@test.fr',
+    SCHEDULER_INTERVAL_MS: '600000', NODE_ENV: 'test', SITE_DISCOVERY: 'off', TRUST_PROXY: '', ...extra,
+  };
+  const proc = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server/index.js'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const s = { proc, err: '', origin: `http://localhost:${port}`, base: `http://localhost:${port}/api` };
+  proc.stderr.on('data', (d) => { s.err += d; });
+  servers.push(s);
+  for (let i = 0; i < 60; i++) { try { if ((await fetch(s.base + '/health')).ok) return s; } catch {} await wait(250); }
+  throw new Error(`serveur ${name} injoignable :\n${s.err}`);
+}
+// Appel JSON ; `p` est relatif à /api, ou absolu (commence par //) pour tester une autre écriture du préfixe.
+async function call(s, method, p, body, { cookie = '', headers = {} } = {}) {
+  const h = { ...headers };
+  if (cookie) h.cookie = cookie;
+  if (body !== undefined) h['content-type'] = 'application/json';
+  const url = p.startsWith('//') ? s.origin + p.slice(1) : s.base + p;
+  const r = await fetch(url, { method, headers: h, body: body !== undefined ? JSON.stringify(body) : undefined, redirect: 'manual' });
+  const text = await r.text();
+  let data = {}; try { data = JSON.parse(text); } catch { data = { _text: text }; }
+  const sc = r.headers.get('set-cookie') || '';
+  return { status: r.status, data, cookie: sc ? sc.split(';')[0] : '' };
+}
 
 try {
   /* ---------- 1. Découverte : une page hostile ne bloque pas le serveur ---------- */
@@ -69,6 +99,17 @@ try {
     '::ffff:a9fe:a9fe', '2002:7f00:1::1', '2002:a9fe:a9fe::1', '2001:0:4136:e378:8000:63bf:3fff:fdd2', 'fec0::1', '100::1', 'fe80::1%eth0', '::ffff:0:0']) assert.equal(isPublicIp(ip), false, ip);
   for (const ip of ['64:ff9b::808:808', '64:ff9b::8.8.8.8', '2002:808:808::1', '2001:4860:4860::8888', '2a00:1450:4007::1', '2606:4700:4700::1111', '::ffff:8.8.8.8', '8.8.8.8']) assert.equal(isPublicIp(ip), true, ip);
   step('garde réseau : NAT64, IPv4 mappée ou traduite en hexadécimal, 6to4, Teredo, plages réservées refusées');
+
+  /* ---------- 4. Limitation de débit : la casse et la barre finale du chemin ne donnent pas un compteur neuf ---------- */
+  // Express route /api/Contact et /api/contact/ vers /api/contact, mais la clé du compteur reprenait le chemin brut :
+  // chaque variante (2^n écritures) repartait de zéro, ce qui annulait tous les plafonds (connexion, inscription…).
+  const A = await startServer('a');
+  const msg = (i) => ({ email: `c${i}@test.fr`, message: 'Bonjour, test.' });
+  for (let i = 0; i < 10; i++) assert.equal((await call(A, 'POST', '/contact', msg(i))).status, 200, `message ${i + 1}`);
+  assert.equal((await call(A, 'POST', '/contact', msg(10))).status, 429, 'onzième message');
+  for (const p of ['/Contact', '/contact/', '/CONTACT', '//API/contact', '//Api/Contact/']) assert.equal((await call(A, 'POST', p, msg(p))).status, 429, `variante ${p}`);
+  assert.equal((await call(A, 'POST', '/newsletter', { email: 'n@test.fr' })).status, 200, 'les autres routes gardent leur propre compteur');
+  step('limitation de débit : /api/Contact, /api/contact/, /API/contact partagent le compteur de /api/contact');
 
   for (const s of servers) assert.ok(!/TypeError|RangeError|→ 500/.test(s.err), `erreurs serveur :\n${s.err}`);
   console.log(`✔ Sécurité (seconde série) validée (${passed} groupes de vérifications).`);
