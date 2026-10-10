@@ -14,6 +14,7 @@ import { PLANS, billingMode, cancelSubscription } from './billing.js';
 import { EMAIL, clean, parseProfile, wrap } from './util.js';
 import { isSuspended, isBlockedEmail, startImpersonation, SUPPORT_MINUTES } from './auth.js';
 import { exportData } from './dashboard.js';
+import { runDiscovery } from './sites.js';
 
 const { applyOutcome, tick, launchProfile, ref, DEMO } = scheduler;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -154,6 +155,7 @@ admin.get('/stats', (_req, res) => {
       total: q.get('SELECT COUNT(*) AS c FROM brokers').c,
       active: q.get('SELECT COUNT(*) AS c FROM brokers WHERE active = 1').c,
       verified: q.get('SELECT COUNT(*) AS c FROM brokers WHERE active = 1 AND contact_verified = 1').c,
+      custom: q.get('SELECT COUNT(*) AS c FROM brokers WHERE custom = 1').c,
     },
     contacts_open: q.get('SELECT COUNT(*) AS c FROM contacts WHERE handled_at IS NULL').c,
     newsletter: q.get('SELECT COUNT(*) AS c FROM newsletter').c,
@@ -503,8 +505,10 @@ admin.put('/brokers/:id', (req, res) => {
   const { values: v, error } = brokerInput(req.body, b);
   if (error) return bad(res, error);
   if (v.slug && v.slug !== b.slug && q.get('SELECT id FROM brokers WHERE slug = ? AND id <> ?', v.slug, b.id)) return bad(res, 'Cet identifiant (slug) existe déjà.', 409);
-  // Un contact modifié redevient « non vérifié » sauf confirmation explicite dans la même requête.
+  // Un contact modifié redevient « non vérifié » sauf confirmation explicite dans la même requête ; pour un site ajouté
+  // par un abonné, l'adresse saisie par l'équipe prime ensuite sur la recherche automatique.
   if (v.contact_email && v.contact_email !== b.contact_email && req.body.contact_verified === undefined) v.contact_verified = 0;
+  if (b.custom && v.contact_email && v.contact_email !== b.contact_email) { v.contact_source = 'admin'; v.discovery_status = b.discovery_status === 'pending' ? 'found' : b.discovery_status; }
   const keys = Object.keys(v);
   if (!keys.length) return bad(res, 'Rien à modifier.');
   q.run(`UPDATE brokers SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`, ...keys.map((k) => v[k]), b.id);
@@ -519,6 +523,14 @@ admin.delete('/brokers/:id', (req, res) => {
   audit(req, 'broker.deactivate', b.id, { slug: b.slug });
   res.json({ ok: true, broker: brokerRow(b.id) });
 });
+// Relance la recherche du contact d'un site ajouté par un abonné (la réponse attend la fin de la recherche).
+admin.post('/brokers/:id/discover', wrap(async (req, res) => {
+  const b = getBroker(req.params.id);
+  if (!b || !b.custom) return bad(res, 'Recherche possible seulement pour un site ajouté par un abonné.', 404);
+  const r = await runDiscovery(b.id, { force: true });
+  audit(req, 'broker.discover', b.id, { slug: b.slug, found: r?.email || undefined });
+  res.json({ broker: brokerRow(b.id), found: r?.email || null, pages: r?.pages || 0 });
+}));
 admin.post('/brokers/:id/test-mail', wrap(async (req, res) => {
   const b = getBroker(req.params.id);
   if (!b) return bad(res, 'Courtier introuvable.', 404);

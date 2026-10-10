@@ -25,10 +25,14 @@ export const STATUSES = ['queued', 'sent', 'in_progress', 'action_required', 'do
 export const ref = (r) => `OUBLI-${r.token}`;
 // Compte suspendu par l'administration : plus aucun envoi tant que la suspension court (même règle que auth.js).
 const suspended = (u) => !!(u.suspended_at && (!u.suspended_until || u.suspended_until > now()));
-const isEligible = (u) => !!(u && !u.deleted_at && !suspended(u) && u.mandate_signed_at && !u.mandate_revoked_at
+export const isEligible = (u) => !!(u && !u.deleted_at && !suspended(u) && u.mandate_signed_at && !u.mandate_revoked_at
   && (u.subscription_status === 'active' || (u.subscription_status === 'canceled' && u.subscription_ends_at && u.subscription_ends_at > now())));
-// Sécurité : en SMTP réel, jamais d’envoi vers un contact non vérifié par l’administrateur.
-const canMail = (b) => !!b && b.active === 1 && (mailMode !== 'smtp' || b.contact_verified === 1 || ALLOW_UNVERIFIED);
+// Sécurité : en SMTP réel, jamais d’envoi vers un contact non vérifié par l’administrateur. Exception réglable pour un site
+// ajouté par un abonné : l’adresse publiée par le site lui-même, sur son propre domaine (AUTO_SEND_SITE_CONTACTS, actif
+// par défaut). Une adresse seulement présumée (privacy@domaine) attend toujours la vérification de l’équipe.
+const AUTO_SITE = !/^(0|off|false|no)$/i.test(process.env.AUTO_SEND_SITE_CONTACTS || '');
+const canMail = (b) => !!b && b.active === 1 && !(b.custom === 1 && b.discovery_status === 'pending')
+  && (mailMode !== 'smtp' || b.contact_verified === 1 || ALLOW_UNVERIFIED || (AUTO_SITE && b.custom === 1 && b.contact_source === 'site'));
 const backoffDate = (attempts) => new Date(Date.now() + Math.min(24 * 60, 2 ** attempts) * 60000).toISOString(); // 2, 4, 8… min, plafond 24 h
 const errMsg = (e) => String(e?.message || e).slice(0, 300);
 const insertRequest = (user_id, profile_id, broker_id, cycle) =>
@@ -40,7 +44,7 @@ export function launchProfile(user, profile) {
   if (!isEligible(user)) return { created: 0, reason: 'Mandat non signé ou abonnement inactif.' };
   if (!profile || profile.user_id !== user.id) return { created: 0, reason: 'Profil introuvable.' };
   if (!profile.first_name || !profile.last_name) return { created: 0, reason: 'Profil incomplet.' };
-  const brokers = q.all('SELECT id FROM brokers WHERE active = 1 ORDER BY id');
+  const brokers = q.all('SELECT id FROM brokers WHERE active = 1 AND custom = 0 ORDER BY id');   // registre seulement
   const latest = new Map();
   for (const r of q.all('SELECT broker_id, cycle, status, note FROM requests WHERE profile_id = ? ORDER BY cycle, created_at', profile.id)) latest.set(r.broker_id, r);
   let created = 0;
@@ -81,7 +85,7 @@ async function sendQueued() {
       const profile = q.get('SELECT * FROM profiles WHERE id = ?', r.profile_id);
       const broker = q.get('SELECT * FROM brokers WHERE id = ?', r.broker_id);
       if (!isEligible(user) || !profile || !canMail(broker)) continue;
-      const mail = removalRequest({ profile, broker, user, ref: ref(r), mandateDate: user.mandate_signed_at });
+      const mail = removalRequest({ profile, broker, user, ref: ref(r), mandateDate: user.mandate_signed_at, url: r.source_url });
       try {
         await sendMail({ to: broker.contact_email, subject: mail.subject, text: mail.text, headers: { 'X-Oubli-Ref': ref(r) }, request_id: r.id, user_id: user.id });
       } catch (e) { recordFailure(r, user, broker, e, 'initial'); continue; }

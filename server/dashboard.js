@@ -3,6 +3,8 @@
 import { q, now } from './db.js';
 import { ref } from './scheduler.js';
 import { publicUser, parseProfile } from './util.js';
+import { mailMode } from './mailer.js';
+import { MAX_SITES_PER_PROFILE } from './sites.js';
 
 const DAY = 86400000;
 const isoDay = (d) => d.toISOString().slice(0, 10);
@@ -48,10 +50,19 @@ export function exportData(u) {
   };
 }
 
+// État du contact d'un site ajouté par l'abonné : recherche en cours, adresse publiée par le site, vérification par
+// l'équipe (envoi réel), adresse présumée (développement) ou contact validé. L'adresse n'est montrée que si elle est publique.
+function siteState(r) {
+  if (r.discovery_status === 'pending') return { status: 'searching' };
+  if (r.contact_source === 'site') return { status: 'found', contact: r.broker_contact };
+  if (r.contact_verified || r.contact_source === 'admin') return { status: 'verified' };
+  return { status: mailMode === 'smtp' ? 'review' : 'presumed', contact: r.broker_contact };
+}
+
 export function buildDashboard(u, requestedProfileId) {
   const profiles = q.all('SELECT * FROM profiles WHERE user_id = ? ORDER BY is_primary DESC, created_at', u.id).map(parseProfile);
   const pid = requestedProfileId && profiles.some((p) => p.id === requestedProfileId) ? requestedProfileId : profiles[0]?.id;
-  const rows = q.all(`SELECT r.*, b.name AS broker_name, b.category, b.domain, b.sensitivity, b.legal_basis, b.recheck_days, b.jurisdiction FROM requests r JOIN brokers b ON b.id = r.broker_id WHERE r.profile_id = ? ORDER BY CASE r.status WHEN 'action_required' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'sent' THEN 2 WHEN 'queued' THEN 3 WHEN 'refused' THEN 4 WHEN 'done' THEN 5 ELSE 6 END, b.sensitivity DESC, b.name`, pid);
+  const rows = q.all(`SELECT r.*, b.name AS broker_name, b.category, b.domain, b.sensitivity, b.legal_basis, b.recheck_days, b.jurisdiction, b.custom, b.contact_source, b.contact_email AS broker_contact, b.contact_verified, b.discovery_status FROM requests r JOIN brokers b ON b.id = r.broker_id WHERE r.profile_id = ? ORDER BY CASE r.status WHEN 'action_required' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'sent' THEN 2 WHEN 'queued' THEN 3 WHEN 'refused' THEN 4 WHEN 'done' THEN 5 ELSE 6 END, b.sensitivity DESC, b.name`, pid);
   const counts = { queued: 0, sent: 0, in_progress: 0, action_required: 0, done: 0, refused: 0 };
   rows.forEach((r) => { counts[r.status] = (counts[r.status] || 0) + 1; });
   const total = rows.length;
@@ -66,7 +77,7 @@ export function buildDashboard(u, requestedProfileId) {
   const lastSent = active.filter((r) => r.sent_at).map((r) => r.sent_at).sort().pop() || null;
   // Journal du dossier affiché : les événements de ce profil et ceux du compte (sans profil).
   const events = q.all('SELECT * FROM events WHERE user_id = ? AND (profile_id IS NULL OR profile_id = ?) ORDER BY id DESC LIMIT 40', u.id, pid);
-  const brokers = q.get('SELECT COUNT(*) AS c FROM brokers WHERE active = 1').c;
+  const brokers = q.get('SELECT COUNT(*) AS c FROM brokers WHERE active = 1 AND custom = 0').c;
 
   const byCategory = new Map();
   active.forEach((r) => { if (!byCategory.has(r.category)) byCategory.set(r.category, bucket()); count(byCategory.get(r.category), r); });
@@ -82,7 +93,8 @@ export function buildDashboard(u, requestedProfileId) {
     categories, sensitivity,
     next_due_at: nextDue, last_sent_at: lastSent,
     last_activity_at: events[0]?.created_at || null,
-    requests: active.map((r) => ({ id: r.id, broker: r.broker_name, domain: r.domain, category: r.category, sensitivity: r.sensitivity, legal_basis: r.legal_basis, jurisdiction: r.jurisdiction, recheck_days: r.recheck_days, status: r.status, cycle: r.cycle, created_at: r.created_at, sent_at: r.sent_at, due_at: r.due_at, followup_sent_at: r.followup_sent_at, completed_at: r.completed_at, next_check_at: r.next_check_at, note: r.note, ref: ref(r) })),
+    sites: { count: active.filter((r) => r.custom).length, max: MAX_SITES_PER_PROFILE },
+    requests: active.map((r) => ({ id: r.id, broker: r.broker_name, custom: !!r.custom, source_url: r.source_url || null, site: r.custom ? siteState(r) : null, domain: r.domain, category: r.category, sensitivity: r.sensitivity, legal_basis: r.legal_basis, jurisdiction: r.jurisdiction, recheck_days: r.recheck_days, status: r.status, cycle: r.cycle, created_at: r.created_at, sent_at: r.sent_at, due_at: r.due_at, followup_sent_at: r.followup_sent_at, completed_at: r.completed_at, next_check_at: r.next_check_at, note: r.note, ref: ref(r) })),
     events,
     onboarding: {
       profile_complete: !!(profile?.first_name && profile?.last_name),

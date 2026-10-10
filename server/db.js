@@ -145,6 +145,15 @@ ensureColumn('requests', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('requests', 'next_attempt_at', 'TEXT');
 ensureColumn('requests', 'last_error', 'TEXT');
 ensureColumn('mails', 'error', 'TEXT');
+// Sites ajoutés par les abonnés (sites.js) : courtiers « personnalisés », hors registre public et hors lancement global.
+ensureColumn('brokers', 'custom', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('brokers', 'contact_source', 'TEXT');      // site (publiée par le site) | guess (présumée) | admin
+ensureColumn('brokers', 'contact_page', 'TEXT');        // page où l'adresse a été trouvée
+ensureColumn('brokers', 'discovery_status', 'TEXT');    // pending | found | not_found | failed | skipped
+ensureColumn('brokers', 'discovered_at', 'TEXT');
+ensureColumn('brokers', 'added_by', 'TEXT');
+ensureColumn('brokers', 'created_at', 'TEXT');
+ensureColumn('requests', 'source_url', 'TEXT');         // page où figure la fiche, citée dans le courrier
 
 // Jeton de référence (OUBLI-XXXXXXXXXX) : il identifie une demande dans les réponses des courtiers, donc il est unique.
 export function newToken() {

@@ -32,7 +32,7 @@ export function identityBlock(profile, lang = 'fr') {
   ].filter(Boolean).join('\n');
 }
 
-export function removalRequest({ profile, broker, user, ref, mandateDate }) {
+export function removalRequest({ profile, broker, user, ref, mandateDate, url = null }) {
   const rgpd = broker.legal_basis !== 'ccpa';
   const ccpa = broker.legal_basis !== 'rgpd';
   const uk = broker.jurisdiction === 'UK';
@@ -51,7 +51,7 @@ Au nom et pour le compte de la personne identifiée ci-dessous, en vertu du mand
 
 Identité de la personne concernée :
 ${identityBlock(profile, 'fr')}
-
+${url ? `\nLa fiche concernée est consultable à l’adresse suivante :\n${url}\n` : ''}
 ${rgpd ? 'Conformément à l’article 12, paragraphe 3, du RGPD, nous attendons votre réponse dans un délai d’un mois à compter de la réception de ce message.' : 'Conformément au CCPA (Cal. Civ. Code § 1798.130), nous attendons votre réponse dans un délai de 45 jours à compter de la réception de ce message.'} À défaut, une réclamation pourra être déposée auprès de ${authorityFr(profile)}.
 
 Merci de répondre à ce message en conservant la référence [${ref}] dans l’objet.
@@ -76,7 +76,7 @@ On behalf of the data subject identified below, under a written authorisation gr
 
 Data subject:
 ${identityBlock(profile, 'en')}
-
+${url ? `\nThe listing concerned is available at:\n${url}\n` : ''}
 ${deadlineEn} Please keep the reference [${ref}] in the subject line of your reply.
 
 Kind regards,

@@ -15,6 +15,7 @@ import { PLANS, BILLING_PERIODS, billingMode, startCheckout, cancelSubscription,
 import { launchProfile, applyOutcome, tick, DEMO } from './scheduler.js';
 import { EMAIL, publicUser, parseProfile, wrap, isId, str, strList, oneOf } from './util.js';
 import { buildDashboard, exportData } from './dashboard.js';
+import { addSite } from './sites.js';
 import { admin, auditAs, currentAnnouncement } from './admin.js';
 
 export const api = express.Router();
@@ -27,7 +28,7 @@ const tooMany = (res, seconds) => { res.setHeader('Retry-After', String(seconds)
 const isoDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v) && new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10) === v;
 
 api.get('/health', (_req, res) => res.json({ ok: true, mail: mailMode, billing: billingMode, demo: DEMO, time: now() }));
-api.get('/config', (_req, res) => res.json({ plans: PLANS, billing: billingMode, mail: mailMode, demo: DEMO, mandate_version: MANDATE_VERSION, brokers: q.get('SELECT COUNT(*) AS c FROM brokers WHERE active = 1').c, announcement: currentAnnouncement() }));
+api.get('/config', (_req, res) => res.json({ plans: PLANS, billing: billingMode, mail: mailMode, demo: DEMO, mandate_version: MANDATE_VERSION, brokers: q.get('SELECT COUNT(*) AS c FROM brokers WHERE active = 1 AND custom = 0').c, announcement: currentAnnouncement() }));
 
 /* ---------- Authentification ---------- */
 api.post('/auth/signup', rateLimit({ windowMs: 60 * 60000, max: 20 }), wrap(async (req, res) => {
@@ -168,8 +169,9 @@ api.delete('/mandate', requireAuth, (req, res) => {
 
 /* ---------- Courtiers (liste publique : jamais d'adresse de contact ni de statut de vérification) ---------- */
 api.get('/brokers', (_req, res) => {
-  const brokers = q.all('SELECT id, slug, name, domain, category, jurisdiction, legal_basis, sensitivity, recheck_days, active FROM brokers ORDER BY name');
-  const categories = q.all('SELECT category, COUNT(*) AS n FROM brokers WHERE active = 1 GROUP BY category ORDER BY n DESC');
+  // Registre seulement : les sites ajoutés par les abonnés ne sont jamais publiés (ils révéleraient leurs recherches).
+  const brokers = q.all('SELECT id, slug, name, domain, category, jurisdiction, legal_basis, sensitivity, recheck_days, active FROM brokers WHERE custom = 0 ORDER BY name');
+  const categories = q.all('SELECT category, COUNT(*) AS n FROM brokers WHERE active = 1 AND custom = 0 GROUP BY category ORDER BY n DESC');
   res.json({ brokers, categories, total: brokers.filter((b) => b.active).length });
 });
 
@@ -186,6 +188,16 @@ api.post('/requests/launch', requireAuth, rateLimit({ max: 30 }), wrap(async (re
   setTimeout(() => tick(), 10);
   res.json({ created });
 }));
+// Coller l'adresse d'un site (ou d'une fiche) : demande d'effacement automatique pour le profil affiché.
+api.post('/sites', requireAuth, rateLimit({ windowMs: 60 * 60000, max: 30 }), (req, res) => {
+  const u = fresh(req);
+  const pid = req.body.profile_id;
+  const profile = isId(pid) ? q.get('SELECT * FROM profiles WHERE id = ? AND user_id = ?', pid, u.id) : q.get('SELECT * FROM profiles WHERE user_id = ? AND is_primary = 1', u.id);
+  if (!profile) return bad(res, 'Profil introuvable.', 404);
+  const r = addSite(u, profile, str(req.body.url, 'url', 2048));
+  const b = r.broker;
+  res.status(r.status === 'already' ? 200 : 201).json({ status: r.status, registry: r.registry, request_id: r.request.id, broker: { id: b.id, name: b.name, domain: b.domain, custom: !!b.custom }, url: r.site.url });
+});
 api.get('/dashboard', requireAuth, (req, res) => res.json(buildDashboard(fresh(req), isId(req.query.profile_id) ? req.query.profile_id : undefined)));
 const ownRequest = (req, cols = '*') => (isId(req.params.id) ? q.get(`SELECT ${cols} FROM requests WHERE id = ? AND user_id = ?`, req.params.id, req.user.id) : null);
 api.post('/requests/:id/resolve', requireAuth, wrap(async (req, res) => {
