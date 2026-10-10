@@ -162,6 +162,7 @@ try {
   for (const s of servers) if (s.err) console.error(s.err.slice(-1500));
   process.exitCode = 1;
 } finally {
-  for (const s of servers) s.proc.kill();
+  // Attendre l'arrêt de chaque serveur avant de supprimer le dossier temporaire où il écrit encore.
+  await Promise.all(servers.map((s) => (s.proc.exitCode !== null ? null : new Promise((r) => { s.proc.once('exit', r); s.proc.kill(); setTimeout(r, 5000).unref(); }))));
   fs.rmSync(tmp, { recursive: true, force: true });
 }

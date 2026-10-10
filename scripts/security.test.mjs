@@ -237,4 +237,7 @@ try {
   console.error('✘ Échec :', e.message);
   if (serverErr) console.error(serverErr.slice(-2000));
   process.exitCode = 1;
-} finally { server.kill(); fs.rmSync(tmp, { recursive: true, force: true }); }
+} finally {
+  if (server.exitCode === null) await new Promise((r) => { server.once('exit', r); server.kill(); setTimeout(r, 5000).unref(); });   // attendre l'arrêt : le serveur peut encore écrire dans tmp
+  fs.rmSync(tmp, { recursive: true, force: true });
+}

@@ -50,4 +50,7 @@ try {
   assert.ok(fs.readdirSync(path.join(tmp, 'outbox')).length >= 100, 'courriers écrits dans la boîte d’envoi');
   console.log('✔ Parcours complet validé (inscription → profil → mandat → abonnement → demandes → réponse → résiliation → export → suppression).');
 } catch (e) { console.error('✘ Échec :', e.message); process.exitCode = 1; }
-finally { server.kill(); fs.rmSync(tmp, { recursive: true, force: true }); }
+finally {
+  if (server.exitCode === null) await new Promise((r) => { server.once('exit', r); server.kill(); setTimeout(r, 5000).unref(); });   // attendre l'arrêt : le serveur peut encore écrire dans tmp
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
