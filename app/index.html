@@ -34,8 +34,9 @@
       </div>
     </div>
   </header>
-  <main id="view" class="view" tabindex="-1" aria-live="polite"></main>
-  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <main id="view" class="view" tabindex="-1"></main>
+  <p id="announce" class="vh" role="status" aria-live="polite" aria-atomic="true"></p>
+  <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
   <script src="/app/app.js"></script>
 </body>
 </html>
