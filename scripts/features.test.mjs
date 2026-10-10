@@ -114,6 +114,10 @@ try {
   assert.match(r.data.subject, /refusée/); assert.match(r.data.text, /«\u00a0Données nécessaires à nos obligations légales\u00a0»/);
   assert.match(r.data.text, /OUBLI-[A-F0-9]{10}/); assert.match(r.data.text, /MOREAU/); assert.match(r.data.text, /article 17 du RGPD/);
   assert.ok(r.data.text.includes('Les faits :'), 'typographie française (espace insécable avant les deux-points)');
+  // Une note interne de l'équipe (ancien panneau « Qualifier une réponse reçue ») n'est jamais citée comme motif du refus.
+  assert.equal((await call('POST', `/admin/requests/${r2.id}/outcome`, { outcome: 'refused', note: 'réponse qualifiée par le support' }, admin)).status, 200);
+  r = await call('GET', `/requests/${r2.id}/complaint`, undefined, A.cookie);
+  assert.equal(r.status, 200); assert.ok(!/motif indiqué|qualifiée par le support/.test(r.data.text), 'note interne absente de la plainte');
   assert.equal((await call('GET', `/requests/${r1.id}/complaint`, undefined, B.cookie)).status, 404, 'plainte d’un autre abonné invisible');
   // Une relance restée sans réponse huit jours rend aussi la plainte possible.
   const late = new Date(Date.now() - 40 * 86400000).toISOString(), lateFollow = new Date(Date.now() - 9 * 86400000).toISOString();

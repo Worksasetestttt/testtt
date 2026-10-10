@@ -655,7 +655,7 @@
   /* ---------- tiroir de détail d'une demande (<dialog> modal) ---------- */
   var drawer = $('#drawer'), drawerFor = null, drawerSig = null, drawerTrigger = null, complaintText = '';
   function statusSentence(r) {
-    var ccpa = r.legal_basis === 'ccpa', motive = r.note && !/^(Refus du courtier|réponse reçue de|Mandat révoqué)/i.test(r.note) ? r.note : '';
+    var ccpa = r.legal_basis === 'ccpa', motive = r.note && !/^(Refus du courtier|réponse reçue|réponse qualifiée|réponse vérifiée|Mandat révoqué|Courtier retiré)/i.test(r.note) ? r.note : '';   /* notes internes : INTERNAL_NOTE, server/templates.js */
     switch (r.status) {
       case 'queued': return r.custom && r.site && r.site.status === 'searching' ? 'Nous cherchons le contact du site' + NBSP + '; la demande part dès qu’il est connu.' : r.custom && r.site && r.site.status === 'review' ? 'Notre équipe vérifie l’adresse de contact du site avant l’envoi.' : 'La demande est prête' + NBSP + ': elle part dans la minute.';
       case 'stopped': return r.stop_reason === 'broker'

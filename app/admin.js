@@ -555,7 +555,7 @@
     if (!r.matched) return '<p class="notice" role="status">' + esc(fr(r.reason || 'Aucune demande ne correspond.')) + '</p>';
     var q = r.request;
     return sheet('adm-sim-h', 'Demande ' + esc(q.ref), chip(q.status), '<div class="sheet__body"><dl class="kv"><dt>Courtier</dt><dd>' + esc(q.broker) + '</dd><dt>Abonné</dt><dd>' + esc(q.email) + SEP + esc(q.profile) + '</dd><dt>Lecture automatique</dt><dd>' + chip(r.outcome) + '</dd></dl></div>' +
-      '<div class="sheet__foot"><div class="btn-row">' + OUTCOMES.map(function (o) { return '<button class="btn btn--sm' + (o[0] === r.outcome ? '' : ' btn--outline') + '" type="button" data-outcome="' + o[0] + '" data-req="' + esc(q.id) + '" data-note="réponse qualifiée par le support"><span class="vh">Enregistrer' + NB + ': </span>' + o[1] + '</button>'; }).join('') + '</div><a class="adm-back" href="' + esc(link('requests', { q: q.token, open: q.id })) + '">Ouvrir la demande</a></div>', ' id="inbound-sim"');
+      '<div class="sheet__foot"><div class="btn-row">' + OUTCOMES.map(function (o) { return '<button class="btn btn--sm' + (o[0] === r.outcome ? '' : ' btn--outline') + '" type="button" data-outcome="' + o[0] + '" data-req="' + esc(q.id) + '"><span class="vh">Enregistrer' + NB + ': </span>' + o[1] + '</button>'; }).join('') + '</div><a class="adm-back" href="' + esc(link('requests', { q: q.token, open: q.id })) + '">Ouvrir la demande</a></div>', ' id="inbound-sim"');
   }
 
   /* ---------- Contacts et listes ---------- */

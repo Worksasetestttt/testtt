@@ -124,6 +124,9 @@ export const AUTHORITIES = {
   CA: { name: 'le Commissariat à la protection de la vie privée du Canada', short: 'CPVP', url: 'https://www.priv.gc.ca' },
 };
 const GDPR_COUNTRIES = new Set(['FR', 'BE', 'LU', 'DE', 'ES', 'IT', 'NL', 'PT', 'GB']);
+// Notes écrites par le service ou l'équipe (refus par défaut, réponse reçue ou vérifiée, arrêts avant envoi), à ne jamais
+// présenter comme le motif donné par le courtier (plainte, tiroir du tableau de bord : même liste dans app/app.js).
+export const INTERNAL_NOTE = /^(Refus du courtier|réponse reçue|réponse qualifiée|réponse vérifiée|Mandat révoqué|Courtier retiré)/i;
 const deName = (name) => (/^[aeiouyàâéèêëîïôûü]/i.test(name) ? `d’${name}` : `de ${name}`);   // « auprès d’Acxiom »
 
 // Plainte rédigée au nom de la personne, prête à déposer auprès de l’autorité : après un refus du courtier, ou quand la
@@ -133,7 +136,8 @@ export function complaintDraft({ profile, broker, user, ref, request, refusedAt 
   const authority = AUTHORITIES[country] || AUTHORITIES.FR;
   const gdpr = GDPR_COUNTRIES.has(country), law = country === 'GB' ? 'UK GDPR' : 'RGPD';
   const refused = request.status === 'refused';
-  const motive = refused && request.note && !/^(Refus du courtier|réponse reçue de)/i.test(request.note) ? request.note : '';
+  // Motif cité : texte du courtier seulement, jamais une note de l'équipe ou du service (préfixes ci-dessous).
+  const motive = refused && request.note && !INTERNAL_NOTE.test(request.note) ? request.note : '';
   const facts = [
     `• Le ${fmtDate(request.sent_at || request.created_at)}, une demande d’effacement de mes données personnelles${gdpr ? ` (article 17 du ${law})` : ''} et d’opposition à leur traitement${gdpr ? ' (article 21)' : ''} a été adressée en mon nom à ${broker.name} (${broker.domain}) par ${COMPANY}, que j’ai mandaté à cet effet${user.mandate_signed_at ? ` le ${fmtDate(user.mandate_signed_at)}` : ''}. Référence : ${ref}.`,
     request.source_url ? `• La fiche me concernant était consultable à l’adresse : ${request.source_url}` : null,
