@@ -641,6 +641,69 @@ try {
   }
   step('suppression du compte : abonnement Stripe annulé tout de suite (même résilié en fin de période ou impayé), factures ouvertes annulées, 502 sans suppression si Stripe échoue, essai suivant sans double annulation ; résiliation normale en fin de période');
 
+  /* ---------- 8. Aucun identifiant Stripe complet dans les réponses ---------- */
+  {
+    const Z = await actor('fuites@exemple.fr', { complete: true });
+    const subZ = await paid(Z, 'famille');
+    const ADM = await actor('admin2@exemple.fr');
+    db.prepare(`UPDATE users SET role = 'admin' WHERE id = ?`).run(ADM.id);
+    for (const p of ['/me', '/export', '/dashboard', '/requests.csv']) assert.equal((await Z.call('GET', p)).status, 200, p);
+    let r = await ADM.call('GET', `/admin/users/${Z.id}`);
+    assert.equal(r.status, 200); assert.ok(r.data.user.stripe_subscription && r.data.user.stripe_subscription !== subZ.id, 'masqué dans l’administration');
+    for (const p of [`/admin/users?q=${encodeURIComponent(Z.email)}`, '/admin/export.csv?what=users', '/admin/audit', '/admin/stats']) assert.equal((await ADM.call('GET', p)).status, 200, p);
+    assert.ok(fake.issued.size > 50, `${fake.issued.size} identifiants émis par le faux Stripe`);
+    const leaks = responses.flatMap(({ p, text }) => [...fake.issued].filter((id) => text.includes(id)).map((id) => `${p} → ${id}`));
+    assert.deepEqual(leaks, [], 'aucune réponse ne contient un identifiant Stripe complet (client, abonnement, ligne, prix, produit, facture)');
+    assert.ok(responses.length > 150, `${responses.length} réponses examinées`);
+    assert.ok(!(serverOut + serverErr).includes(SK), 'la clé secrète n’apparaît pas dans la console du serveur');
+  }
+  step('aucun identifiant Stripe complet dans les réponses (abonné, export, CSV, administration masquée, erreurs 409 et 502) ni la clé secrète dans la console');
+
+  /* ---------- 9. Webhooks : signature obligatoire, comparée en temps constant, tolérance de 5 minutes ---------- */
+  {
+    const S = await actor('signature@exemple.fr');
+    const subS = fake.addSubscription({ userId: S.id });
+    const raw = JSON.stringify({ id: `evt_${crypto.randomBytes(8).toString('hex')}`, object: 'event', type: 'checkout.session.completed', created: nowS(), data: { object: { object: 'checkout.session', mode: 'subscription', payment_status: 'paid', customer: subS.customer, subscription: subS.id, client_reference_id: S.id, metadata: { user_id: S.id, plan: 'individuel', billing: 'monthly' } } } });
+    const post = (body, header, cookie) => call('POST', '/billing/webhook', undefined, { raw: body, cookie, headers: { 'content-type': 'application/json', ...(header === undefined ? {} : { 'stripe-signature': header }) } });
+    const good = signed(raw), t = nowS(), v1 = good.split('v1=')[1];
+    const flip = (hex) => hex.slice(0, -1) + (hex.at(-1) === '0' ? '1' : '0');
+    for (const [label, body, header] of [
+      ['sans en-tête', raw, undefined], ['en-tête vide', raw, ''], ['sans horodatage', raw, `v1=${v1}`], ['sans v1', raw, `t=${t}`], ['v0 seul', raw, `t=${t},v0=${v1}`],
+      ['horodatage non numérique', raw, `t=abc,v1=${v1}`], ['autre secret', raw, signed(raw, t, 'whsec_autre_secret_0123456789')], ['même longueur, un caractère changé', raw, `t=${t},v1=${flip(v1)}`],
+      ['signature tronquée', raw, `t=${t},v1=${v1.slice(0, 32)}`], ['corps modifié', raw.replace('"individuel"', '"famille"'), good],
+      ['horodatage trop ancien', raw, signed(raw, t - 301)], ['horodatage dans le futur', raw, signed(raw, t + 301)],
+    ]) {
+      const res = await post(body, header);
+      assert.equal(res.status, 400, `${label} : ${res.status}`); assert.equal(res.data.error, 'Signature invalide.', label);
+    }
+    assert.equal((await S.me()).subscription_status, 'none', 'aucun webhook refusé n’a d’effet');
+    let res = await post(raw, `t=${t},v1=${flip(v1)},v1=${v1}`, S.cookie);   // rotation du secret : une des signatures suffit ; cookie ignoré
+    assert.equal(res.status, 200, res.text); assert.equal((await S.me()).subscription_status, 'active');
+    res = await post(raw, signed(raw, t - 290));
+    assert.equal(res.status, 200, 'dans la tolérance (290 s), déjà traité : accepté et ignoré');
+    // Comparaison : verifyStripeSignature passe par crypto.timingSafeEqual (temps constant), même quand la signature
+    // a la bonne longueur mais un mauvais contenu. Import dans ce processus sur une base temporaire (jamais data/).
+    process.env.DATABASE_PATH = path.join(tmp, 'unit.sqlite');
+    const { verifyStripeSignature } = await import('../server/billing.js');
+    const { closeDb } = await import('../server/db.js');
+    const realEqual = crypto.timingSafeEqual;
+    const seen = [];
+    crypto.timingSafeEqual = (a, b) => { seen.push([Buffer.from(a).toString(), Buffer.from(b).toString().length]); return realEqual(a, b); };
+    try {
+      const T = 1_800_000_000, header = signed('{"a":1}', T, 'whsec_unit');
+      assert.equal(verifyStripeSignature('{"a":1}', header, 'whsec_unit', T * 1000), true);
+      assert.equal(verifyStripeSignature('{"a":1}', header, 'whsec_unit', (T + 300) * 1000), true, '300 s : accepté');
+      assert.equal(verifyStripeSignature('{"a":1}', header, 'whsec_unit', (T + 301) * 1000), false, '301 s : refusé');
+      assert.equal(verifyStripeSignature('{"a":1}', header, 'whsec_unit', (T - 301) * 1000), false, 'futur : refusé');
+      const wrong = `t=${T},v1=${flip(header.split('v1=')[1])}`;
+      seen.length = 0;
+      assert.equal(verifyStripeSignature('{"a":1}', wrong, 'whsec_unit', T * 1000), false);
+      assert.deepEqual(seen, [[flip(header.split('v1=')[1]), 64]], 'mauvaise signature de même longueur : comparée par timingSafeEqual');
+      assert.equal(verifyStripeSignature('{"a":1}', header, '', T * 1000), false, 'sans secret configuré : toujours refusé');
+    } finally { crypto.timingSafeEqual = realEqual; closeDb(); }
+  }
+  step('webhooks : signature absente, malformée, d’un autre secret, modifiée, tronquée, hors tolérance ou sur un corps modifié → 400 sans effet ; rotation acceptée ; comparaison par timingSafeEqual');
+
   db.close();
   assert.ok(!(serverOut + serverErr).includes(SK), 'la clé secrète n’apparaît jamais dans la console du serveur');
   console.log(`✔ Facturation Stripe validée (${passed} groupes de vérifications).`);
