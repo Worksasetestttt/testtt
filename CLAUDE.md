@@ -29,7 +29,7 @@ Sans `.env`, le serveur tourne en mode développement : abonnement simulé, cour
 
 | Fichier | Rôle |
 |---|---|
-| `index.html`, `assets/` | Landing statique. Ne la modifie que si on te le demande. |
+| `index.html`, `assets/` | Landing statique, avec formulaire de contact (`/api/contact`). Ne la modifie que si on te le demande ; ses chiffres et exemples de courtiers doivent rester ceux du registre (50, `server/brokers.json`). |
 | `server/index.js` | Point d'entrée Express : en-têtes de sécurité (CSP, COOP, CORP), webhook Stripe en corps brut, compression de l'API, garde CSRF, fichiers statiques (`static.js`), 404 JSON, arrêt propre sur SIGTERM. |
 | `server/compress.js`, `server/static.js`, `server/health.js` | Compression brotli/gzip et ETag (`sendJsonConditional`) ; fichiers texte servis depuis la mémoire, précompressés, versionnés `?v=empreinte` ; santé de `/api/health`. |
 | `server/backup.js`, `server/backup-worker.js` | Sauvegardes SQLite (`VACUUM INTO`, fil séparé), `BACKUP_DIR`, 7 gardées. |
@@ -98,6 +98,7 @@ Sans `.env`, le serveur tourne en mode développement : abonnement simulé, cour
 - Limitation de débit : la clé est le motif de la route (casse et barre finale ignorées) et le client (IPv4, ou /64 en IPv6). Une route à identifiant a donc un seul compteur par client.
 - Découverte des sites : aucune répétition non bornée sur le HTML lu (coût quadratique sur un serveur mono-processus) ; `timeoutMs` borne la durée totale d’une lecture ; `isPublicIp` juge une IPv6 sur sa valeur. Un courtier personnalisé se retrouve par nom d’hôte exact, jamais par slug.
 - Le message brut d’un échec SMTP reste dans `last_error` (administration) ; le journal, la note et l’export de l’abonné gardent un texte générique.
+- Liens d’e-mail sans session (désinscription du rapport) : `linkToken(but, valeur)` et `checkLinkToken` (auth.js, HMAC avec `SESSION_SECRET`), route ajoutée à `TOKEN_ROUTES` (index.js) ; un GET ne change jamais d’état.
 - CSV : `csvCell` neutralise aussi les formules après une virgule ou un point-virgule (Excel en français découpe sur « ; »).
 - La base n’est pas chiffrée par l’application : n’affiche aucune promesse de chiffrement (« AES-256 ») dans l’interface.
 
@@ -117,8 +118,8 @@ Fait et poussé :
 - `npm test` passe (dix suites) ; `npm run test:ui` passe à 1280 et 390 px. README à jour.
 
 Pistes suivantes (non commencées) :
-- Typographie des textes produits par le serveur (erreurs d’API, journal, courriers) : espaces ordinaires avant « : » et quelques apostrophes droites (ex. `routes.js`, message de l’offre Individuel). Le client corrige l’affichage du journal et des messages de l’administration avec `typo()`, pas le contenu des courriers. La plainte (`complaintDraft`) applique déjà la typographie française (`frTypo`).
-- La landing annonce « 420+ courtiers » (le registre en contient 50), « AES-256 » (la base n’est pas chiffrée) et « Hébergé en France » (dépend de l’hébergeur). À aligner avant toute publication ; la landing ne se modifie que sur demande.
+- Typographie des messages d’erreur de l’API et du journal : encore des espaces ordinaires avant « : » (le client les corrige à l’affichage avec `typo()`). Les courriers en français passent par `frTypo` (templates.js).
+- Landing : témoignages et chiffres du tableau de bord illustré fictifs ; pages légales (mentions, CGU, confidentialité), presse et carrières absentes.
 - Authentification à deux facteurs pour les administrateurs ; vérification de l’adresse de tous les abonnés (inscription : 409 « compte existant » révèle encore l’existence d’un compte).
 - Stripe : un réabonnement pendant une période déjà payée crée un second abonnement (proposition : reprendre l’existant) ; un `checkout.session.completed` rejoué en retard réactive le compte jusqu’à l’événement `deleted` (ignorer les événements plus anciens que le dernier traité) ; la suppression de compte résilie en fin de période plutôt qu’immédiatement.
 - Planificateur : les nouveaux courtiers du registre ne reçoivent pas de demande pour les abonnés existants (`autoLaunch` ne traite que les profils sans demande) ; les demandes en file d’un courtier désactivé restent « À envoyer » ; un courrier peut partir deux fois avec deux instances (réserver la demande avant l’envoi).

@@ -20,7 +20,7 @@ Parcours : créer un compte → renseigner les informations à faire effacer →
 
 | Dossier | Rôle |
 |---|---|
-| `index.html`, `assets/` | Landing page statique (HTML/CSS/JS, Google Fonts uniquement). |
+| `index.html`, `assets/` | Landing page statique (HTML/CSS/JS, Google Fonts uniquement), avec formulaire de contact (`/api/contact`, onglet Contacts de l'administration). |
 | `app/index.html`, `app/app.js`, `app/app.css` | Application abonné : inscription, dossier, mandat, tableau de bord, abonnement, paramètres. Vanilla JS, routage par hash. |
 | `app/admin.js`, `app/admin.css` | Panel d'administration, chargé à la demande pour les administrateurs uniquement. |
 | `server/index.js` | Serveur Express 5 : en-têtes de sécurité, garde CSRF, webhook Stripe en corps brut, compression, fichiers statiques, API `/api`, arrêt propre (SIGTERM). |
@@ -96,6 +96,7 @@ Toutes les réponses sont en JSON ; les erreurs ont la forme `{ "error": "messag
 | `POST /api/billing/redeem` | Activer une clé d'activation (10 essais par heure par compte et par adresse IP). |
 | `POST /api/inbound` | Réponses des courtiers (webhook e-mail entrant) : texte cité et objet « Re: » ignorés ; `applied` indique si la réponse a changé la demande (une réponse tardive ne la fait jamais reculer). |
 | `GET /api/export`, `DELETE /api/account` | Export RGPD et suppression définitive. |
+| `GET/POST /api/unsubscribe/report?u=&t=` | Désinscription du rapport mensuel par le lien signé de l'e-mail, sans session : POST en un clic (RFC 8058), GET renvoie vers la page de confirmation sans rien changer. |
 | `POST /api/newsletter`, `POST /api/contact` | Formulaires de la landing. |
 | `GET /api/admin/*`, `POST/PUT/DELETE /api/admin/*` | Administration (réservée aux comptes `admin`, voir ci-dessous). |
 
@@ -131,7 +132,7 @@ Toutes les réponses sont en JSON ; les erreurs ont la forme `{ "error": "messag
 - **Un site manque ?** : coller une adresse suffit ; le contact du site est cherché, puis la demande part.
 - **Activité** : groupée par jour, une rafale d'envois ou de confirmations tient en une ligne ; export du dossier.
 - **Analyse** : courbe d'exposition, répartition par catégorie et par sensibilité.
-- **Rapport imprimable** (`#report`, PDF via l'impression) et export CSV ; rapport mensuel par e-mail.
+- **Rapport imprimable** (`#report`, PDF via l'impression) et export CSV ; rapport mensuel par e-mail, avec désinscription en un clic (en-têtes `List-Unsubscribe` et `List-Unsubscribe-Post`, lien vers `#unsubscribe`).
 
 Le tableau de bord se rafraîchit toutes les 6 s sans remplacer la vue (le focus est conservé), une requête à la fois ; hors ligne, il l'indique et réessaie de plus en plus tard, puis reprend dès le retour du réseau. Pendant un accès support, les actions d'écriture sont masquées.
 
@@ -230,7 +231,7 @@ Fonctionne tel quel sur Render, Fly.io, Railway ou un VPS derrière Nginx (`TRUS
 
 ## Avant la mise en production
 
-1. Remplacer la marque, les mentions légales, l'adresse de la société (`COMPANY_*`) et les contenus d'exemple de la landing (avis, chiffres). La landing promet encore ce que le produit ne tient pas : « 420+ courtiers » (le registre en contient 50), « AES-256 » (la base n'est pas chiffrée par l'application) et « Hébergé en France » (dépend de l'hébergeur choisi). Alignez ces mentions sur la réalité.
+1. Remplacer la marque, l'adresse de la société (`COMPANY_*`) et les contenus d'exemple de la landing : les témoignages et les chiffres du tableau de bord illustré sont fictifs, et les liens Mentions légales, Conditions générales, Politique de confidentialité, Presse et Carrières mènent encore en haut de page. Le nombre de courtiers (50), les exemples cités et les engagements de sécurité correspondent au produit ; gardez-les alignés si le registre change.
 2. Vérifier les adresses de contact des courtiers et compléter le registre (`server/brokers.json` ou admin).
 3. Configurer SMTP + domaine d'envoi (SPF/DKIM), le webhook entrant et Stripe.
 4. Définir `BACKUP_DIR`, chiffrer le volume de la base, et n'inscrire dans `ADMIN_EMAILS` que des adresses dont vous contrôlez la boîte.
