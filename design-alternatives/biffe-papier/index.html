@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="fr" class="no-js">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Biffe — Votre nom, rayé des fichiers. En continu.</title>
+<meta name="description" content="Biffe trouve les courtiers en données et les annuaires qui revendent votre profil, leur envoie les demandes d’effacement prévues par le RGPD et le CCPA, les relance, et recommence dès que vos données réapparaissent. À partir de 7,49 €/mois.">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#F4F0E8">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Biffe — Votre nom est en vente. On le biffe.">
+<meta property="og:description" content="Effacement continu de données personnelles : 420+ courtiers et annuaires, demandes art. 17 et 21 RGPD, relances tous les 60 à 90 jours. Satisfait ou remboursé 30 jours.">
+<meta property="og:locale" content="fr_FR">
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,200..800&family=Instrument+Sans:ital,wght@0,400..700;1,400..700&family=Geist+Mono:wght@400..600&display=swap">
+<link rel="stylesheet" href="assets/css/styles.css">
+<script>document.documentElement.classList.replace('no-js','js');</script>
+</head>
+<body>
+<a class="skip" href="#main">Aller au contenu</a>
+
+<header class="site-header" id="top">
+  <div class="container nav">
+    <a class="logo" href="#top" aria-label="Biffe — retour en haut de page">
+      <svg class="mark" viewBox="0 0 32 32" width="28" height="28" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+        <rect x="6" y="3" width="20" height="26" rx="2.5" stroke="currentColor" stroke-width="2.2"/>
+        <rect x="10" y="9" width="8" height="2.4" rx="1.2" fill="currentColor"/>
+        <rect x="10" y="21" width="12" height="2.4" rx="1.2" fill="currentColor"/>
+        <rect class="bar" x="2" y="13.5" width="28" height="5" rx="1" fill="currentColor" transform="rotate(-4 16 16)"/>
+      </svg>
+      <span class="wordmark">Biffe</span>
+    </a>
+
+    <nav class="nav-center" aria-label="Navigation principale">
+      <span class="nav-counter mono" aria-hidden="true">§&nbsp;<span data-nav-counter>00</span>&nbsp;/&nbsp;09</span>
+      <ul class="nav-links">
+        <li><a href="#methode" data-nav-link="methode">La méthode</a></li>
+        <li><a href="#courtiers" data-nav-link="courtiers">Courtiers</a></li>
+        <li><a href="#tarifs" data-nav-link="tarifs">Tarifs</a></li>
+        <li><a href="#faq" data-nav-link="faq">Questions</a></li>
+      </ul>
+    </nav>
+
+    <div class="nav-right">
+      <a class="nav-login" href="#tarifs">Se connecter</a>
+      <a class="btn btn-ink btn-sm" href="#tarifs"><span class="btn-l"><span>Rayer mon nom</span><span aria-hidden="true">Rayer mon nom</span></span></a>
+      <button type="button" class="nav-burger mono" aria-expanded="false" aria-controls="mobile-menu" data-menu-open>Menu</button>
+    </div>
+  </div>
+
+</header>
+
+  <div class="mobile-menu" id="mobile-menu" role="dialog" aria-modal="true" aria-label="Sommaire du dossier" hidden>
+    <div class="mobile-menu-top container">
+      <span class="mono mobile-menu-label">Dossier Biffe — sommaire</span>
+      <button type="button" class="nav-burger mono on-ink" data-menu-close>Fermer</button>
+    </div>
+    <nav class="mobile-menu-nav container" aria-label="Navigation mobile">
+      <ul>
+        <li style="--i:0"><a href="#methode" data-menu-link>La méthode</a></li>
+        <li style="--i:1"><a href="#courtiers" data-menu-link>Courtiers</a></li>
+        <li style="--i:2"><a href="#tarifs" data-menu-link>Tarifs</a></li>
+        <li style="--i:3"><a href="#faq" data-menu-link>Questions</a></li>
+        <li style="--i:4"><a href="#tarifs" data-menu-link class="mobile-menu-login">Se connecter</a></li>
+      </ul>
+    </nav>
+    <div class="mobile-menu-bottom container">
+      <svg class="mark" viewBox="0 0 32 32" width="96" height="96" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+        <rect x="6" y="3" width="20" height="26" rx="2.5" stroke="currentColor" stroke-width="2.2"/>
+        <rect x="10" y="9" width="8" height="2.4" rx="1.2" fill="currentColor"/>
+        <rect x="10" y="21" width="12" height="2.4" rx="1.2" fill="currentColor"/>
+        <rect class="bar" x="2" y="13.5" width="28" height="5" rx="1" fill="currentColor" transform="rotate(-4 16 16)"/>
+      </svg>
+      <a class="btn btn-paper" href="#tarifs" data-menu-link><span class="btn-l"><span>Rayer mon nom</span><span aria-hidden="true">Rayer mon nom</span></span></a>
+    </div>
+  </div>
+
+<main id="main">
+
+  <!-- § 00 — HERO -->
+  <section class="hero" id="hero" aria-labelledby="hero-title" data-sec="00">
+    <div class="container hero-grid">
+      <div class="hero-copy">
+        <p class="eyebrow mono reveal" style="--i:0">§&nbsp;00 — Effacement continu de données personnelles</p>
+        <h1 id="hero-title" class="hero-title reveal" style="--i:1">Votre nom<br>est <span class="strike strike-live">en vente</span>.<br>On le <span class="hl hl-live">biffe</span>.</h1>
+        <p class="lead hero-lead reveal" style="--i:2">Biffe trouve les cour&shy;tiers en données et les annuaires qui revendent votre profil, leur envoie les demandes d’ef&shy;face&shy;ment prévues par le RGPD et le CCPA, les relance… et recommence dès que vos données réapparaissent. Vous, vous n’avez rien à faire.</p>
+        <div class="hero-ctas reveal" style="--i:3">
+          <a class="btn btn-ink btn-lg" href="#tarifs"><span class="btn-l"><span>Rayer mon nom</span><span aria-hidden="true">Rayer mon nom</span></span></a>
+          <a class="btn btn-ghost btn-lg" href="#methode">Voir la méthode <span class="arrow" aria-hidden="true">→</span></a>
+        </div>
+        <p class="microcopy mono reveal" style="--i:4">Satisfait ou remboursé 30&nbsp;jours · Mandat révocable à tout moment · Résidents UE, Suisse, Royaume-Uni, États-Unis, Canada</p>
+      </div>
+
+      <div class="hero-visual">
+        <div class="dossier" role="img" aria-label="Fiche d’exemple d’un annuaire de personnes en cours d’effacement par Biffe, et tableau de bord&nbsp;: 318 demandes envoyées, 97 en cours, 221 terminées." data-hero-dossier>
+          <div class="sheet fiche" aria-hidden="true" data-fiche>
+            <div class="fiche-top mono">
+              <span class="win-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="fiche-url">peoplefinder-fr.example&nbsp;▸&nbsp;Résultat 1 sur 3</span>
+            </div>
+            <div class="stamp stamp-danger fiche-stamp" data-stamp="vendu">VENDU<i class="cover" data-r="stamp"></i></div>
+            <div class="fiche-id">
+              <div class="avatar">M.L.</div>
+              <div class="fiche-name"><span class="redact redact-lg" data-r="name">Marie LAURENT</span></div>
+            </div>
+            <dl class="fiche-rows">
+              <div class="fiche-row"><dt class="mono">Âge</dt><dd class="mono"><span class="redact" data-r="age">42 — Lyon 3ᵉ</span></dd></div>
+              <div class="fiche-row"><dt class="mono">Adresse</dt><dd class="mono"><span class="redact" data-r="adresse">12 rue des Capucins</span></dd></div>
+              <div class="fiche-row"><dt class="mono">Tél.</dt><dd class="mono"><span class="redact" data-r="tel">06 •• •• 41 28</span></dd></div>
+              <div class="fiche-row"><dt class="mono">Proches</dt><dd class="mono"><span class="redact" data-r="proches">Paul L., Inès L.</span></dd></div>
+              <div class="fiche-row"><dt class="mono">Revenu est.</dt><dd class="mono"><span class="redact" data-r="revenu">38–45&nbsp;k€</span></dd></div>
+            </dl>
+            <div class="fiche-btn mono">Voir le rapport complet — 9,99&nbsp;€</div>
+            <div class="fiche-status mono" data-status></div>
+          </div>
+
+          <div class="sheet tableau" aria-hidden="true" data-tableau>
+            <div class="tb-head mono">Biffe · Tableau de bord · M.&nbsp;Laurent</div>
+            <div class="tb-body">
+              <div class="tb-stats">
+                <div class="tb-stat"><span class="num" data-count="318" data-hero-num="sent">318</span><span class="mono tb-label">Demandes envoyées</span></div>
+                <div class="tb-stat"><span class="num" data-count="97" data-hero-num="prog">97</span><span class="mono tb-label">En cours</span></div>
+                <div class="tb-stat"><span class="num" data-count="221" data-hero-num="done">221</span><span class="mono tb-label">Terminées</span></div>
+              </div>
+              <svg class="ring ring-hero" viewBox="0 0 80 80" data-ring data-done="221" data-prog="97" data-total="318" aria-hidden="true" focusable="false"></svg>
+            </div>
+            <ul class="tb-rows">
+              <li><span class="mono">peoplefinder-fr.example</span><span class="chip" data-chip="queued" data-hero-chip></span></li>
+              <li><span class="mono">annuaire-inverse.example</span><span class="chip" data-chip="done"></span></li>
+              <li><span class="mono">dataleads-eu.example</span><span class="chip" data-chip="progress"></span></li>
+              <li><span class="mono">kontakt360.example</span><span class="chip" data-chip="action"></span></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Bandeau confiance -->
+  <section class="trust" aria-label="Garanties et couverture">
+    <div class="container">
+      <ul class="trust-list mono">
+        <li class="reveal" style="--i:0"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M8 1.6l1.9 4 4.4.6-3.2 3.1.8 4.4L8 11.6l-3.9 2.1.8-4.4L1.7 6.2l4.4-.6z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>4,6/5 — 1&#8239;284 avis vérifiés</li>
+        <li class="reveal" style="--i:1"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2 4h12M2 8h12M2 12h8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>420+ courtiers et annuaires couverts</li>
+        <li class="reveal" style="--i:2"><span class="glyph" aria-hidden="true">§</span>RGPD art.&nbsp;17 &amp; 21 · CCPA</li>
+        <li class="reveal" style="--i:3"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M13 3v4a3 3 0 0 1-3 3H3m3-3L3 10l3 3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>Satisfait ou remboursé 30&nbsp;jours</li>
+        <li class="reveal" style="--i:4"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><rect x="3" y="7" width="10" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>Données chiffrées, hébergées en France</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- § 01 — COURTIERS -->
+  <section class="section" id="courtiers" aria-labelledby="courtiers-title" data-sec="01">
+    <div class="container">
+      <div class="sec-head reveal"><p class="eyebrow mono">§&nbsp;01 — Qui vous fiche</p></div>
+      <h2 id="courtiers-title" class="h2 cols-8 reveal" style="--i:1">420 cour&shy;tiers, annuaires et fichiers marketing. Nous les appelons par leur nom.</h2>
+      <p class="lead cols-8 reveal" style="--i:2">Sites de recherche de personnes, annuaires inversés, courtiers marketing, agrégateurs de registres publics, revendeurs de «&nbsp;leads&nbsp;»&nbsp;: nous tenons la liste à jour chaque semaine, et nous l’étendons sur demande.</p>
+      <ul class="cat-chips mono reveal" style="--i:3" aria-label="Catégories couvertes">
+        <li>Recherche de personnes <b>118</b></li>
+        <li>Annuaires &amp; inversés <b>64</b></li>
+        <li>Courtiers marketing <b>131</b></li>
+        <li>Registres &amp; scoring <b>57</b></li>
+        <li>Revendeurs de leads <b>50+</b></li>
+      </ul>
+    </div>
+
+    <div class="marquee" data-marquee aria-label="Exemples de courtiers et annuaires couverts (noms fictifs)">
+      <div class="mq-viewport">
+      <ul class="mq-track">
+        <li class="mq-item"><span class="redact">PeopleFinder-FR</span></li>
+        <li class="mq-item"><span class="redact">Annuaire Inversé Pro</span></li>
+        <li class="mq-item is-bar"><span class="redact"><span class="sr-only">(déjà biffé) </span>DataLeads Europe</span></li>
+        <li class="mq-item"><span class="redact">Kontakt360</span></li>
+        <li class="mq-item"><span class="redact">ProfilPlus</span></li>
+        <li class="mq-item is-bar"><span class="redact"><span class="sr-only">(déjà biffé) </span>VoisinsConnect</span></li>
+        <li class="mq-item"><span class="redact">ScoreMarketing</span></li>
+        <li class="mq-item"><span class="redact">Télépro Fichiers</span></li>
+        <li class="mq-item is-bar"><span class="redact"><span class="sr-only">(déjà biffé) </span>OpenRegistres</span></li>
+        <li class="mq-item"><span class="redact">ListeOr</span></li>
+        <li class="mq-item"><span class="redact">Qui-Habite-Où</span></li>
+        <li class="mq-item is-bar"><span class="redact"><span class="sr-only">(déjà biffé) </span>Fichier Prospect</span></li>
+        <li class="mq-item"><span class="redact">CibleData</span></li>
+        <li class="mq-item"><span class="redact">Trouver-Quelqu’un</span></li>
+        <li class="mq-item is-bar"><span class="redact"><span class="sr-only">(déjà biffé) </span>AdresseScan</span></li>
+        <li class="mq-item"><span class="redact">Voisinage.info</span></li>
+      </ul>
+      <ul class="mq-track mq-reverse" aria-hidden="true">
+        <li class="mq-item"><span class="redact">Voisinage.info</span></li>
+        <li class="mq-item is-bar"><span class="redact">AdresseScan</span></li>
+        <li class="mq-item"><span class="redact">Trouver-Quelqu’un</span></li>
+        <li class="mq-item"><span class="redact">CibleData</span></li>
+        <li class="mq-item is-bar"><span class="redact">Fichier Prospect</span></li>
+        <li class="mq-item"><span class="redact">Qui-Habite-Où</span></li>
+        <li class="mq-item"><span class="redact">ListeOr</span></li>
+        <li class="mq-item is-bar"><span class="redact">OpenRegistres</span></li>
+        <li class="mq-item"><span class="redact">Télépro Fichiers</span></li>
+        <li class="mq-item"><span class="redact">ScoreMarketing</span></li>
+        <li class="mq-item is-bar"><span class="redact">VoisinsConnect</span></li>
+        <li class="mq-item"><span class="redact">ProfilPlus</span></li>
+        <li class="mq-item"><span class="redact">Kontakt360</span></li>
+        <li class="mq-item is-bar"><span class="redact">DataLeads Europe</span></li>
+        <li class="mq-item"><span class="redact">Annuaire Inversé Pro</span></li>
+        <li class="mq-item"><span class="redact">PeopleFinder-FR</span></li>
+      </ul>
+      </div>
+    </div>
+
+    <div class="container marquee-foot">
+      <p class="mono muted reveal">Liste complète dans votre tableau de bord. Un nom barré = déjà biffé pour nos clients cette semaine.</p>
+      <a class="link-arrow reveal" style="--i:1" href="#tarifs">Voir la liste des 420 <span class="arrow" aria-hidden="true">→</span></a>
+    </div>
+  </section>
+
+  <!-- § 02 — LE PROBLÈME (bande encre) -->
+  <section class="section band-ink" id="probleme" aria-labelledby="probleme-title" data-sec="02">
+    <div class="container">
+      <div class="sec-head reveal"><p class="eyebrow mono">§&nbsp;02 — Le problème</p></div>
+      <h2 id="probleme-title" class="h2 cols-9 reveal" style="--i:1">Vous n’avez jamais rien signé chez eux. Ils vous revendent quand même.</h2>
+      <p class="lead cols-8 reveal" style="--i:2">Un courtier en données n’a aucune relation avec vous. Il achète vos traces — registres publics, cartes de fidélité, applications, autres courtiers —, les recoupe en un profil, et le vend à qui paie&nbsp;: annonceurs, assureurs, recruteurs, et parfois escrocs.</p>
+
+      <div class="stats" data-count-group>
+        <div class="stat reveal" style="--i:0">
+          <p class="stat-num display"><span class="num" data-count="4000">4&#8239;000</span>+</p>
+          <p class="stat-cap mono">courtiers en données estimés dans le monde — entre 4&#8239;000 et 5&#8239;000, estimation</p>
+        </div>
+        <div class="stat reveal" style="--i:1">
+          <p class="stat-num display"><span class="num" data-count="750">750</span></p>
+          <p class="stat-cap mono">groupes de courtiers identifiés sur cinq registres d’États américains (Privacy Rights Clearinghouse, 2025)</p>
+        </div>
+        <div class="stat reveal" style="--i:2">
+          <p class="stat-num display">+<span class="num" data-count="70">70</span>&nbsp;%</p>
+          <p class="stat-cap mono">d’hameçonnage par mail, SMS et appels signalé en France en 2025 (Cybermalveillance.gouv.fr)</p>
+        </div>
+        <div class="stat reveal" style="--i:3">
+          <p class="stat-num display"><span class="num" data-count="1.36" data-decimals="2">1,36</span>&nbsp;M</p>
+          <p class="stat-cap mono">signalements d’usurpation d’identité aux États-Unis en 2025 (FTC)</p>
+        </div>
+      </div>
+
+      <div class="flow reveal" data-wipe-group data-stagger="0" aria-label="Flux de revente des données">
+        <ul class="flow-group mono" aria-label="Sources">
+          <li>Registres publics</li><li>Cartes de fidélité</li><li>Applications</li><li>Achats en ligne</li><li>Autres courtiers</li>
+        </ul>
+        <span class="flow-arrow" aria-hidden="true"><svg viewBox="0 0 48 16" width="48" height="16" focusable="false"><path d="M0 8h44m-6-6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></span>
+        <div class="flow-center mono"><span class="strike strike-thick">Courtier</span></div>
+        <span class="flow-arrow" aria-hidden="true"><svg viewBox="0 0 48 16" width="48" height="16" focusable="false"><path d="M0 8h44m-6-6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></span>
+        <ul class="flow-group mono" aria-label="Acheteurs">
+          <li>Annonceurs</li><li>Assureurs</li><li>Recruteurs</li><li>Annuaires de personnes</li><li>Escrocs</li>
+        </ul>
+      </div>
+
+      <div class="band-foot reveal"><p>En France, la CNIL a sanctionné en 2025 un courtier de <strong>900&#8239;000&nbsp;€</strong> pour prospection sans consentement. Le droit existe. Il faut l’exercer, 420&nbsp;fois.</p></div>
+    </div>
+  </section>
+
+  <!-- § 03 — LA MÉTHODE -->
+  <section class="section" id="methode" aria-labelledby="methode-title" data-sec="03">
+    <div class="container">
+      <div class="sec-head reveal"><p class="eyebrow mono">§&nbsp;03 — La méthode</p></div>
+      <h2 id="methode-title" class="h2 cols-8 reveal" style="--i:1">Trois minutes pour vous. Des mois de travail pour nous.</h2>
+
+      <ol class="steps">
+        <li class="step card reveal" style="--i:0">
+          <div class="step-ui" aria-hidden="true" data-step-form>
+            <div class="ui-field"><span class="mono ui-label">Nom</span><span class="ui-value mono" data-type="Marie Laurent"></span></div>
+            <div class="ui-field"><span class="mono ui-label">Adresses</span><span class="ui-value mono" data-type="12 rue des Capucins"></span></div>
+            <div class="ui-field"><span class="mono ui-label">E-mail</span><span class="ui-value mono" data-type="m.laurent@example.fr"></span></div>
+            <div class="ui-sign">
+              <span class="mono ui-label">Mandat</span>
+              <svg class="ui-signature" viewBox="0 0 160 40" width="160" height="40" focusable="false"><path data-sig d="M4 30c8-14 16-22 20-18s-6 20-2 22 10-16 18-18 2 16 8 14 10-18 16-14 2 16 10 10 12-12 20-8 8 10 14 6 12-10 22-6 12 8 20 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+              <span class="stamp stamp-success ui-stamp" data-slam="form">Mandat signé</span>
+            </div>
+          </div>
+          <span class="step-no mono">01</span>
+          <h3 class="h3">Vous nous dites qui vous êtes.</h3>
+          <p>Nom, adresses actuelles et passées, e-mails, téléphones. Vous signez électroniquement un mandat d’effacement, révocable en un clic&nbsp;: c’est lui qui nous autorise à écrire en votre nom. Trois minutes, montre en main.</p>
+        </li>
+        <li class="step card reveal" style="--i:1">
+          <div class="step-ui" aria-hidden="true" data-step-letter>
+            <div class="ui-letter">
+              <p class="mono ui-objet">Objet&nbsp;: Demande d’effacement — art.&nbsp;17 RGPD</p>
+              <div class="ui-lines"><i style="width:92%"></i><i style="width:78%"></i><i style="width:85%"></i><i style="width:60%"></i><i style="width:88%"></i><i style="width:42%"></i></div>
+              <span class="stamp stamp-accent ui-stamp ui-stamp-letter" data-slam="letter">Envoyée 12:04</span>
+            </div>
+            <div class="ui-counter mono"><b class="num" data-count="318">318</b> courriers</div>
+          </div>
+          <span class="step-no mono">02</span>
+          <h3 class="h3">On biffe.</h3>
+          <p>Sous 48&nbsp;heures, nous envoyons à chaque courtier qui vous concerne une demande d’effacement fondée sur les articles 17 et 21 du RGPD (ou le CCPA aux États-Unis). Ils ont 30&nbsp;jours pour répondre — 45 en Californie. On note tout.</p>
+        </li>
+        <li class="step card reveal" style="--i:2">
+          <div class="step-ui" aria-hidden="true" data-step-cycle>
+            <div class="ui-cycle">
+              <div class="ui-cycle-head"><span class="mono ui-label">Cycle · 12 semaines</span><span class="mono ui-label">Renvoi J+60 à J+90</span></div>
+              <div class="ui-cycle-marks mono"><span style="--p:0">J+0 envoi</span><span style="--p:4">J+30 délai</span><span style="--p:8">J+60 relance</span></div>
+              <div class="ui-ticks" data-ticks></div>
+            </div>
+            <p class="mono ui-dissolve" data-dissolve data-to="Votre fiche a été ré-ingérée.">Votre fiche a été effacée.</p>
+          </div>
+          <span class="step-no mono">03</span>
+          <h3 class="h3">On recommence.</h3>
+          <p>Les courtiers réimportent les registres publics toutes les quelques semaines. Nous vérifions, relançons les silencieux, et renvoyons les demandes tous les 60 à 90&nbsp;jours. Si votre fiche réapparaît, on la biffe à nouveau — sans que vous ayez à y penser.</p>
+        </li>
+      </ol>
+
+      <div class="steps-cta reveal">
+        <a class="btn btn-ink btn-lg" href="#tarifs"><span class="btn-l"><span>Commencer — 3&nbsp;min</span><span aria-hidden="true">Commencer — 3&nbsp;min</span></span></a>
+        <span class="mono muted">Premières demandes envoyées sous 48&nbsp;h</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- § 04 — TRANSPARENCE (bento) -->
+  <section class="section" id="tableau" aria-labelledby="tableau-title" data-sec="04">
+    <div class="container">
+      <div class="sec-head reveal"><p class="eyebrow mono">§&nbsp;04 — Transparence</p></div>
+      <h2 id="tableau-title" class="h2 cols-9 reveal" style="--i:1">Chaque demande, horodatée. Rien n’est caché — sauf vous.</h2>
+
+      <div class="bento" data-count-group>
+        <article class="bento-card card span-7 reveal" style="--i:0" data-spot>
+          <div class="bento-ui bento-progress" aria-hidden="true">
+            <svg class="ring ring-lg" viewBox="0 0 80 80" data-ring data-done="221" data-prog="97" data-total="318" focusable="false"></svg>
+            <div class="bento-stats">
+              <div><span class="num display" data-count="318">318</span><span class="mono">demandes</span></div>
+              <div><span class="num display" data-count="221">221</span><span class="mono"><i class="sw sw-ink"></i>terminées</span></div>
+              <div><span class="num display" data-count="97">97</span><span class="mono"><i class="sw sw-accent"></i>en cours</span></div>
+            </div>
+          </div>
+          <h3 class="h3">Progression</h3>
+          <p><span class="sr-only">318 demandes, 221 terminées, 97 en cours. </span>Terminée&nbsp;: le courtier a confirmé l’effacement, ou n’avait rien sur vous. On vous dit lequel.</p>
+        </article>
+
+        <article class="bento-card card span-5 reveal" style="--i:1" data-spot>
+          <div class="bento-ui bento-journal mono" aria-hidden="true">
+            <ul>
+              <li><time>09/10 12:04</time><span>PeopleFinder-FR — Envoyée (art.&nbsp;17)</span></li>
+              <li><time>11/10 09:30</time><span>Accusé de réception</span></li>
+              <li><time>02/11 16:12</time><span class="ok">Effacement confirmé</span></li>
+              <li><time>08/12</time><span>Relance nº&nbsp;2 programmée</span></li>
+            </ul>
+          </div>
+          <h3 class="h3">Un journal, pas un résumé.</h3>
+          <p>Chaque envoi, accusé de réception, confirmation et relance, à la minute près. Exportable, sans jargon.</p>
+        </article>
+
+        <article class="bento-card card span-4 reveal" style="--i:0" data-spot>
+          <div class="bento-ui bento-risk mono" aria-hidden="true">
+            <div class="risk-row"><span>Faible</span><i class="risk-bar" style="--w:28%"></i><b>112</b></div>
+            <div class="risk-row"><span>Moyen</span><i class="risk-bar" style="--w:55%"></i><b>164</b></div>
+            <div class="risk-row is-high"><span>Élevé</span><i class="risk-bar" style="--w:100%"></i><b>42</b></div>
+          </div>
+          <h3 class="h3">Niveau de risque</h3>
+          <p>Élevé&nbsp;: adresse, téléphone et proches publiés ensemble. On traite ceux-là en premier.</p>
+        </article>
+
+        <article class="bento-card card span-4 reveal" style="--i:1" data-spot>
+          <div class="bento-ui bento-action" aria-hidden="true">
+            <div class="action-row mono"><span>kontakt360.example</span><span class="chip" data-chip="action"></span></div>
+            <p class="mono action-text">Ce courtier exige une copie de pièce d’identité. Texte à envoyer&nbsp;: «&nbsp;Conformément à l’article 12.6 du RGPD, je vous transmets une copie partiellement masquée…&nbsp;»</p>
+          </div>
+          <h3 class="h3">Action requise</h3>
+          <p>Quand un courtier exige une pièce d’identité, on vous le dit, avec le texte exact à envoyer. Jamais de pièce transmise sans votre accord.</p>
+        </article>
+
+        <article class="bento-card card span-4 reveal" style="--i:2" data-spot>
+          <div class="bento-ui bento-mail" aria-hidden="true">
+            <div class="mail-head mono"><span>De&nbsp;: Biffe</span><span>01/11 08:00</span></div>
+            <p class="mail-subject">Votre rapport d’octobre</p>
+            <p class="mono mail-body">Octobre&nbsp;: <b>14</b> fiches effacées, <b>3</b> réapparitions biffées à nouveau, <b>2</b> courtiers en retard — plainte CNIL préparée.</p>
+          </div>
+          <h3 class="h3">Rapport mensuel</h3>
+          <p>Un e-mail par mois, lisible en trente secondes. Ce qui a été effacé, ce qui est revenu, ce qui traîne.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- § 05 — POURQUOI -->
+  <section class="section" id="pourquoi" aria-labelledby="pourquoi-title" data-sec="05">
+    <div class="container">
+      <div class="sec-head reveal"><p class="eyebrow mono">§&nbsp;05 — Pourquoi</p></div>
+      <h2 id="pourquoi-title" class="h2 cols-10 reveal" style="--i:1">Moins de spam. Moins d’arnaques. Moins de prix gonflés.</h2>
+
+      <div class="benefits" data-wipe-group data-stagger="120">
+        <article class="benefit card reveal" style="--i:0">
+          <span class="benefit-key mono">art.&nbsp;21 RGPD</span>
+          <h3 class="benefit-title display"><s class="strike strike-h3">Démarchage</s><span class="repl">Silence</span></h3>
+          <p>L’article 21 du RGPD vous donne un droit d’opposition absolu à la prospection, sans avoir à vous justifier. Nous l’exerçons pour vous, courtier par courtier.</p>
+        </article>
+        <article class="benefit card reveal" style="--i:1">
+          <span class="benefit-key mono">+70&nbsp;% en 2025</span>
+          <h3 class="benefit-title display"><s class="strike strike-h3">Hameçonnage</s><span class="repl">Tranquillité</span></h3>
+          <p>Un escroc qui connaît votre adresse, votre âge et le prénom de vos enfants est plus convaincant. Moins de données publiques, moins d’attaques crédibles. L’hameçonnage a progressé de 70&nbsp;% en France en 2025.</p>
+        </article>
+        <article class="benefit card reveal" style="--i:2">
+          <span class="benefit-key mono">1,36&nbsp;M en 2025</span>
+          <h3 class="benefit-title display"><s class="strike strike-h3">Usurpation</s><span class="repl">Identité</span></h3>
+          <p>Nom, date de naissance, adresses successives&nbsp;: c’est le kit de départ d’une usurpation. 1,36&nbsp;million de signalements aux États-Unis en 2025, en hausse de près de 20&nbsp;%.</p>
+        </article>
+        <article class="benefit card reveal" style="--i:3">
+          <span class="benefit-key mono">FTC, 2025</span>
+          <h3 class="benefit-title display"><s class="strike strike-h3">Prix personnalisés</s><span class="repl">Prix justes</span></h3>
+          <p>La FTC documente l’usage de votre localisation et de votre historique d’achats pour fixer des prix individuels. Un profil plus mince, c’est moins de levier contre vous.</p>
+        </article>
+      </div>
+
+      <div class="honesty reveal" role="note" aria-labelledby="honesty-title">
+        <p id="honesty-title" class="eyebrow mono">Ce qu’on ne dit pas</p>
+        <p class="honesty-text">Aucun service ne peut tout effacer, et nous ne le promettons pas. Ce que nous promettons&nbsp;: chaque demande envoyée, suivie, relancée, et visible dans votre journal.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- § 06 — COMPARATIF -->
+  <section class="section" id="comparatif" aria-labelledby="comparatif-title" data-sec="06">
+    <div class="container">
+      <div class="sec-head reveal"><p class="eyebrow mono">§&nbsp;06 — À la main ou avec Biffe</p></div>
+      <h2 id="comparatif-title" class="h2 cols-9 reveal" style="--i:1">Vous pouvez le faire <span class="nowrap">vous-même</span>. Voici ce que ça demande.</h2>
+
+      <div class="compare-wrap reveal" data-wipe-group data-stagger="120" data-count-group>
+        <table class="compare">
+          <thead>
+            <tr><th scope="col" class="mono">Tâche</th><th scope="col" class="mono">Vous</th><th scope="col" class="mono">Biffe</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">Identifier les courtiers qui vous concernent</th>
+              <td data-label="Vous"><span class="strike-ml">Plusieurs semaines de recherche, en anglais pour la plupart</span></td>
+              <td data-label="Biffe"><svg class="check" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2.5 8.5l3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>Inclus — liste de 420 mise à jour chaque semaine</td>
+            </tr>
+            <tr>
+              <th scope="row">Rédiger une demande conforme (art.&nbsp;17 et 21, pièces, délais)</th>
+              <td data-label="Vous"><span class="strike-ml">420 courriers, 420 formulaires différents</span></td>
+              <td data-label="Biffe"><svg class="check" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2.5 8.5l3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>Automatisé — modèles relus par des juristes</td>
+            </tr>
+            <tr>
+              <th scope="row">Suivre les délais (30&nbsp;jours RGPD, 45&nbsp;jours CCPA)</th>
+              <td data-label="Vous"><span class="strike-ml">Un tableur et des rappels</span></td>
+              <td data-label="Biffe"><svg class="check" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2.5 8.5l3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>Journal horodaté, alertes de retard</td>
+            </tr>
+            <tr>
+              <th scope="row">Relancer ceux qui ne répondent pas</th>
+              <td data-label="Vous"><span class="strike-ml">À la main, un par un</span></td>
+              <td data-label="Biffe"><svg class="check" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2.5 8.5l3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>Automatique, jusqu’à la plainte CNIL préparée</td>
+            </tr>
+            <tr>
+              <th scope="row">Recommencer tous les 60 à 90&nbsp;jours</th>
+              <td data-label="Vous"><span class="strike-ml">Pour toujours</span></td>
+              <td data-label="Biffe"><svg class="check" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2.5 8.5l3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>Pour toujours — mais sans vous</td>
+            </tr>
+            <tr class="compare-total">
+              <th scope="row">Temps la première année</th>
+              <td data-label="Vous"><span class="big display"><span class="strike-ml">≈&nbsp;<span class="num" data-count="300">300</span>&nbsp;h</span></span></td>
+              <td data-label="Biffe"><span class="big display">≈&nbsp;<span class="num" data-count="15">15</span>&nbsp;min</span></td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="mono muted compare-note">Estimation interne&nbsp;: 420 courtiers × 25&nbsp;min de recherche, rédaction et suivi, puis relances.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- § 07 — TARIFS -->
+  <section class="section" id="tarifs" aria-labelledby="tarifs-title" data-sec="07">
+    <div class="container">
+      <div class="sec-head reveal"><p class="eyebrow mono">§&nbsp;07 — Tarifs</p></div>
+      <div class="tarifs-head">
+        <h2 id="tarifs-title" class="h2 reveal" style="--i:1">Un prix. Pas de surprise.</h2>
+        <div class="billing reveal" style="--i:2" role="group" aria-label="Période de facturation">
+          <button type="button" class="billing-opt" data-billing="monthly">Mensuel</button>
+          <button type="button" class="billing-switch" role="switch" aria-checked="true" data-billing-switch><span class="sr-only">Facturation annuelle</span><span class="billing-knob" aria-hidden="true"></span></button>
+          <button type="button" class="billing-opt is-active" data-billing="annual" aria-pressed="true">Annuel</button>
+          <span class="stamp stamp-hl billing-stamp" data-billing-stamp>−50&nbsp;%</span>
+        </div>
+      </div>
+
+      <div class="plans">
+        <article class="plan card reveal" style="--i:0" aria-labelledby="plan-indiv">
+          <div class="plan-head">
+            <h3 id="plan-indiv" class="h3">Individuel</h3>
+            <span class="mono muted">1 profil</span>
+          </div>
+          <div class="plan-price" data-plan data-annual="7,49" data-monthly="14,99" data-billed-annual="facturé 89,88&nbsp;€/an" data-billed-monthly="sans engagement, résiliable à tout moment">
+            <p class="plan-old mono" data-plan-old><s>14,99&nbsp;€/mois</s> en mensuel</p>
+            <p class="plan-amount"><span class="num display" data-plan-num>7,49</span><span class="mono plan-unit">&nbsp;€/mois</span></p>
+            <p class="plan-billed mono" data-plan-billed>facturé 89,88&nbsp;€/an</p>
+          </div>
+          <ul class="plan-list">
+            <li>420+ courtiers et annuaires</li>
+            <li>Demandes art.&nbsp;17/21 RGPD et CCPA</li>
+            <li>Relances automatiques tous les 60 à 90&nbsp;jours</li>
+            <li>Journal horodaté et rapport mensuel</li>
+            <li>5 demandes sur mesure par an (sites hors liste)</li>
+            <li>Support par e-mail sous 24&nbsp;h</li>
+          </ul>
+          <a class="btn btn-ink btn-lg plan-cta" href="#cta-final"><span class="btn-l"><span>Rayer mon nom</span><span aria-hidden="true">Rayer mon nom</span></span></a>
+        </article>
+
+        <article class="plan card plan-family reveal" style="--i:1" aria-labelledby="plan-famille">
+          <div class="plan-head">
+            <h3 id="plan-famille" class="h3">Famille</h3>
+            <span class="stamp stamp-ink plan-stamp" data-slam="plan">Jusqu’à 5 personnes</span>
+          </div>
+          <div class="plan-price" data-plan data-annual="14,99" data-monthly="29,99" data-billed-annual="facturé 179,88&nbsp;€/an" data-billed-monthly="sans engagement, résiliable à tout moment">
+            <p class="plan-old mono" data-plan-old><s>29,99&nbsp;€/mois</s> en mensuel</p>
+            <p class="plan-amount"><span class="num display" data-plan-num>14,99</span><span class="mono plan-unit">&nbsp;€/mois</span></p>
+            <p class="plan-billed mono" data-plan-billed>facturé 179,88&nbsp;€/an</p>
+          </div>
+          <ul class="plan-list">
+            <li>Tout Individuel, pour 5 profils</li>
+            <li>Un seul tableau de bord, un seul paiement</li>
+            <li>Mandats signés par chaque adulte, mineurs rattachés</li>
+            <li>20 demandes sur mesure par an</li>
+            <li>Support prioritaire</li>
+          </ul>
+          <a class="btn btn-ghost btn-lg plan-cta" href="#cta-final">Protéger ma famille <span class="arrow" aria-hidden="true">→</span></a>
+        </article>
+      </div>
+
+      <p class="plans-note reveal">Prix TTC, en euros. Satisfait ou remboursé 30&nbsp;jours. Résiliation en deux clics, sans appel. Pas d’offre gratuite&nbsp;: chaque demande nous coûte, et nous ne vendons rien d’autre que ça — surtout pas vos données.</p>
+    </div>
+  </section>
+
+  <!-- § 08 — AVIS -->
+  <section class="section" id="avis" aria-labelledby="avis-title" data-sec="08">
+    <div class="container">
+      <div class="sec-head reveal"><p class="eyebrow mono">§&nbsp;08 — Ils se sont biffés</p></div>
+      <h2 id="avis-title" class="h2 cols-10 reveal" style="--i:1">Ce qu’il reste quand on vous efface&nbsp;: des avis.</h2>
+
+      <figure class="pullquote cols-10 reveal" style="--i:2">
+        <blockquote class="display">«&nbsp;En trois semaines, mon adresse avait disparu de quatre annuaires. Les appels de démarchage ont presque cessé.&nbsp;»</blockquote>
+        <figcaption class="mono"><span>Camille R., Nantes</span><span class="stars" aria-label="Note&nbsp;: 5 sur 5">★★★★★</span><span class="stamp stamp-success" data-slam="pq">Vérifié</span></figcaption>
+      </figure>
+
+      <div class="reviews">
+        <article class="review card reveal" style="--i:0">
+          <p class="review-text">«&nbsp;Je recevais trois SMS d’arnaque par jour. J’en reçois un par semaine. Ce n’est pas zéro, mais c’est ma vie qui a changé.&nbsp;»</p>
+          <footer class="review-meta"><span class="avatar-sq mono">YB</span><span class="review-who"><span class="review-name">Yasmine B. <span class="muted">· Lille</span></span><span class="stars mono" aria-label="Note&nbsp;: 5 sur 5">★★★★★</span></span><span class="stamp stamp-success review-stamp">Vérifié</span></footer>
+        </article>
+        <article class="review card reveal" style="--i:1">
+          <p class="review-text">«&nbsp;Le journal est ce qui m’a convaincu&nbsp;: je vois quel courtier a répondu, quand, et lequel traîne.&nbsp;»</p>
+          <footer class="review-meta"><span class="avatar-sq mono">TG</span><span class="review-who"><span class="review-name">Thomas G. <span class="muted">· Bordeaux</span></span><span class="stars mono" aria-label="Note&nbsp;: 5 sur 5">★★★★★</span></span><span class="stamp stamp-success review-stamp">Vérifié</span></footer>
+        </article>
+        <article class="review card reveal" style="--i:2">
+          <p class="review-text">«&nbsp;Ma mère de 74&nbsp;ans était sur un site de recherche de personnes avec son adresse et mon prénom. Plus maintenant.&nbsp;»</p>
+          <footer class="review-meta"><span class="avatar-sq mono">AM</span><span class="review-who"><span class="review-name">Antoine M. <span class="muted">· Lyon</span></span><span class="stars mono" aria-label="Note&nbsp;: 5 sur 5">★★★★★</span></span><span class="stamp stamp-success review-stamp">Vérifié</span></footer>
+        </article>
+        <article class="review card reveal" style="--i:3">
+          <p class="review-text">«&nbsp;J’avais commencé à la main. Après douze courriers, j’ai abandonné. Biffe en a envoyé 300 la première semaine.&nbsp;»</p>
+          <footer class="review-meta"><span class="avatar-sq mono">SD</span><span class="review-who"><span class="review-name">Sophie D. <span class="muted">· Toulouse</span></span><span class="stars mono" aria-label="Note&nbsp;: 4 sur 5">★★★★<span class="star-off">★</span></span></span><span class="stamp stamp-success review-stamp">Vérifié</span></footer>
+        </article>
+        <article class="review card reveal" style="--i:4">
+          <p class="review-text">«&nbsp;Un courtier a demandé une pièce d’identité. Biffe m’a donné le texte exact à envoyer. Deux jours plus tard, effacé.&nbsp;»</p>
+          <footer class="review-meta"><span class="avatar-sq mono">KE</span><span class="review-who"><span class="review-name">Karim E. <span class="muted">· Marseille</span></span><span class="stars mono" aria-label="Note&nbsp;: 5 sur 5">★★★★★</span></span><span class="stamp stamp-success review-stamp">Vérifié</span></footer>
+        </article>
+      </div>
+      <p class="mono muted reviews-note reveal">Témoignages de clients, prénoms et villes modifiés à leur demande.</p>
+    </div>
+  </section>
+
+  <!-- § 09 — FAQ -->
+  <section class="section" id="faq" aria-labelledby="faq-title" data-sec="09">
+    <div class="container faq-grid">
+      <div class="faq-side">
+        <div class="sec-head reveal"><p class="eyebrow mono">§&nbsp;09 — Questions</p></div>
+        <h2 id="faq-title" class="h2 reveal" style="--i:1">Ce qu’on nous demande avant de signer.</h2>
+        <p class="mono muted faq-side-note reveal" style="--i:2">Une question absente&nbsp;? Écrivez-nous, on répond sous 24&nbsp;h.</p>
+      </div>
+      <div class="faq-list reveal" style="--i:2" data-faq>
+        <div class="faq-item" id="faq-courtier">
+          <h3 class="faq-h"><button type="button" class="faq-q" id="faq-q-1" aria-expanded="false" aria-controls="faq-a-1"><span class="faq-text">Qu’est-ce qu’un courtier en données&#8239;?</span><span class="faq-plus" aria-hidden="true"></span></button></h3>
+          <div class="faq-a" id="faq-a-1" role="region" aria-labelledby="faq-q-1"><div class="faq-a-in"><p>Une entreprise qui collecte vos données sans relation avec vous (registres, fidélité, applications, autres courtiers), les recoupe et les vend. Vous n’avez rien signé&nbsp;: c’est précisément pour ça que le RGPD vous donne le droit de vous y opposer.</p></div></div>
+        </div>
+        <div class="faq-item" id="faq-delais">
+          <h3 class="faq-h"><button type="button" class="faq-q" id="faq-q-2" aria-expanded="false" aria-controls="faq-a-2"><span class="faq-text">Combien de temps ça prend&#8239;?</span><span class="faq-plus" aria-hidden="true"></span></button></h3>
+          <div class="faq-a" id="faq-a-2" role="region" aria-labelledby="faq-q-2"><div class="faq-a-in"><p>Premières demandes sous 48&nbsp;h. Les courtiers ont 30&nbsp;jours pour répondre (RGPD), 45 en Californie. La plupart des effacements sont confirmés entre une et six semaines&#8239;; certains traînent, et on les relance.</p></div></div>
+        </div>
+        <div class="faq-item" id="faq-donnees">
+          <h3 class="faq-h"><button type="button" class="faq-q" id="faq-q-3" aria-expanded="false" aria-controls="faq-a-3"><span class="faq-text">Quelles données dois-je fournir, et sont-elles en sécurité&#8239;?</span><span class="faq-plus" aria-hidden="true"></span></button></h3>
+          <div class="faq-a" id="faq-a-3" role="region" aria-labelledby="faq-q-3"><div class="faq-a-in"><p>Le minimum pour vous identifier chez eux&nbsp;: nom, adresses, e-mails, téléphones, date de naissance. Chiffrées au repos et en transit, hébergées en France, jamais vendues ni partagées — notre seul client, c’est vous.</p></div></div>
+        </div>
+        <div class="faq-item" id="faq-mandat">
+          <h3 class="faq-h"><button type="button" class="faq-q" id="faq-q-4" aria-expanded="false" aria-controls="faq-a-4"><span class="faq-text">Pourquoi un mandat&#8239;?</span><span class="faq-plus" aria-hidden="true"></span></button></h3>
+          <div class="faq-a" id="faq-a-4" role="region" aria-labelledby="faq-q-4"><div class="faq-a-in"><p>Un courtier n’a pas à répondre à un tiers. Le mandat d’effacement, signé électroniquement, nous autorise à écrire en votre nom. Il est limité à cet usage et révocable en un clic.</p></div></div>
+        </div>
+        <div class="faq-item" id="faq-reapparition">
+          <h3 class="faq-h"><button type="button" class="faq-q" id="faq-q-5" aria-expanded="false" aria-controls="faq-a-5"><span class="faq-text">Pourquoi mes données réapparaissent-elles&#8239;?</span><span class="faq-plus" aria-hidden="true"></span></button></h3>
+          <div class="faq-a" id="faq-a-5" role="region" aria-labelledby="faq-q-5"><div class="faq-a-in"><p>Parce que les courtiers réimportent les registres publics et s’achètent les données entre eux toutes les quelques semaines. Un effacement n’est pas une liste d’exclusion. D’où nos renvois tous les 60 à 90&nbsp;jours.</p><p class="mono faq-demo" data-dissolve data-to="Votre fiche a été ré-ingérée." aria-hidden="true">Votre fiche a été effacée.</p></div></div>
+        </div>
+        <div class="faq-item" id="faq-tout">
+          <h3 class="faq-h"><button type="button" class="faq-q" id="faq-q-6" aria-expanded="false" aria-controls="faq-a-6"><span class="faq-text">Est-ce que tout sera effacé&#8239;?</span><span class="faq-plus" aria-hidden="true"></span></button></h3>
+          <div class="faq-a" id="faq-a-6" role="region" aria-labelledby="faq-q-6"><div class="faq-a-in"><p>Non, et personne ne peut l’affirmer honnêtement. Certaines données relèvent d’exceptions légales (presse, archives, obligations légales). Nous mesurons et montrons ce qui est effacé, demande par demande.</p></div></div>
+        </div>
+        <div class="faq-item" id="faq-pays">
+          <h3 class="faq-h"><button type="button" class="faq-q" id="faq-q-7" aria-expanded="false" aria-controls="faq-a-7"><span class="faq-text">Dans quels pays&#8239;?</span><span class="faq-plus" aria-hidden="true"></span></button></h3>
+          <div class="faq-a" id="faq-a-7" role="region" aria-labelledby="faq-q-7"><div class="faq-a-in"><p>Union européenne, Suisse, Royaume-Uni, États-Unis et Canada. Les demandes s’appuient sur le RGPD, le UK GDPR, le CCPA et, selon les cas, les lois d’État américaines.</p></div></div>
+        </div>
+        <div class="faq-item" id="faq-annuler">
+          <h3 class="faq-h"><button type="button" class="faq-q" id="faq-q-8" aria-expanded="false" aria-controls="faq-a-8"><span class="faq-text">Puis-je annuler, et pourquoi un abonnement&#8239;?</span><span class="faq-plus" aria-hidden="true"></span></button></h3>
+          <div class="faq-a" id="faq-a-8" role="region" aria-labelledby="faq-q-8"><div class="faq-a-in"><p>Oui, en deux clics, à tout moment. Satisfait ou remboursé 30&nbsp;jours. Après annulation, les demandes envoyées restent valables&#8239;; les renvois s’arrêtent. Pourquoi un abonnement et pas un paiement unique&#8239;? Parce que l’effacement n’est pas un événement, c’est un entretien&nbsp;: un paiement unique effacerait une fois&#8239;; les courtiers, eux, recommencent.</p></div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA FINAL (bande encre) -->
+  <section class="section band-ink cta-final" id="cta-final" aria-labelledby="cta-title">
+    <div class="container">
+      <h2 id="cta-title" class="h2 cols-10 reveal">Biffez la mention inutile&nbsp;:</h2>
+      <ul class="form-lines display" data-wipe-group data-stagger="220" aria-label="Ce que nous faisons disparaître">
+        <li class="reveal" style="--i:0"><span class="strike strike-form">votre adresse</span></li>
+        <li class="reveal" style="--i:1"><span class="strike strike-form">votre téléphone</span></li>
+        <li class="reveal" style="--i:2"><span class="strike strike-form">votre âge</span></li>
+        <li class="reveal" style="--i:3"><span class="strike strike-form">vos proches</span></li>
+        <li class="reveal" style="--i:4"><span class="strike strike-form" data-manual data-cta-name>votre nom</span></li>
+      </ul>
+      <p class="lead cta-lead reveal">Trois minutes pour commencer. Premières demandes envoyées sous 48&nbsp;heures. Satisfait ou remboursé 30&nbsp;jours.</p>
+      <div class="hero-ctas reveal">
+        <a class="btn btn-paper btn-lg" href="#tarifs" data-cta-main><span class="btn-l"><span>Rayer mon nom — 7,49&nbsp;€/mois</span><span aria-hidden="true">Rayer mon nom — 7,49&nbsp;€/mois</span></span></a>
+        <a class="btn btn-ghost btn-ghost-paper btn-lg" href="#tarifs">Voir les tarifs <span class="arrow" aria-hidden="true">→</span></a>
+      </div>
+      <p class="microcopy mono reveal">Mandat révocable · Résiliation en deux clics · Données hébergées en France</p>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="container footer-grid">
+    <div class="footer-brand">
+      <a class="logo logo-footer" href="#top" aria-label="Biffe — retour en haut de page">
+        <svg class="mark" viewBox="0 0 32 32" width="40" height="40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+          <rect x="6" y="3" width="20" height="26" rx="2.5" stroke="currentColor" stroke-width="2.2"/>
+          <rect x="10" y="9" width="8" height="2.4" rx="1.2" fill="currentColor"/>
+          <rect x="10" y="21" width="12" height="2.4" rx="1.2" fill="currentColor"/>
+          <rect class="bar" x="2" y="13.5" width="28" height="5" rx="1" fill="currentColor" transform="rotate(-4 16 16)"/>
+        </svg>
+        <span class="wordmark">Biffe</span>
+      </a>
+      <p class="footer-tagline">Fait à Lyon. Biffe n’est affilié à aucun courtier en données ni à aucun annuaire. Nous ne vendons rien d’autre que l’effacement.</p>
+    </div>
+    <nav class="footer-col" aria-labelledby="f-produit">
+      <h3 id="f-produit" class="mono footer-h">Produit</h3>
+      <ul><li><a href="#methode">La méthode</a></li><li><a href="#courtiers">Courtiers couverts</a></li><li><a href="#tarifs">Tarifs</a></li><li><a href="#faq">Questions</a></li><li><a href="#tarifs">Se connecter</a></li></ul>
+    </nav>
+    <nav class="footer-col" aria-labelledby="f-entreprise">
+      <h3 id="f-entreprise" class="mono footer-h">Entreprise</h3>
+      <ul><li><a href="#top">À propos</a></li><li><a href="#tableau">Transparence &amp; chiffres</a></li><li><a href="#avis">Presse</a></li><li><a href="#faq">Nous écrire</a></li></ul>
+    </nav>
+    <nav class="footer-col" aria-labelledby="f-legal">
+      <h3 id="f-legal" class="mono footer-h">Légal</h3>
+      <ul><li><a href="#top">Mentions légales</a></li><li><a href="#faq-donnees">Politique de confidentialité</a></li><li><a href="#tarifs">CGV</a></li><li><a href="#faq-mandat">Mandat d’effacement (modèle)</a></li><li><a href="#faq-donnees">Cookies&nbsp;: aucun traceur tiers</a></li></ul>
+    </nav>
+  </div>
+  <div class="container footer-bottom mono">
+    <span>© 2026 Biffe SAS — Lyon, France</span>
+    <span>Résidents UE, Suisse, Royaume-Uni, États-Unis, Canada</span>
+    <span>Version 1.0 du dossier</span>
+  </div>
+</footer>
+
+<script src="assets/js/main.js" defer></script>
+</body>
+</html>
