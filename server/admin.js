@@ -40,10 +40,10 @@ export const admin = express.Router();
 admin.use((req, _res, next) => { if (!req.body || typeof req.body !== 'object') req.body = {}; next(); });
 
 const PAGE_MAX = 100;
-const STATUSES = ['queued', 'sent', 'in_progress', 'action_required', 'done', 'refused'];
+const STATUSES = ['queued', 'sent', 'in_progress', 'action_required', 'done', 'refused', 'error'];
 const OUTCOMES = ['done', 'in_progress', 'action_required', 'refused'];
 const SUBS = ['none', 'active', 'past_due', 'canceled'];
-const JURISDICTIONS = ['EU', 'US', 'UK', 'CA', 'CH'];
+const JURISDICTIONS = ['FR', 'EU', 'UK', 'US', 'CA', 'CH'];
 const BASES = ['rgpd', 'ccpa', 'both'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TOKEN = /^[A-F0-9]{10}$/;
@@ -245,7 +245,7 @@ const REQ_BASE = 'FROM requests r JOIN brokers b ON b.id = r.broker_id JOIN user
 const REQ_COLS = `r.id, r.token, r.status, r.cycle, r.created_at, r.sent_at, r.due_at, r.followup_sent_at, r.completed_at, r.next_check_at, r.note, b.id AS broker_id, b.name AS broker, b.slug AS broker_slug, b.legal_basis, u.id AS user_id, u.email, p.id AS profile_id, (p.first_name || ' ' || p.last_name) AS profile`;
 const SORTS = {
   created_desc: 'r.created_at DESC', created_asc: 'r.created_at ASC', sent_desc: 'r.sent_at DESC NULLS LAST', due_asc: 'r.due_at ASC NULLS LAST',
-  status: `CASE r.status WHEN 'action_required' THEN 0 WHEN 'refused' THEN 1 WHEN 'in_progress' THEN 2 WHEN 'sent' THEN 3 WHEN 'queued' THEN 4 ELSE 5 END, r.created_at DESC`,
+  status: `CASE r.status WHEN 'error' THEN 0 WHEN 'action_required' THEN 1 WHEN 'refused' THEN 2 WHEN 'in_progress' THEN 3 WHEN 'sent' THEN 4 WHEN 'queued' THEN 5 ELSE 6 END, r.created_at DESC`,
   broker: 'b.name ASC, r.created_at DESC', user: 'u.email ASC, r.created_at DESC',
 };
 admin.get('/requests', (req, res) => {

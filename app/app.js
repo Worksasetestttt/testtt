@@ -39,7 +39,7 @@
   }
   function params() { var h = location.hash.slice(1), i = h.indexOf('?'); var out = { route: i < 0 ? h : h.slice(0, i), q: {} }; if (i >= 0) new URLSearchParams(h.slice(i + 1)).forEach(function (v, k) { out.q[k] = v; }); return out; }
   function go(hash) { if (location.hash === '#' + hash) render(); else location.hash = hash; }
-  function statusLabel(s) { return { queued: 'À envoyer', sent: 'Envoyée', in_progress: 'En cours', action_required: 'Action requise', done: 'Terminée', refused: 'Refusée' }[s] || s; }
+  function statusLabel(s) { return { queued: 'À envoyer', sent: 'Envoyée', in_progress: 'En cours', action_required: 'Action requise', done: 'Terminée', refused: 'Refusée', error: 'Erreur d’envoi' }[s] || s; }
   function subLabel(s) { return { none: 'Aucun abonnement', active: 'Actif', past_due: 'Paiement en attente', canceled: 'Résilié' }[s] || s; }
   function chip(s, label) { return '<span class="chip chip--' + esc(s) + '">' + esc(label || statusLabel(s)) + '</span>'; }
   function dots(n) { var o = '<span class="dots" title="' + (SENS[n] || 'Sensibilité ' + n + ' sur 3') + '"><span class="vh">' + (SENS[n] || 'Sensibilité ' + n + ' sur 3') + '.</span>'; for (var i = 1; i <= 3; i++) o += '<i class="' + (i <= n ? 'on' : '') + '"></i>'; return o + '</span>'; }

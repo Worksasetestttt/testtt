@@ -184,7 +184,9 @@ function autoLaunch() {
 }
 
 // Un seul passage à la fois : un tick demandé pendant un passage en cours est fusionné (un nouveau passage suit).
-let inflight = null, again = false;
+let inflight = null, again = false, lastTick = null;
+// Date (ISO) de la fin du dernier passage, affichée dans l’administration.
+export const lastTickAt = () => lastTick;
 export function tick() {
   if (inflight) { again = true; return inflight; }
   inflight = (async () => {
@@ -192,6 +194,7 @@ export function tick() {
       again = false;
       try { autoLaunch(); await sendQueued(); await followUps(); rechecks(); if (DEMO) await simulateReplies(); }
       catch (e) { console.error('[scheduler]', e); }
+      lastTick = now();
     } while (again);
   })().finally(() => { inflight = null; });
   return inflight;
