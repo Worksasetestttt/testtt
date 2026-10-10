@@ -281,6 +281,10 @@ try {
   r = await call('GET', `/admin/users/${A.user.id}`, undefined, AD);
   const rawId = A3.split('=')[1].split('.')[0];
   assert.ok(!JSON.stringify(r.data).includes(rawId), 'identifiant de session jamais exposé'); assert.ok(r.data.sessions.every((x) => /^[A-Za-z0-9_-]{16}$/.test(x.handle) && !('id' in x)));
+  // Même poignée et même appareil que ceux que voit l'abonné (util.js : sessionHandle, deviceLabel).
+  const mine = (await call('GET', '/sessions', undefined, { cookie: A3 })).data.sessions.find((x) => x.current);
+  const same = r.data.sessions.find((x) => x.handle === mine.handle);
+  assert.ok(same, 'poignée identique côté abonné et côté administration'); assert.equal(same.device, mine.device, 'libellé d’appareil identique');
   const target = r.data.sessions[0];
   assert.equal((await call('DELETE', `/admin/users/${A.user.id}/sessions/${target.handle}`, {}, AD)).status, 200);
   assert.equal((await call('GET', '/me', undefined, { cookie: A3 })).data.user, null, 'session fermée');

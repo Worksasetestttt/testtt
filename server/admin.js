@@ -11,7 +11,7 @@ import { db, q, now, logEvent } from './db.js';
 import * as scheduler from './scheduler.js';
 import { sendMail, mailMode } from './mailer.js';
 import { PLANS, billingMode, cancelSubscription, endSubscriptionNow } from './billing.js';
-import { EMAIL, MAIL_ADDRESS, clean, parseProfile, wrap } from './util.js';
+import { EMAIL, MAIL_ADDRESS, clean, parseProfile, wrap, sessionHandle, deviceLabel } from './util.js';
 import { isSuspended, isBlockedEmail, startImpersonation, SUPPORT_MINUTES } from './auth.js';
 import { exportData } from './dashboard.js';
 import { runDiscovery } from './sites.js';
@@ -93,17 +93,11 @@ const adminUser = (u) => ({
   suspended: isSuspended(u), suspended_at: u.suspended_at, suspended_until: u.suspended_until, suspended_reason: u.suspended_reason,
 });
 const SUSPENDED_SQL = '(u.suspended_at IS NOT NULL AND (u.suspended_until IS NULL OR u.suspended_until > ?))';
-// Sessions : jamais l'identifiant brut, seulement une empreinte courte qui sert de poignée pour la fermeture.
-const handleOf = (id) => crypto.createHash('sha256').update(String(id)).digest('base64url').slice(0, 16);
-function device(ua) {
-  const s = String(ua || '');
-  const os = /iPhone|iPad/.test(s) ? 'iOS' : /Android/.test(s) ? 'Android' : /Mac OS X/.test(s) ? 'macOS' : /Windows/.test(s) ? 'Windows' : /Linux/.test(s) ? 'Linux' : '';
-  const br = /Edg\//.test(s) ? 'Edge' : /Firefox\//.test(s) ? 'Firefox' : /Chrome\//.test(s) ? 'Chrome' : /Safari\//.test(s) ? 'Safari' : /node|curl|undici/i.test(s) ? 'Script' : '';
-  return [br, os].filter(Boolean).join(' · ') || 'Appareil inconnu';
-}
+// Sessions : jamais l'identifiant brut, seulement sa poignée (empreinte courte) pour la fermeture. Poignée et appareil
+// sont calculés comme pour l'abonné (util.js) : les deux écrans désignent une session de la même façon.
 const publicSession = (s, currentId) => ({
-  handle: handleOf(s.id), user_id: s.user_id, email: s.email, created_at: s.created_at, last_seen_at: s.last_seen_at || s.created_at, expires_at: s.expires_at,
-  ip: s.ip, device: device(s.user_agent), user_agent: String(s.user_agent || '').slice(0, 120), support_by: s.impersonator_email || null, current: s.id === currentId,
+  handle: sessionHandle(s.id), user_id: s.user_id, email: s.email, created_at: s.created_at, last_seen_at: s.last_seen_at || s.created_at, expires_at: s.expires_at,
+  ip: s.ip, device: deviceLabel(s.user_agent), user_agent: String(s.user_agent || '').slice(0, 120), support_by: s.impersonator_email || null, current: s.id === currentId,
 });
 const SESSION_COLS = 's.id, s.user_id, s.created_at, s.last_seen_at, s.expires_at, s.ip, s.user_agent, a.email AS impersonator_email';
 const sessionsOf = (userId, currentId) => q.all(`SELECT ${SESSION_COLS} FROM sessions s LEFT JOIN users a ON a.id = s.impersonator_id WHERE s.user_id = ? AND s.expires_at > ? ORDER BY COALESCE(s.last_seen_at, s.created_at) DESC`, userId, now()).map((x) => publicSession(x, currentId));
@@ -338,7 +332,7 @@ admin.post('/users/:id/impersonate', (req, res) => {
 admin.delete('/users/:id/sessions/:handle', (req, res) => {
   const u = getUser(req.params.id);
   if (!u) return bad(res, 'Compte introuvable.', 404);
-  const s = q.all('SELECT id FROM sessions WHERE user_id = ?', u.id).find((x) => handleOf(x.id) === req.params.handle);
+  const s = q.all('SELECT id FROM sessions WHERE user_id = ?', u.id).find((x) => sessionHandle(x.id) === req.params.handle);
   if (!s) return bad(res, 'Session introuvable ou déjà fermée.', 404);
   if (s.id === req.sessionId) return bad(res, 'Pour fermer votre session en cours, déconnectez-vous.');
   q.run('DELETE FROM sessions WHERE id = ?', s.id);
