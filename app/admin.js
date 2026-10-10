@@ -525,7 +525,8 @@
 
   /* ---------- Réponses entrantes ---------- */
   // Réponse lue comme un effacement ou un refus, mais envoyée par une adresse qui n’est ni celle du courtier ni son contact
-  // vérifié : enregistrée au plus « en cours », en attente de la décision de l’équipe.
+  // vérifié : enregistrée au plus « en cours », en attente de la décision de l’équipe. « Confirmer » n’envoie pas de note :
+  // celle d’un refus serait citée à l’abonné, et dans sa plainte, comme le motif donné par le courtier.
   function reviewText(r) { return 'Réponse lue comme «' + NB + esc(O.statusLabel(r.review_outcome)) + NB + '», reçue le ' + esc(stamp(r.review_at)) + ' de <span class="mono mono--plain">' + esc(r.review_from || 'expéditeur inconnu') + '</span>' + NB + ': ni le domaine du courtier ni son contact vérifié.'; }
   function vReview(d) {
     var rows = d.requests.map(function (r) {
@@ -534,7 +535,7 @@
         td('Abonné', '<span class="ell">' + esc(r.email) + '</span><span class="sub">statut' + NB + ': ' + esc(O.statusLabel(r.status).toLowerCase()) + '</span>') +
         td('Lecture', chip(r.review_outcome) + '<span class="sub num">' + esc(stamp(r.review_at)) + '</span>') +
         td('Expéditeur', '<span class="ell mono mono--plain" title="' + esc(r.review_from || '') + '">' + esc(r.review_from || '—') + '</span>') +
-        td('', '<div class="adm-acts"><button class="btn btn--xs" type="button" data-outcome="' + esc(r.review_outcome) + '" data-req="' + id + '" data-note="réponse vérifiée par l’équipe">' + (r.review_outcome === 'refused' ? 'Confirmer le refus' : 'Confirmer l’effacement') + '<span class="vh"> (' + esc(r.ref) + ')</span></button><button class="btn btn--outline btn--xs" type="button" data-review-dismiss="' + id + '">Classer sans suite<span class="vh"> (' + esc(r.ref) + ')</span></button></div>', 'act') + '</tr>';
+        td('', '<div class="adm-acts"><button class="btn btn--xs" type="button" data-outcome="' + esc(r.review_outcome) + '" data-req="' + id + '">' + (r.review_outcome === 'refused' ? 'Confirmer le refus' : 'Confirmer l’effacement') + '<span class="vh"> (' + esc(r.ref) + ')</span></button><button class="btn btn--outline btn--xs" type="button" data-review-dismiss="' + id + '">Classer sans suite<span class="vh"> (' + esc(r.ref) + ')</span></button></div>', 'act') + '</tr>';
     }).join('');
     return sheet('adm-ibv-h', 'Réponses à vérifier', meta(pl(d.total, 'demande', 'demandes')), '<div class="sheet__body adm-prose"><p>Un effacement ou un refus ne s’enregistre seul que s’il vient du domaine du courtier, d’un sous-domaine, ou de son adresse de contact vérifiée. Sinon la demande passe au plus «' + NB + 'En cours' + NB + '» et attend votre décision' + NB + ': confirmez après avoir vérifié la réponse, ou classez-la sans suite.</p></div>' +
       table('Réponses à vérifier', [th('Demande'), th('Abonné'), th('Lecture'), th('Expéditeur'), th('<span class="vh">Actions</span>', 'act')], rows, 'Aucune réponse à vérifier.') + (d.total > d.requests.length ? '<div class="pager"><a class="adm-back" href="' + esc(link('requests', { status: 'review' })) + '">Voir les ' + num(d.total) + ' demandes à vérifier</a></div>' : ''));

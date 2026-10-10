@@ -13,8 +13,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
+import { createRequire } from 'node:module';
 import { freePort } from './free-port.mjs';
 
+// Navigateur pour la vérification de l'administration (facultatif : ignorée si Playwright n'est pas installé).
+const playwright = (() => { try { return createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE || '/opt/node-tools/node_modules/playwright'); } catch { return null; } })();
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'oubli-sched-'));
 const STRONG = 'Corde-a-linge-78!', INBOUND = 'inbound-secret-token-0123456789';
@@ -411,6 +414,30 @@ try {
     assert.equal(reqRow(sent[3].id).review_at, null, 'renvoi : signalement levé');
     assert.equal((await S.call('GET', '/admin/requests?status=review', undefined, ADM)).data.total, 1);
     assert.equal((await S.call('DELETE', `/admin/requests/${sent[2].id}/review`, {}, M.cookie)).status, 403, 'réservé aux administrateurs');
+    // g. Onglet Réponses entrantes (navigateur) : « Confirmer le refus » enregistre le refus sans note de l'équipe, qui
+    // serait citée à l'abonné et dans sa plainte comme le motif du courtier.
+    if (!playwright) console.log('  · navigateur indisponible (PLAYWRIGHT_MODULE) : vérification de l’onglet ignorée');
+    else {
+      r = await inbound(S, ref(sent[9]), REFUSED, 'noreply@usurpateur.example');
+      assert.equal(r.data.review, true);
+      const browser = await playwright.chromium.launch();
+      try {
+        const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+        await ctx.addCookies([{ name: 'oubli_sid', value: ADM.slice(ADM.indexOf('=') + 1), domain: 'localhost', path: '/' }]);
+        const page = await ctx.newPage();
+        const jsErrors = []; page.on('pageerror', (e) => jsErrors.push(e.message));
+        await page.goto(S.base.replace(/\/api$/, '') + '/app/#admin?tab=inbound');
+        await page.click(`[data-outcome="refused"][data-req="${sent[9].id}"]`);
+        await page.waitForFunction(() => /enregistrée/.test(document.querySelector('#toast')?.textContent || ''));
+        row = reqRow(sent[9].id);
+        assert.equal(row.status, 'refused'); assert.equal(row.review_at, null);
+        assert.equal(row.note, 'Refus du courtier.', 'aucune note de l’équipe présentée comme le motif du courtier');
+        const complaint = (await S.call('GET', `/requests/${sent[9].id}/complaint`, undefined, M.cookie)).data;
+        assert.ok(complaint.text && !/motif indiqué/.test(complaint.text), 'plainte sans motif inventé');
+        assert.deepEqual(jsErrors, []);
+        await ctx.close();
+      } finally { await browser.close(); }
+    }
   }
   if (want(4)) step('réponses entrantes : effacement ou refus appliqués seulement depuis le domaine du courtier ou son contact vérifié ; sinon « en cours » et « à vérifier » dans l’administration');
 
