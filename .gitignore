@@ -5,3 +5,4 @@ node_modules/
 _shots/
 data/
 .env
+.claude/worktrees/
