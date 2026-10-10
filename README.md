@@ -9,7 +9,7 @@ Service « type Incogni » : une landing page, une application abonné et une AP
 ```bash
 npm install
 npm start          # http://localhost:3000  (landing)  ·  http://localhost:3000/app/  (application)
-npm test           # dix suites : parcours, sécurité (deux séries), administration, sites, fonctions, comptes, clés, performance, régressions
+npm test           # onze suites : parcours, sécurité (deux séries), administration, sites, fonctions, comptes, clés, performance, régressions, facturation
 ```
 
 Sans fichier `.env`, le serveur tourne en mode développement : abonnement simulé (pas de Stripe), e-mails écrits dans `data/outbox/` au lieu d'être envoyés, et mode démo désactivé. Pour voir le pipeline « vivre » (les courtiers répondent en quelques minutes), lancez `DEMO_MODE=true npm start`.
@@ -40,7 +40,7 @@ Parcours : créer un compte → renseigner les informations à faire effacer →
 | `server/compress.js`, `server/static.js` | Compression brotli ou gzip de l'API, ETag fort et réponse 304 ; fichiers statiques servis depuis la mémoire, précompressés et versionnés (`?v=` + empreinte, cache d'un an). |
 | `server/health.js` | Santé profonde de `/api/health` : base, fraîcheur du planificateur, arrêt en cours. |
 | `server/backup.js`, `server/backup-worker.js` | Sauvegardes SQLite (`VACUUM INTO`) quotidiennes et à la demande, dans un fil séparé ; 7 copies gardées. |
-| `server/billing.js` | Stripe Checkout + webhooks (API REST, sans SDK) ou abonnement simulé. |
+| `server/billing.js` | Stripe Checkout + webhooks (API REST, sans SDK) ou abonnement simulé. Un abonnement résilié encore payé est repris plutôt que doublé ; un webhook livré en retard est ignoré ; la suppression d'un compte arrête l'abonnement tout de suite. |
 | `scripts/smoke.mjs` | Test de bout en bout sur une base temporaire. |
 | `scripts/security.test.mjs` | Test de sécurité : en-têtes, cookies, CSRF, autorisations, verrouillage, débit, sessions, webhooks. |
 | `scripts/admin.test.mjs` | Test de l'administration : autorisations, comptes, demandes, courtiers, exports, audit. |
@@ -58,7 +58,7 @@ Copiez `.env.example` en `.env`. Variables principales :
 
 - `SESSION_SECRET` (obligatoire en production), `APP_URL`, `PORT`, `TRUST_PROXY`.
 - `SMTP_URL` (`smtps://user:pass@smtp.exemple.fr:465`), `MAIL_FROM`, `MAIL_REPLY_TO`.
-- `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` : événements `checkout.session.completed` et `async_payment_*`, `customer.subscription.created` · `updated` · `deleted`, `invoice.paid` · `payment_succeeded` · `payment_failed`, vers `/api/billing/webhook`. Les événements d'un ancien abonnement du même client sont ignorés.
+- `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` : événements `checkout.session.completed` et `async_payment_*`, `customer.subscription.created` · `updated` · `deleted`, `invoice.paid` · `payment_succeeded` · `payment_failed`, vers `/api/billing/webhook`. Les événements d'un ancien abonnement du même client, ou plus anciens que le dernier appliqué au compte, sont ignorés. `STRIPE_API_BASE` : adresse de l'API (l'API réelle par défaut ; https obligatoire en production) ; un changement d'offre crée au besoin un prix « Oubli Individuel » ou « Oubli Famille » (clé de recherche `oubli_<offre>_<montant>_eur_month`).
 - `INBOUND_TOKEN` : jeton du webhook `/api/inbound` qui reçoit les réponses des courtiers (depuis Postmark, Mailgun, SendGrid Inbound Parse… en POST JSON `{from, subject, text}`). La référence `OUBLI-XXXXXXXXXX` présente dans l'objet rattache la réponse à la demande.
 - `ADMIN_EMAILS` : comptes ayant accès à `/app/#admin` et `/api/admin/*`. En production, l'accès n'est accordé qu'une fois l'adresse confirmée (lien reçu par e-mail, ou réinitialisation du mot de passe) ; `ADMIN_EMAIL_VERIFICATION=on|off` force ce réglage.
 - `BACKUP_DIR` : dossier des sauvegardes quotidiennes de la base (7 gardées), hors des dossiers publics ; vide = désactivé. `SHUTDOWN_TIMEOUT_MS` (8000 par défaut) : délai laissé aux requêtes en cours à l'arrêt.
@@ -92,10 +92,10 @@ Toutes les réponses sont en JSON ; les erreurs ont la forme `{ "error": "messag
 | `POST /api/requests/:id/relaunch` | « Mes données sont réapparues » : nouvelle demande immédiate pour une demande effacée ou refusée (adresse de la fiche facultative, du même domaine que le courtier). |
 | `POST /api/sites` | Coller l'adresse d'un site ou d'une fiche : demande d'effacement automatique pour le profil affiché (20 sites par profil). |
 | `GET /api/requests.csv?profile_id=`, `PUT /api/preferences` | Demandes du profil en CSV ; préférence du rapport mensuel. |
-| `POST /api/billing/checkout` · `/cancel` · `/webhook` | Abonnement (Stripe ou simulé). 409 si l'offre couvre moins de personnes que le dossier ; rien à résilier pour un abonnement offert par clé. |
+| `POST /api/billing/checkout` · `/cancel` · `/webhook` | Abonnement (Stripe ou simulé). 409 si l'offre couvre moins de personnes que le dossier ; rien à résilier pour un abonnement offert par clé. Un abonnement Stripe résilié encore payé est repris (`{ mode: 'resumed' }` : même offre sans paiement, autre offre au prorata) ; 409 si un paiement est en attente ; 502 sans nouvelle session si Stripe ne répond pas. Le webhook arrête l'abonnement annoncé pour un compte supprimé (500 si Stripe échoue : Stripe renvoie l'événement). |
 | `POST /api/billing/redeem` | Activer une clé d'activation (10 essais par heure par compte et par adresse IP). |
 | `POST /api/inbound` | Réponses des courtiers (webhook e-mail entrant) : texte cité et objet « Re: » ignorés ; `applied` indique si la réponse a changé la demande (une réponse tardive ne la fait jamais reculer). |
-| `GET /api/export`, `DELETE /api/account` | Export RGPD et suppression définitive. |
+| `GET /api/export`, `DELETE /api/account` | Export RGPD et suppression définitive. L'abonnement Stripe est arrêté tout de suite et ses factures ouvertes annulées ; 502 sans rien supprimer si Stripe échoue. |
 | `GET/POST /api/unsubscribe/report?u=&t=` | Désinscription du rapport mensuel par le lien signé de l'e-mail, sans session : POST en un clic (RFC 8058), GET renvoie vers la page de confirmation sans rien changer. |
 | `POST /api/newsletter`, `POST /api/contact` | Formulaires de la landing. |
 | `GET /api/admin/*`, `POST/PUT/DELETE /api/admin/*` | Administration (réservée aux comptes `admin`, voir ci-dessous). |
@@ -199,7 +199,7 @@ Les filtres et les pages se rechargent sans perdre le focus ; les actions destru
 ## Tests
 
 ```bash
-npm test                    # les dix suites, l'une après l'autre
+npm test                    # les onze suites, l'une après l'autre
 npm run test:security       # sécurité (en-têtes, cookies, CSRF, autorisations, webhooks)
 npm run test:security2      # sécurité, seconde série (découverte des sites, débit, administrateurs en production)
 npm run test:admin          # administration
@@ -209,6 +209,7 @@ npm run test:account        # mot de passe oublié, appareils connectés
 npm run test:keys           # clés d'activation
 npm run test:perf           # compression, cache, santé, sauvegardes, arrêt propre
 npm run test:regressions    # bugs corrigés
+npm run test:billing        # facturation contre un faux Stripe (reprise, webhooks en retard, suppression, signatures)
 npm run test:ui             # audit navigateur (Playwright installé à part), 1280 et 390 px
 ```
 

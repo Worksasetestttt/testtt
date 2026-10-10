@@ -18,7 +18,7 @@ Oubli est un service « type Incogni » : il envoie, suit et relance des demande
 npm install
 npm start                    # http://localhost:3000 (landing) et /app/ (application)
 DEMO_MODE=true npm start     # les courtiers « répondent » après environ 45 s
-npm test                     # dix suites (voir package.json) ; npm run test:<suite> pour une seule
+npm test                     # onze suites (voir package.json) ; npm run test:<suite> pour une seule
 npm run test:ui              # audit navigateur, hors npm test
 PORT=3081 node server/index.js
 ```
@@ -44,7 +44,7 @@ Sans `.env`, le serveur tourne en mode développement : abonnement simulé, cour
 | `server/auth.js` | scrypt, sessions en base, cookie signé HMAC, limitation de débit (`rateLimit({ by })`), `requireAdmin`, promotion des administrateurs (`ADMIN_VERIFY`, `adminPending`, `promoteIfAdmin`). |
 | `server/db.js` | Schéma SQLite, index, seed des courtiers depuis `server/brokers.json`. |
 | `server/scheduler.js` | Envoi, relances à 30 j (RGPD) ou 45 j (CCPA), nouveau cycle après 60 à 90 j, simulation en démo, fin des abonnements par clé (`expireKeySubscriptions`). `applyOutcome` renvoie `{ applied, error? }`. |
-| `server/billing.js` | Stripe Checkout en REST (sans SDK), webhooks signés, abonnement simulé. Formule unique, mensuelle, sans engagement : 5 € par mois (Individuel), 9,99 € par mois (Famille). Plus d’offre annuelle (`BILLING_PERIODS`) ; les anciens comptes « annual » restent lisibles. |
+| `server/billing.js` | Stripe Checkout en REST (sans SDK, adresse `STRIPE_API_BASE`), webhooks signés, abonnement simulé. Formule unique, mensuelle, sans engagement : 5 € par mois (Individuel), 9,99 € par mois (Famille). Plus d’offre annuelle (`BILLING_PERIODS`) ; les anciens comptes « annual » restent lisibles. Un abonnement résilié encore payé est repris (`resumeSubscription`), jamais doublé ; un webhook plus ancien que le dernier appliqué au compte est ignoré (`users.stripe_event_created`) ; à la suppression d’un compte (abonné ou administration), `endSubscriptionNow` arrête l’abonnement et annule les factures ouvertes ; l’abonnement annoncé pour un compte déjà supprimé est arrêté (`stopOrphanSubscription`). |
 | `server/mailer.js`, `server/templates.js` | Courriers (SMTP ou boîte d'envoi locale). `sendMail({ redact })` masque un secret dans la table `mails`. `MANDATE_VERSION` est exporté et utilisé par l'API. |
 | `app/index.html`, `app/app.js`, `app/app.css` | Application abonné en JS vanilla, routage par hash. |
 | `app/admin.js`, `app/admin.css` | Panel d’administration (11 onglets, dont « Clés »). Chargé à la demande par `app.js` uniquement pour les administrateurs. Classes préfixées `adm-` (ne pas réutiliser `.chart`, déjà pris par le tableau de bord). |
@@ -55,13 +55,14 @@ Sans `.env`, le serveur tourne en mode développement : abonnement simulé, cour
 | `scripts/ui.audit.cjs` | Audit navigateur (`npm run test:ui`, hors `npm test`) : écrans de connexion, offre et clé, tableau de bord (tiroir, plainte, focus, 304), vues, onglets et fiche admin, à 1280 et 390 px (débordement, ids, cibles de 44 px), sur un serveur (port attribué par le système) et une base temporaires. Relance-le après toute modification de l’interface. |
 | `scripts/sites.test.mjs`, `scripts/features.test.mjs` | Sites ajoutés (SSRF, découverte, règle d’envoi, erreurs SMTP internes) ; fonctions du tableau de bord (détail, CSV, rapport mensuel, refus, plainte, relance, demandes arrêtées). |
 | `scripts/security2.test.mjs`, `scripts/account.test.mjs`, `scripts/keys.test.mjs`, `scripts/perf.test.mjs`, `scripts/regressions.test.mjs` | Sécurité (seconde série, dont un serveur en mode production) ; comptes ; clés d’activation ; performance et fiabilité ; régressions des bugs corrigés. |
+| `scripts/billing.test.mjs` | Facturation contre un faux Stripe (`STRIPE_API_BASE`) : session de paiement, reprise d’un abonnement, webhooks en retard, suppression (abonné et administration), identifiants jamais renvoyés, signatures. |
 | `docs/handoff/` | Rapports des relectures (bureau, accessibilité, mobile) et contrat de découpage des fichiers. Lis-les avant de toucher l'interface. |
 
 ### Contrats à ne pas casser
 
 - `server/util.js`, `server/auth.js`, `server/scheduler.js` et `server/db.js` exportent des fonctions utilisées ailleurs. Ajoute des exports, ne change pas les signatures sans mettre à jour tous les appelants.
 - `window.Oubli` (exposé par `app/app.js`) sert au module admin : `registerView`, `api`, `esc`, `toast`, `fmtDate`, `chip`, `params`, `state`, `subActive`, etc. Ajoute, ne renomme pas. Une erreur de `api()` porte `status` et `code` (codes `invalid`, `expired`, `used` des liens).
-- Exports ajoutés : `scheduler.js` (`subscriptionActive`, `hasAccess`, `expireKeySubscriptions`, `schedulerState`, `stopScheduler`), `db.js` (`dbPing`, `closeDb`), `reports.js` (`stopReports`), `auth.js` (`ADMIN_VERIFY`, `adminPending`), `account.js` (`sendAdminVerification`).
+- Exports ajoutés : `scheduler.js` (`subscriptionActive`, `hasAccess`, `expireKeySubscriptions`, `schedulerState`, `stopScheduler`), `db.js` (`dbPing`, `closeDb`), `reports.js` (`stopReports`), `auth.js` (`ADMIN_VERIFY`, `adminPending`), `account.js` (`sendAdminVerification`), `billing.js` (`endSubscriptionNow`, `stopOrphanSubscription`), `util.js` (`MAIL_ADDRESS`). `handleStripeEvent` peut renvoyer `{ orphan }` (abonnement à arrêter, événement non marqué traité) et `stripeWebhook` est asynchrone.
 - `scripts/smoke.mjs` attend `GET /api/admin/stats` avec les champs `users`, `active`, `requests`, `mails`, `action_required`, et `POST /api/admin/requests/:id/outcome`.
 - Les ids `#f-first_name`, `#f-last_name`, `#f-birth_date`, `#f-country`, `#add-emails` restent non scopés sur l'écran d'onboarding (le script de test les utilise).
 
@@ -117,13 +118,14 @@ Fait et poussé :
 - Comptes : mot de passe oublié, appareils connectés, avis par e-mail après un changement de mot de passe, confirmation de l’adresse des administrateurs en production.
 - Audit de sécurité (découverte des sites, limitation de débit, courtiers personnalisés, CSV, erreurs SMTP), chasse aux bugs (`regressions.test.mjs` : un groupe par bug corrigé, dont le rapport mensuel retenté le lendemain et l’exposition passée inchangée après une revérification), performance (compression, cache, ETag, santé, sauvegardes, arrêt propre).
 - Adresses : une seule règle (`MAIL_ADDRESS`) pour l’envoi et pour les adresses saisies ; la landing n’affiche plus de fausse confirmation d’inscription quand le serveur ne répond pas.
-- `npm test` passe (dix suites) ; `npm run test:ui` passe à 1280 et 390 px. README à jour.
+- Facturation Stripe : reprise d’un abonnement résilié encore payé (même offre sans paiement, autre offre au prorata), webhooks en retard ignorés, arrêt immédiat à la suppression du compte, abonnement d’un compte supprimé arrêté ; `scripts/billing.test.mjs` contre un faux Stripe.
+- `npm test` passe (onze suites) ; `npm run test:ui` passe à 1280 et 390 px. README à jour.
 
 Pistes suivantes (non commencées) :
 - Typographie des messages d’erreur de l’API et du journal : encore des espaces ordinaires avant « : » (le client les corrige à l’affichage avec `typo()`). Les courriers en français passent par `frTypo` (templates.js).
 - Landing : témoignages et chiffres du tableau de bord illustré fictifs ; pages légales (mentions, CGU, confidentialité), presse et carrières absentes.
 - Authentification à deux facteurs pour les administrateurs ; vérification de l’adresse de tous les abonnés (inscription : 409 « compte existant » révèle encore l’existence d’un compte).
-- Stripe : un réabonnement pendant une période déjà payée crée un second abonnement (proposition : reprendre l’existant) ; un `checkout.session.completed` rejoué en retard réactive le compte jusqu’à l’événement `deleted` (ignorer les événements plus anciens que le dernier traité) ; la suppression de compte résilie en fin de période plutôt qu’immédiatement.
+- Stripe : deux paiements terminés en parallèle (deux onglets) créent deux abonnements, le compte ne garde que le dernier ; aucun moyen pour l’abonné de changer de carte en cas d’impayé (ni lien vers la facture ni portail client) ; à la suppression, les factures en brouillon ne sont pas annulées et rien n’est remboursé ; un changement d’offre d’un abonnement actif répond encore 409 (« résiliez d’abord ») ; `cancelSubscription` force l’état local « résilié » même si Stripe répond « impayé ».
 - Planificateur : les nouveaux courtiers du registre ne reçoivent pas de demande pour les abonnés existants (`autoLaunch` ne traite que les profils sans demande) ; les demandes en file d’un courtier désactivé restent « À envoyer » ; un courrier peut partir deux fois avec deux instances (réserver la demande avant l’envoi).
 - Verrouillage de connexion par adresse seulement (un tiers peut bloquer un compte) ; `/api/inbound` accepte tout expéditeur qui connaît une référence ; scrypt N=2^14 (OWASP recommande 2^17) ; l’indice de 4 caractères d’une clé ramène sa recherche à 40 bits depuis une copie de la base.
 
@@ -133,5 +135,6 @@ Pistes suivantes (non commencées) :
 - Les lignes du tableau de bord doivent garder une grille stable : un libellé trop long fait déborder la colonne.
 - Une règle `.rail__step span` a une spécificité qui masque les numéros de l'onboarding : utilise des sélecteurs précis.
 - Le navigateur Playwright est déjà installé (`/opt/pw-browsers`) ; n'exécute pas `playwright install`. Le module se charge depuis `/opt/node-tools/node_modules/playwright`.
-- Tests : `/billing/checkout` est limité à 10 appels par quart d’heure et `/auth/signup` à 20 par heure (par client) ; les suites tirent leur port au hasard entre 3900 et 6000 et peuvent entrer en collision si plusieurs tournent en même temps (l’audit navigateur prend un port du système). Attends l’arrêt du serveur avant de supprimer le dossier temporaire.
+- Tests : `/billing/checkout` est limité à 10 appels par quart d’heure et `/auth/signup` à 20 par heure (par client) ; chaque suite prend un port attribué par le système (`scripts/free-port.mjs`), plusieurs peuvent donc tourner en même temps. Attends l’arrêt du serveur avant de supprimer le dossier temporaire.
+- Une copie de la base de production utilisée sans `STRIPE_SECRET_KEY` : un compte qui porte encore un identifiant d’abonnement Stripe ne peut plus être supprimé (502), car l’abonnement ne peut pas être arrêté. C’est voulu.
 - Un chemin d’installation contenant un dossier caché (`.claude/worktrees`) n’empêche plus de servir l’application (`static.js`) ; si tu sers un fichier toi-même, utilise `res.sendFile(nom, { root })`, jamais un chemin absolu.
