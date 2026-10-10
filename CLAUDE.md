@@ -37,10 +37,10 @@ Sans `.env`, le serveur tourne en mode développement : abonnement simulé, cour
 | `server/admin.js` | Routeur `/api/admin`, protégé par `requireAuth` et `requireAdmin`. `classifyReply` (lecture des réponses des courtiers) est partagé avec `/api/inbound`. |
 | `server/account.js` | Mot de passe oublié (`password_resets`), appareils connectés, confirmation de l'adresse d'un administrateur (`email_verifications`, `sendAdminVerification`). Monté par `routes.js`. |
 | `server/keys.js` | Clés d'activation (`activation_keys`, `key_redemptions`) : `createKeys`, `redeemKey`, `revokeKey`, `keyStatus`. |
-| `server/dashboard.js` | `buildDashboard(user, profileId)` : JSON du tableau de bord (compteurs calculés sur le cycle en cours de chaque courtier ; statut virtuel `stopped` pour une demande arrêtée par la révocation du mandat, `isStopped`), `complaintReady(r)`, `exportData(u)` (sans `last_error`). |
+| `server/dashboard.js` | `buildDashboard(user, profileId)` : JSON du tableau de bord (compteurs calculés sur le cycle en cours de chaque courtier ; exposition de chaque semaine jugée sur le cycle en cours à sa date ; statut virtuel `stopped` pour une demande arrêtée par la révocation du mandat, `isStopped`), `complaintReady(r)`, `exportData(u)` (sans `last_error`). |
 | `server/sites.js`, `server/sitediscovery.js` | Sites ajoutés par les abonnés (`addSite`, `relaunchRequest`, `runDiscovery`) et recherche du contact sur le site, derrière une garde SSRF (`safeFetch`, `guardedLookup`, `isPublicIp`). |
-| `server/reports.js` | Rapport mensuel par e-mail (`runMonthlyReports`, `startReports`). |
-| `server/util.js` | Helpers partagés : `EMAIL`, `clean`, `arr`, `publicUser`, `parseProfile`, `wrap`, `sessionHandle`, `deviceLabel`. |
+| `server/reports.js` | Rapport mensuel par e-mail (`runMonthlyReports`, `startReports`) ; un échec d'envoi ou un dossier sans rien à rapporter repousse le prochain essai au lendemain (`report_retry_at`). |
+| `server/util.js` | Helpers partagés : `EMAIL`, `MAIL_ADDRESS`, `clean`, `arr`, `publicUser`, `parseProfile`, `wrap`, `sessionHandle`, `deviceLabel`. |
 | `server/auth.js` | scrypt, sessions en base, cookie signé HMAC, limitation de débit (`rateLimit({ by })`), `requireAdmin`, promotion des administrateurs (`ADMIN_VERIFY`, `adminPending`, `promoteIfAdmin`). |
 | `server/db.js` | Schéma SQLite, index, seed des courtiers depuis `server/brokers.json`. |
 | `server/scheduler.js` | Envoi, relances à 30 j (RGPD) ou 45 j (CCPA), nouveau cycle après 60 à 90 j, simulation en démo, fin des abonnements par clé (`expireKeySubscriptions`). `applyOutcome` renvoie `{ applied, error? }`. |
@@ -100,6 +100,7 @@ Sans `.env`, le serveur tourne en mode développement : abonnement simulé, cour
 - Le message brut d’un échec SMTP reste dans `last_error` (administration) ; le journal, la note et l’export de l’abonné gardent un texte générique.
 - Liens d’e-mail sans session (désinscription du rapport) : `linkToken(but, valeur)` et `checkLinkToken` (auth.js, HMAC avec `SESSION_SECRET`), route ajoutée à `TOKEN_ROUTES` (index.js) ; un GET ne change jamais d’état.
 - CSV : `csvCell` neutralise aussi les formules après une virgule ou un point-virgule (Excel en français découpe sur « ; »).
+- Adresses e-mail : `MAIL_ADDRESS` (util.js, même règle que `sendMail`) pour toute adresse à laquelle on écrira (inscription, contact, lettre d'information, adresses d'un dossier, changement d'adresse, contact d'un courtier) ; `EMAIL`, plus large, pour les recherches seulement (connexion, mot de passe oublié), afin de ne jamais bloquer un compte ancien.
 - La base n’est pas chiffrée par l’application : n’affiche aucune promesse de chiffrement (« AES-256 ») dans l’interface.
 
 ## État du chantier
@@ -114,7 +115,8 @@ Fait et poussé :
 - Tableau de bord refondu (synthèse, tiroir de détail, activité groupée, analyse) ; un refus programme un nouveau cycle ; plainte prête à déposer ; relance « données réapparues » ; demandes « Arrêtées » après une révocation du mandat.
 - Clés d’activation (abonnements offerts) : onglet « Clés », lien `#signup?key=`, cumul des durées, expiration automatique, `npm run admin -- keys` ; une clé remplace un abonnement simulé et refuse une offre trop petite pour le dossier.
 - Comptes : mot de passe oublié, appareils connectés, avis par e-mail après un changement de mot de passe, confirmation de l’adresse des administrateurs en production.
-- Audit de sécurité (découverte des sites, limitation de débit, courtiers personnalisés, CSV, erreurs SMTP), chasse aux bugs (17 correctifs, `regressions.test.mjs`), performance (compression, cache, ETag, santé, sauvegardes, arrêt propre).
+- Audit de sécurité (découverte des sites, limitation de débit, courtiers personnalisés, CSV, erreurs SMTP), chasse aux bugs (`regressions.test.mjs` : un groupe par bug corrigé, dont le rapport mensuel retenté le lendemain et l’exposition passée inchangée après une revérification), performance (compression, cache, ETag, santé, sauvegardes, arrêt propre).
+- Adresses : une seule règle (`MAIL_ADDRESS`) pour l’envoi et pour les adresses saisies ; la landing n’affiche plus de fausse confirmation d’inscription quand le serveur ne répond pas.
 - `npm test` passe (dix suites) ; `npm run test:ui` passe à 1280 et 390 px. README à jour.
 
 Pistes suivantes (non commencées) :

@@ -28,9 +28,9 @@ Parcours : créer un compte → renseigner les informations à faire effacer →
 | `server/admin.js` | API d'administration `/api/admin`, journal d'audit. |
 | `server/account.js` | Mot de passe oublié (lien à usage unique), appareils connectés, confirmation de l'adresse d'un administrateur. |
 | `server/keys.js` | Clés d'activation : génération par lot, activation, cumul des durées, révocation, statut. |
-| `server/dashboard.js` | Données du tableau de bord : compteurs (cycle en cours de chaque courtier), exposition sur 12 semaines, catégories, sensibilité, plainte possible par demande, export RGPD. |
+| `server/dashboard.js` | Données du tableau de bord : compteurs (cycle en cours de chaque courtier), exposition sur 12 semaines (chaque semaine jugée sur le cycle en cours à sa date : une revérification ne réécrit pas le passé), catégories, sensibilité, plainte possible par demande, export RGPD. |
 | `server/sites.js`, `server/sitediscovery.js` | Sites ajoutés par les abonnés : rattachement au registre ou courtier personnalisé, recherche du contact sur le site (garde SSRF), relance « données réapparues ». |
-| `server/reports.js` | Rapport mensuel par e-mail (désactivable dans les paramètres). |
+| `server/reports.js` | Rapport mensuel par e-mail (désactivable dans les paramètres) ; un envoi en échec est retenté le lendemain (`report_retry_at`), pas à chaque passage horaire. |
 | `server/util.js` | Validation des entrées, sérialisation publique (sans secret), helpers partagés. |
 | `server/db.js` | SQLite via `node:sqlite` (Node ≥ 22.13, aucune dépendance native). Schéma créé automatiquement, registre de courtiers chargé depuis `server/brokers.json`. |
 | `server/auth.js` | Mots de passe scrypt, sessions en base, cookie HttpOnly signé, limitation de débit. |
