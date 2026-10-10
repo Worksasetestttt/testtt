@@ -9,8 +9,11 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
+import { createRequire } from 'node:module';
 import { freePort } from './free-port.mjs';
 
+// Navigateur pour les vérifications de l'application (facultatif : ignorées si Playwright n'est pas installé).
+const playwright = (() => { try { return createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE || '/opt/node-tools/node_modules/playwright'); } catch { return null; } })();
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'oubli-billing-'));
 const SK = 'sk_test_billing_suite_0123456789abcdef';
 const WHSEC = 'whsec_billing_suite_0123456789abcdef';
@@ -188,7 +191,7 @@ async function stripeEvent(type, object, { created = nowS(), id = `evt_${crypto.
 // Paiement d'un abonnement : l'abonnement existe chez Stripe, puis le webhook checkout.session.completed l'annonce.
 async function paid(a, plan = 'individuel', opts = {}) {
   const sub = fake.addSubscription({ userId: a.id, plan, ...opts });
-  await stripeEvent('checkout.session.completed', { object: 'checkout.session', mode: 'subscription', payment_status: 'paid', customer: sub.customer, subscription: sub.id, client_reference_id: a.id, metadata: { user_id: a.id, plan, billing: 'monthly' } }, { created: opts.created });
+  await stripeEvent('checkout.session.completed', { object: 'checkout.session', mode: 'subscription', payment_status: 'paid', customer: sub.customer, subscription: sub.id, client_reference_id: a.id, metadata: { user_id: a.id, plan, billing: opts.interval === 'year' ? 'annual' : 'monthly' } }, { created: opts.created });
   return sub;
 }
 let passed = 0;
@@ -261,6 +264,210 @@ try {
     assert.ok(!err.includes(SK), 'la clé secrète n’est pas affichée');
   }
   step('production : STRIPE_API_BASE en http refusé au démarrage (sortie 1), sans afficher la clé');
+
+  /* ---------- 3. Réabonnement pendant la période payée : l'abonnement existant est repris, jamais doublé ---------- */
+  // Un abonné qui résilie (fin de période) puis choisit à nouveau une offre avant cette date payait deux fois la même
+  // période : une seconde session de paiement créait un second abonnement.
+  const sig = (calls) => calls.map((c) => `${c.method} ${c.path}`);
+  const journal = (id) => db.prepare(`SELECT message FROM events WHERE user_id = ? AND type = 'billing' ORDER BY id`).all(id).map((e) => e.message);
+  const cancelNow = async (a, sub) => {
+    assert.equal((await a.call('POST', '/billing/cancel', {})).status, 200);
+    assert.equal(fake.subs.get(sub.id).cancel_at_period_end, true);
+    await stripeEvent('customer.subscription.updated', structuredClone(fake.subs.get(sub.id)));   // annonce de Stripe
+    assert.equal((await a.me()).subscription_status, 'canceled');
+  };
+  {
+    const R = await actor('reprise@exemple.fr', { complete: true });
+    const sub = await paid(R, 'individuel');
+    await cancelNow(R, sub);
+    // Même offre : la résiliation est annulée chez Stripe, sans nouveau paiement.
+    let m = fake.mark();
+    let r = await R.call('POST', '/billing/checkout', { plan: 'individuel' });
+    assert.equal(r.status, 200, r.text);
+    assert.deepEqual(sig(fake.since(m)), [`GET /v1/subscriptions/${sub.id}`, `POST /v1/subscriptions/${sub.id}`], 'aucune session de paiement');
+    assert.deepEqual(fake.since(m)[1].form, { cancel_at_period_end: 'false' });
+    assert.equal(r.data.mode, 'resumed'); assert.equal(r.data.switched, false); assert.equal(r.data.plan, 'individuel'); assert.ok(!('url' in r.data));
+    assert.match(r.data.message, /^Résiliation annulée : votre abonnement Individuel continue, sans nouveau paiement\. Prochain prélèvement le \d{1,2} \S+ \d{4}\.$/);
+    let u = await R.me();
+    assert.deepEqual([u.subscription_status, u.subscription_ends_at, u.plan, u.billing_mode], ['active', null, 'individuel', 'stripe']);
+    assert.equal(row(R.id).stripe_subscription_id, sub.id, 'même abonnement');
+    assert.equal(fake.subs.get(sub.id).cancel_at_period_end, false);
+    assert.match(journal(R.id).at(-1), /^Résiliation annulée/);
+    await stripeEvent('customer.subscription.updated', structuredClone(fake.subs.get(sub.id)));
+    assert.equal((await R.me()).subscription_status, 'active', 'l’annonce de Stripe confirme');
+
+    // Autre offre : l'abonnement change d'offre au prorata (prix de l'offre retrouvé ou créé chez Stripe).
+    await cancelNow(R, sub);
+    m = fake.mark();
+    r = await R.call('POST', '/billing/checkout', { plan: 'famille' });
+    assert.equal(r.status, 200, r.text);
+    let calls = fake.since(m);
+    assert.deepEqual(sig(calls), [`GET /v1/subscriptions/${sub.id}`, 'GET /v1/prices', 'POST /v1/prices', `POST /v1/subscriptions/${sub.id}`]);
+    const lookup = calls[1].query['lookup_keys[0]'];
+    assert.match(lookup, /^oubli_famille_999_eur_month$/); assert.equal(calls[1].query.active, 'true'); assert.equal(calls[1].raw, '', 'GET sans corps');
+    assert.deepEqual({ currency: calls[2].form.currency, amount: calls[2].form.unit_amount, interval: calls[2].form['recurring[interval]'], lookup: calls[2].form.lookup_key, name: calls[2].form['product_data[name]'] }, { currency: 'eur', amount: '999', interval: 'month', lookup, name: 'Oubli Famille' });
+    assert.ok(calls[2].idem, 'création du prix idempotente');
+    const famillePrice = calls[2].response.id;
+    assert.deepEqual(calls[3].form, { cancel_at_period_end: 'false', proration_behavior: 'create_prorations', 'items[0][id]': sub.items.data[0].id, 'items[0][price]': famillePrice, 'metadata[user_id]': R.id, 'metadata[plan]': 'famille', 'metadata[billing]': 'monthly' });
+    assert.deepEqual([r.data.mode, r.data.switched, r.data.plan], ['resumed', true, 'famille']);
+    assert.match(r.data.message, /^Résiliation annulée, offre Famille active dès maintenant : la différence au prorata \(supplément ou avoir\) figurera sur votre prochaine facture, le \d{1,2} \S+ \d{4}\.$/);
+    u = await R.me();
+    assert.deepEqual([u.subscription_status, u.subscription_ends_at, u.plan], ['active', null, 'famille']);
+    assert.equal(fake.subs.get(sub.id).items.data[0].price.unit_amount, 999); assert.equal(fake.subs.get(sub.id).metadata.plan, 'famille');
+    assert.match(journal(R.id).at(-1), /^Offre Famille choisie/);
+    await stripeEvent('customer.subscription.updated', structuredClone(fake.subs.get(sub.id)));
+    assert.equal((await R.me()).plan, 'famille', 'les métadonnées de Stripe portent la nouvelle offre');
+
+    // Retour à Individuel : refusé tant que le dossier compte plus d'une personne (aucun appel), puis accepté ; le prix
+    // déjà retrouvé n'est plus recherché.
+    const p2 = (await R.call('POST', '/profiles', { first_name: 'Paul', last_name: 'Moreau' })).data.profile;
+    await cancelNow(R, sub);
+    m = fake.mark();
+    r = await R.call('POST', '/billing/checkout', { plan: 'individuel' });
+    assert.equal(r.status, 409); assert.match(r.data.error, /2\u00a0personnes/); assert.equal(fake.since(m).length, 0);
+    assert.equal((await R.call('DELETE', `/profiles/${p2.id}`)).status, 200);
+    r = await R.call('POST', '/billing/checkout', { plan: 'individuel' });
+    assert.equal(r.status, 200, r.text); assert.equal(r.data.switched, true);
+    assert.deepEqual(sig(fake.since(m)), [`GET /v1/subscriptions/${sub.id}`, 'GET /v1/prices', 'POST /v1/prices', `POST /v1/subscriptions/${sub.id}`]);
+    assert.equal(fake.subs.get(sub.id).items.data[0].price.unit_amount, 500);
+    await cancelNow(R, sub);
+    m = fake.mark();
+    r = await R.call('POST', '/billing/checkout', { plan: 'famille' });
+    assert.equal(r.status, 200, r.text);
+    assert.deepEqual(sig(fake.since(m)), [`GET /v1/subscriptions/${sub.id}`, `POST /v1/subscriptions/${sub.id}`], 'prix gardé en mémoire');
+    assert.equal(fake.since(m)[1].form['items[0][price]'], famillePrice);
+    assert.equal(fake.calls.filter((c) => c.path === '/v1/checkout/sessions' && c.form.client_reference_id === R.id).length, 0, 'jamais de seconde session de paiement');
+  }
+  step('réabonnement pendant la période payée : même offre → résiliation annulée sans paiement ; autre offre → changement au prorata ; jamais de second abonnement');
+
+  /* ---------- 4. Réabonnement : état réel de l'abonnement chez Stripe ---------- */
+  {
+    // Abonnement déjà terminé chez Stripe (fin de période passée, webhook pas encore reçu) : nouvelle session, même client.
+    const E = await actor('termine@exemple.fr');
+    const subE = await paid(E, 'individuel');
+    await cancelNow(E, subE);
+    Object.assign(fake.subs.get(subE.id), { status: 'canceled', ended_at: nowS() });
+    let m = fake.mark();
+    let r = await E.call('POST', '/billing/checkout', { plan: 'individuel' });
+    assert.equal(r.status, 200, r.text); assert.equal(r.data.mode, 'stripe'); assert.ok(r.data.url);
+    assert.deepEqual(sig(fake.since(m)), [`GET /v1/subscriptions/${subE.id}`, 'POST /v1/checkout/sessions']);
+    assert.equal(fake.since(m)[1].form.customer, subE.customer, 'même client Stripe');
+    // Abonnement inconnu de Stripe (404) : rien à reprendre, nouvelle session.
+    const N = await actor('inconnu@exemple.fr');
+    const subN = await paid(N, 'individuel');
+    await cancelNow(N, subN);
+    fake.subs.delete(subN.id);
+    m = fake.mark();
+    r = await N.call('POST', '/billing/checkout', { plan: 'individuel' });
+    assert.equal(r.status, 200, r.text); assert.deepEqual(sig(fake.since(m)), [`GET /v1/subscriptions/${subN.id}`, 'POST /v1/checkout/sessions']);
+    // Paiement en attente chez Stripe (résilié localement, ou impayé) : ni reprise ni second abonnement, 409 expliqué.
+    const P = await actor('impaye@exemple.fr');
+    const subP = await paid(P, 'individuel');
+    await cancelNow(P, subP);
+    fake.subs.get(subP.id).status = 'past_due';
+    m = fake.mark();
+    r = await P.call('POST', '/billing/checkout', { plan: 'individuel' });
+    assert.equal(r.status, 409, r.text); assert.match(r.data.error, /^Un paiement de votre abonnement est en attente de régularisation :/);
+    assert.deepEqual(sig(fake.since(m)), [`GET /v1/subscriptions/${subP.id}`]);
+    await stripeEvent('customer.subscription.updated', structuredClone(fake.subs.get(subP.id)));
+    assert.equal((await P.me()).subscription_status, 'past_due');
+    m = fake.mark();
+    r = await P.call('POST', '/billing/checkout', { plan: 'famille' });
+    assert.equal(r.status, 409); assert.deepEqual(sig(fake.since(m)), [`GET /v1/subscriptions/${subP.id}`]);
+    // Ancienne formule annuelle résiliée : elle n'est plus vendue, donc ni reprise ni doublée.
+    const Y = await actor('annuel@exemple.fr');
+    const subY = await paid(Y, 'individuel', { interval: 'year', amount: 5000, periodDays: 365 });
+    await cancelNow(Y, subY);
+    m = fake.mark();
+    r = await Y.call('POST', '/billing/checkout', { plan: 'individuel' });
+    assert.equal(r.status, 409, r.text); assert.match(r.data.error, /^Votre ancienne formule annuelle reste payée jusqu’au \d{1,2} \S+ \d{4} :/);
+    assert.deepEqual(sig(fake.since(m)), [`GET /v1/subscriptions/${subY.id}`]);
+    // Stripe injoignable ou en erreur : 502, et surtout pas de nouvelle session (on ne sait pas si l'ancien court encore).
+    const X = await actor('incertain@exemple.fr');
+    const subX = await paid(X, 'individuel');
+    await cancelNow(X, subX);
+    fake.fail('GET', `/v1/subscriptions/${subX.id}`, 500);
+    m = fake.mark();
+    r = await X.call('POST', '/billing/checkout', { plan: 'individuel' });
+    assert.equal(r.status, 502); assert.deepEqual(sig(fake.since(m)), [`GET /v1/subscriptions/${subX.id}`]);
+    fake.fail('POST', `/v1/subscriptions/${subX.id}`, 500);
+    r = await X.call('POST', '/billing/checkout', { plan: 'individuel' });
+    assert.equal(r.status, 502); assert.equal((await X.me()).subscription_status, 'canceled', 'reprise non confirmée : rien ne change');
+    assert.equal(fake.subs.get(subX.id).cancel_at_period_end, true);
+    // Abonnement offert par clé qui prend le relais d'une période payée encore en cours : l'abonnement payé est repris
+    // (pas de second abonnement pendant la période déjà payée).
+    const K = await actor('cle-relais@exemple.fr');
+    const subK = await paid(K, 'individuel');
+    await cancelNow(K, subK);
+    db.prepare(`UPDATE users SET subscription_status = 'active', billing_mode = 'key', billing = NULL, subscription_ends_at = ? WHERE id = ?`).run(iso(subK.current_period_end + 30 * DAY), K.id);
+    m = fake.mark();
+    r = await K.call('POST', '/billing/checkout', { plan: 'individuel' });
+    assert.equal(r.status, 200, r.text); assert.equal(r.data.mode, 'resumed');
+    assert.deepEqual(sig(fake.since(m)), [`GET /v1/subscriptions/${subK.id}`, `POST /v1/subscriptions/${subK.id}`]);
+    const uk = await K.me();
+    assert.deepEqual([uk.subscription_status, uk.billing_mode, uk.subscription_ends_at], ['active', 'stripe', null]);
+  }
+  step('réabonnement : abonnement terminé ou inconnu chez Stripe → nouvelle session ; impayé ou ancienne formule annuelle → 409 ; Stripe en erreur → 502 sans session ; relais d’une clé → reprise');
+
+  /* ---------- 5. Application (navigateur, 1280 et 390 px) : reprendre ou changer d'offre sans page de paiement ---------- */
+  if (!playwright) console.log('  · navigateur indisponible (PLAYWRIGHT_MODULE) : vérifications de l’application ignorées');
+  else {
+    const W = await actor('navigateur@exemple.fr', { complete: true });
+    const subW = await paid(W, 'individuel');
+    await cancelNow(W, subW);
+    const browser = await playwright.chromium.launch();
+    try {
+      const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+      await ctx.addCookies([{ name: W.cookie.split('=')[0], value: W.cookie.split('=').slice(1).join('='), domain: 'localhost', path: '/' }]);
+      // Chaque message affiché dans #toast est noté (il s'efface au bout de quelques secondes).
+      await ctx.addInitScript(() => { window.__toasts = []; document.addEventListener('DOMContentLoaded', () => { const t = document.getElementById('toast'); if (t) new MutationObserver(() => { if (t.textContent) window.__toasts.push(t.textContent); }).observe(t, { childList: true, characterData: true, subtree: true }); }); });
+      const page = await ctx.newPage();
+      const problems = [];
+      const toastMatching = async (re) => { try { await page.waitForFunction((src) => window.__toasts.some((x) => new RegExp(src).test(x)), re.source, { timeout: 8000 }); } catch { assert.fail(`message attendu ${re} ; reçus : ${JSON.stringify(await page.evaluate(() => window.__toasts))} (${page.url()})`); } };
+      page.on('pageerror', (e) => problems.push(e.message));
+      page.on('console', (msg) => { if (msg.type() === 'error') problems.push(msg.text()); });
+      const layout = () => page.evaluate(() => ({
+        overflow: document.documentElement.scrollWidth - window.innerWidth,
+        sheets: [...document.querySelectorAll('.sheet')].filter((s) => s.scrollWidth > s.clientWidth + 1).length,
+        small: [...document.querySelectorAll('[data-checkout]')].filter((b) => b.getBoundingClientRect().height < 44).length,
+      }));
+      const plansView = async () => {
+        await page.goto(`${APP}/app/?v=${crypto.randomBytes(3).toString('hex')}#billing`);
+        await page.waitForSelector('.plans-block .notice--info');
+        return page.evaluate(() => ({
+          notice: document.querySelector('.plans-block .notice--info').textContent,
+          individuel: document.querySelector('[data-checkout="individuel"]').textContent,
+          famille: document.querySelector('[data-checkout="famille"]').textContent,
+        }));
+      };
+      // 1280 px : même offre → reprise.
+      let v = await plansView();
+      assert.match(v.notice, /^Votre abonnement Individuel reste payé jusqu’au \d{1,2} \S+ \d{4}\. Le reprendre annule la résiliation, sans nouveau paiement ; passer à l’autre offre prend effet aussitôt/);
+      assert.deepEqual([v.individuel, v.famille], ['Reprendre Individuel', 'Passer à Famille']);
+      assert.deepEqual(await layout(), { overflow: 0, sheets: 0, small: 0 }, '1280 px');
+      let m = fake.mark();
+      await page.click('[data-checkout="individuel"]');
+      await toastMatching(/^Résiliation annulée\u00a0: votre abonnement Individuel continue, sans nouveau paiement\./);
+      assert.ok(page.url().startsWith(APP), 'aucune redirection vers une page de paiement');
+      assert.deepEqual(sig(fake.since(m)), [`GET /v1/subscriptions/${subW.id}`, `POST /v1/subscriptions/${subW.id}`]);
+      assert.equal((await W.me()).subscription_status, 'active');
+      // 390 px : autre offre → changement au prorata.
+      await cancelNow(W, subW);
+      await page.setViewportSize({ width: 390, height: 844 });
+      v = await plansView();
+      assert.deepEqual([v.individuel, v.famille], ['Reprendre Individuel', 'Passer à Famille']);
+      assert.deepEqual(await layout(), { overflow: 0, sheets: 0, small: 0 }, '390 px');
+      m = fake.mark();
+      await page.click('[data-checkout="famille"]');
+      await toastMatching(/^Résiliation annulée, offre Famille active dès maintenant\u00a0: la différence au prorata/);
+      assert.ok(page.url().startsWith(APP));
+      assert.equal(sig(fake.since(m)).filter((s) => s === 'POST /v1/checkout/sessions').length, 0);
+      assert.equal((await W.me()).plan, 'famille');
+      assert.deepEqual(problems, [], 'aucune erreur dans la console');
+      await ctx.close();
+    } finally { await browser.close(); }
+  }
+  step('application : avis « reste payé jusqu’au… », boutons « Reprendre » et « Passer à », reprise et changement d’offre sans page de paiement, à 1280 et 390 px');
 
   db.close();
   assert.ok(!(serverOut + serverErr).includes(SK), 'la clé secrète n’apparaît jamais dans la console du serveur');

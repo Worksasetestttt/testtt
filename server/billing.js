@@ -28,12 +28,17 @@ if (STRIPE_KEY && process.env.NODE_ENV === 'production' && !/^https:\/\//i.test(
   process.exit(1);
 }
 
+// Paramètres form-urlencoded : dans l'adresse pour un GET (sans corps), dans le corps sinon. Une erreur porte le statut
+// HTTP de Stripe (stripeStatus) : 404 = objet inconnu de Stripe.
 async function stripe(method, path, params, idempotencyKey) {
-  const headers = { Authorization: `Bearer ${STRIPE_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' };
+  const headers = { Authorization: `Bearer ${STRIPE_KEY}` };
   if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
-  const r = await fetch(`${STRIPE_API}${path}`, { method, headers, body: params ? new URLSearchParams(flatten(params)).toString() : undefined, signal: AbortSignal.timeout(20000) });
+  const form = params ? new URLSearchParams(flatten(params)).toString() : '';
+  const query = method === 'GET' && form ? `?${form}` : '';
+  if (form && !query) headers['Content-Type'] = 'application/x-www-form-urlencoded';
+  const r = await fetch(`${STRIPE_API}${path}${query}`, { method, headers, body: form && !query ? form : undefined, signal: AbortSignal.timeout(20000) });
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.error?.message || `Stripe ${r.status}`);
+  if (!r.ok) throw Object.assign(new Error(data.error?.message || `Stripe ${r.status}`), { stripeStatus: r.status });
   return data;
 }
 function flatten(obj, prefix = '', out = {}) {
@@ -46,6 +51,8 @@ function flatten(obj, prefix = '', out = {}) {
 const sid = (v) => (typeof v === 'string' ? v : (v && typeof v === 'object' && typeof v.id === 'string' ? v.id : null));
 const iso = (s) => (Number.isFinite(Number(s)) && Number(s) > 0 ? new Date(Number(s) * 1000).toISOString() : null);
 const label = (plan, billing) => `${PLANS[plan]?.name || plan} (${billing === 'annual' ? 'annuel' : 'mensuel'})`;
+const NB = '\u00a0';
+const longDate = (s) => new Date(s).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
 
 export async function startCheckout(user, plan, billing) {
   const p = Object.hasOwn(PLANS, plan) ? PLANS[plan] : null;
@@ -60,6 +67,12 @@ export async function startCheckout(user, plan, billing) {
     return { mode: 'simulated', url: `${APP_URL}/app/#dashboard` };
   }
   if (user.subscription_status === 'active' && user.billing_mode === 'stripe' && user.stripe_subscription_id) throw new HttpError(409, 'Un abonnement est déjà actif sur ce compte : résiliez-le avant d’en souscrire un autre.');
+  // Abonnement Stripe rattaché au compte (résilié en fin de période, impayé, relayé par une clé) : repris s'il court
+  // encore, jamais doublé d'un second abonnement qui ferait payer deux fois la même période.
+  if (user.stripe_subscription_id) {
+    const resumed = await resumeSubscription(user, plan);
+    if (resumed) return resumed;
+  }
   const session = await stripe('POST', '/checkout/sessions', {
     mode: 'subscription',
     client_reference_id: user.id,
@@ -81,6 +94,59 @@ export async function startCheckout(user, plan, billing) {
   const access = user.subscription_status === 'active' || (user.subscription_status === 'canceled' && !!user.subscription_ends_at && user.subscription_ends_at > now());
   if (!access) q.run('UPDATE users SET plan = ?, billing = ? WHERE id = ?', plan, billing, user.id);
   return { mode: 'stripe', url: session.url };
+}
+
+// Reprise d'un abonnement Stripe qui court encore : même offre → la résiliation est annulée (cancel_at_period_end=false),
+// sans nouveau paiement ; autre offre → l'abonnement change de prix au prorata (supplément ou avoir sur la prochaine
+// facture). Retourne null si l'abonnement est terminé ou inconnu de Stripe : une nouvelle session est alors créée. Toute
+// autre erreur est propagée (502) : sans réponse de Stripe, impossible de savoir si l'ancien abonnement court encore.
+async function resumeSubscription(user, plan) {
+  const path = `/subscriptions/${encodeURIComponent(user.stripe_subscription_id)}`;
+  let sub;
+  try { sub = await stripe('GET', path); } catch (e) { if (e.stripeStatus === 404) return null; throw e; }
+  if (['canceled', 'incomplete_expired'].includes(sub.status)) return null;
+  if (!['active', 'trialing'].includes(sub.status)) throw new HttpError(409, `Un paiement de votre abonnement est en attente de régularisation${NB}: Stripe retente le prélèvement automatiquement. Pour changer de carte ou d’offre en attendant, écrivez au support.`);
+  const item = sub.items?.data?.[0];
+  const periodEnd = iso(sub.current_period_end || item?.current_period_end) || user.subscription_ends_at;
+  // Ancienne formule annuelle : plus vendue, elle n'est ni renouvelée ni convertie en cours de période.
+  if ((item?.price?.recurring?.interval || sub.plan?.interval) === 'year') throw new HttpError(409, `Votre ancienne formule annuelle reste payée${periodEnd ? ` jusqu’au ${longDate(periodEnd)}` : ''}${NB}: elle n’est plus proposée et ne peut pas être reprise. L’abonnement mensuel pourra être souscrit à cette date.`);
+  const current = Object.hasOwn(PLANS, sub.metadata?.plan ?? '') ? sub.metadata.plan : user.plan;
+  const switched = current !== plan;
+  if (switched && !item?.id) throw new Error('Abonnement Stripe sans ligne : changement d’offre impossible.');
+  const params = { cancel_at_period_end: false };
+  if (switched) Object.assign(params, { proration_behavior: 'create_prorations', items: { 0: { id: item.id, price: await planPrice(plan) } }, metadata: { user_id: user.id, plan, billing: 'monthly' } });
+  const updated = await stripe('POST', path, params, crypto.randomUUID());
+  applySnapshot(updated);
+  if (switched) logEvent(user.id, 'billing', `Offre ${PLANS[plan].name} choisie${NB}: la différence au prorata figurera sur la prochaine facture.`);
+  const next = iso(updated.current_period_end || updated.items?.data?.[0]?.current_period_end) || periodEnd;
+  const lead = sub.cancel_at_period_end || sub.cancel_at ? 'Résiliation annulée' : 'Abonnement repris';
+  return {
+    mode: 'resumed', plan, switched,
+    message: switched
+      ? `${lead}, offre ${PLANS[plan].name} active dès maintenant${NB}: la différence au prorata (supplément ou avoir) figurera sur votre prochaine facture${next ? `, le ${longDate(next)}` : ''}.`
+      : `${lead}${NB}: votre abonnement ${PLANS[plan].name} continue, sans nouveau paiement.${next ? ` Prochain prélèvement le ${longDate(next)}.` : ''}`,
+  };
+}
+// Prix mensuel d'une offre chez Stripe, nécessaire pour changer l'offre d'un abonnement (l'API des abonnements, à la
+// différence de Checkout, n'accepte pas de produit décrit en ligne) : retrouvé par sa clé de recherche (offre et montant),
+// créé au besoin, puis gardé en mémoire.
+const planPrices = new Map();
+async function planPrice(plan) {
+  const p = PLANS[plan], key = `oubli_${plan}_${p.monthly}_eur_month`;
+  if (planPrices.has(key)) return planPrices.get(key);
+  const found = await stripe('GET', '/prices', { active: true, limit: 1, lookup_keys: [key] });
+  const id = sid(found.data?.[0]) || sid(await stripe('POST', '/prices', {
+    currency: 'eur', unit_amount: p.monthly, recurring: { interval: 'month' }, lookup_key: key, transfer_lookup_key: true,
+    product_data: { name: `Oubli ${p.name}` }, metadata: { plan },
+  }, crypto.randomUUID()));
+  if (!id) throw new Error('Prix Stripe introuvable.');
+  planPrices.set(key, id);
+  return id;
+}
+// Abonnement relu dans une réponse de l'API après une action de l'abonné : même traduction qu'un webhook
+// customer.subscription.updated (statut, fin d'accès, offre des métadonnées).
+function applySnapshot(sub) {
+  tx(() => apply({ type: 'customer.subscription.updated', data: { object: sub } }));
 }
 
 // En-tête Stripe-Signature : t=<horodatage>,v1=<hmac>[,v1=<hmac>…]. Comparaison en temps constant, tolérance 5 minutes.
