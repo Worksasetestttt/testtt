@@ -7,6 +7,7 @@
 //   UI_SHOTS=dossier npm run test:ui     (captures d'écran dans ce dossier)
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
+const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 
@@ -19,12 +20,26 @@ function loadPlaywright() {
 }
 const pw = loadPlaywright();
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'oubli-ui-'));
-const PORT = 5500 + Math.floor(Math.random() * 300), BASE = `http://localhost:${PORT}`, STRONG = 'Corde-a-linge-78!';
+const STRONG = 'Corde-a-linge-78!';
 const SHOTS = process.env.UI_SHOTS || '';
 if (SHOTS) fs.mkdirSync(SHOTS, { recursive: true });
-const env = { ...process.env, PORT: String(PORT), DATABASE_PATH: path.join(tmp, 'ui.sqlite'), OUTBOX_DIR: path.join(tmp, 'outbox'), DEMO_MODE: 'false', SMTP_URL: '', STRIPE_SECRET_KEY: '', SESSION_SECRET: 'ui-audit-secret-0123456789abcdef0123', ADMIN_EMAILS: 'admin@test.fr', SCHEDULER_INTERVAL_MS: '600000', NODE_ENV: 'test', SITE_DISCOVERY: 'off' };
-const server = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server/index.js'], { env, stdio: ['ignore', 'ignore', 'pipe'] });
-let serverErr = ''; server.stderr.on('data', (x) => { serverErr += x; });
+// Port attribué par le système (plage éphémère) : les suites de `npm test` tirent le leur au hasard entre 3900 et 6000 et
+// peuvent tourner en même temps. Sur un port déjà pris, notre serveur s'arrêterait et l'audit parlerait à un autre.
+const freePort = () => new Promise((resolve, reject) => {
+  const s = net.createServer(); s.on('error', reject);
+  s.listen(0, () => { const { port } = s.address(); s.close(() => resolve(port)); });
+});
+let BASE = '', server = null, serverErr = '', stopping = false;
+async function startServer() {
+  const port = await freePort();
+  BASE = `http://localhost:${port}`;
+  const env = { ...process.env, PORT: String(port), DATABASE_PATH: path.join(tmp, 'ui.sqlite'), OUTBOX_DIR: path.join(tmp, 'outbox'), DEMO_MODE: 'false', SMTP_URL: '', STRIPE_SECRET_KEY: '', SESSION_SECRET: 'ui-audit-secret-0123456789abcdef0123', ADMIN_EMAILS: 'admin@test.fr', SCHEDULER_INTERVAL_MS: '600000', NODE_ENV: 'test', SITE_DISCOVERY: 'off' };
+  server = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server/index.js'], { env, stdio: ['ignore', 'ignore', 'pipe'] });
+  server.stderr.on('data', (x) => { serverErr += x; });
+  server.on('exit', (code, sig) => { if (!stopping) note(`le serveur de l’audit s’est arrêté (code ${code ?? sig})`); });
+  for (let i = 0; i < 60 && server.exitCode === null; i++) { try { if ((await fetch(BASE + '/api/health')).ok) break; } catch { /* démarrage */ } await wait(250); }
+  if (server.exitCode !== null) throw new Error('serveur de l’audit arrêté au démarrage');
+}
 const findings = [];
 const note = (s) => { findings.push(s); console.log('  ✘ ' + s); }, ok = (s) => console.log('  ✔ ' + s), wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const shot = (page, name, full = false) => (SHOTS ? page.screenshot({ path: path.join(SHOTS, name + '.png'), fullPage: full }) : null);
@@ -123,7 +138,7 @@ async function scenario(browser, width) {
 (async () => {
   let browser;
   try {
-    for (let i = 0; i < 60; i++) { try { if ((await fetch(BASE + '/api/health')).ok) break; } catch { /* démarrage */ } await wait(250); }
+    await startServer();
     browser = await pw.chromium.launch();
     for (const w of [1280, 390]) await scenario(browser, w);
   } catch (e) {
@@ -131,7 +146,7 @@ async function scenario(browser, width) {
     if (serverErr.trim()) console.error(serverErr.split('\n').slice(-10).join('\n'));
   } finally {
     if (browser) await browser.close();
-    server.kill(); fs.rmSync(tmp, { recursive: true, force: true });
+    stopping = true; if (server) server.kill(); fs.rmSync(tmp, { recursive: true, force: true });
   }
   console.log(findings.length ? `✘ Audit navigateur : ${findings.length} constat(s).` : '✔ Audit navigateur propre (1280 et 390 px).');
   process.exitCode = findings.length ? 1 : 0;
