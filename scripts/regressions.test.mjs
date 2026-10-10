@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
+import { discoverContact } from '../server/sitediscovery.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'oubli-reg-'));
@@ -379,6 +380,18 @@ try {
     r = await S.call('PUT', `/profiles/${M.pid}`, { birth_date: '' }, M.cookie); assert.equal(r.data.profile.birth_date, null, 'effacement explicite');
   }
   step('profil : la date de naissance n’est plus effacée par une mise à jour qui ne la mentionne pas');
+
+  /* ---------- 12. Découverte du contact : site en HTTP seul, page d'accueil illisible ---------- */
+  // Les liens légaux et les chemins usuels n'étaient explorés qu'après la toute première page lue : un site sans HTTPS
+  // (repli sur http://) ou dont l'accueil est vide (403, page non HTML) n'était jamais exploré au-delà de l'accueil.
+  {
+    const pages = { 'http://vieux-site.fr/': '<title>Vieux site</title><a href="/mentions-legales">Mentions légales</a> contact@vieux-site.fr', 'http://vieux-site.fr/mentions-legales': 'DPO : dpo@vieux-site.fr' };
+    let d = await discoverContact('vieux-site.fr', { fetchPage: async (url) => { if (url.startsWith('https://')) throw new Error('ECONNREFUSED'); return { url, html: pages[url] || '' }; } });
+    assert.equal(d.email, 'dpo@vieux-site.fr', 'site en HTTP seul : page des mentions explorée'); assert.equal(d.page, 'http://vieux-site.fr/mentions-legales');
+    d = await discoverContact('protege.fr', { fetchPage: async (url) => ({ url, html: url === 'https://protege.fr/mentions-legales' ? 'Contact RGPD : rgpd@protege.fr' : '' }) });
+    assert.equal(d.email, 'rgpd@protege.fr', 'accueil illisible : chemins usuels essayés');
+  }
+  step('découverte : site en HTTP seul et accueil illisible explorés jusqu’aux mentions légales');
 
   console.log(`✔ Régressions validées (${passed} groupes de vérifications).`);
 } catch (e) {

@@ -175,22 +175,26 @@ export const LEGAL_PATHS = ['/mentions-legales', '/politique-de-confidentialite'
 export async function discoverContact(host, { fetchPage = safeFetch, budgetMs = 15000, maxPages = 8 } = {}) {
   const domain = registrableDomain(host), deadline = Date.now() + budgetMs, seen = new Set();
   const queue = [`https://${host}/`];
-  let best = null, pages = 0, title = null;
+  let best = null, pages = 0, title = null, expanded = false;
   while (queue.length && pages < maxPages && Date.now() < deadline) {
     const url = queue.shift();
     if (seen.has(url)) continue;
     seen.add(url); pages += 1;
     let page;
     try { page = await fetchPage(url, { timeoutMs: Math.max(1000, Math.min(6000, deadline - Date.now())) }); } catch { if (pages === 1) queue.push(`http://${host}/`); continue; }
-    if (!page || !page.html) continue;
-    if (title === null) { const t = page.html.match(/<title[^>]*>([^<]{1,200})<\/title>/i); title = t ? t[1].replace(/\s+/g, ' ').trim().slice(0, 80) : ''; }
-    const c = extractContacts(page.html, domain)[0];
-    if (c && (!best || c.score < best.score)) best = { ...c, page: page.url || url };
+    if (!page) continue;
+    const html = page.html || '';
+    let at = url; try { at = new URL(page.url || url).href; } catch { /* adresse finale invalide : celle demandée */ }
+    if (html && title === null) { const t = html.match(/<title[^>]*>([^<]{1,200})<\/title>/i); title = t ? t[1].replace(/\s+/g, ' ').trim().slice(0, 80) : ''; }
+    const c = html ? extractContacts(html, domain)[0] : null;
+    if (c && (!best || c.score < best.score)) best = { ...c, page: at };
     if (best && best.score < 10) break;                                                // adresse DPO / confidentialité : inutile d'aller plus loin
-    if (pages === 1) {
-      const origin = new URL(page.url || url).origin;
-      for (const l of legalLinks(page.html, page.url || url)) queue.push(l);
-      for (const p of LEGAL_PATHS) queue.push(origin + p);
+    // Première page obtenue (accueil en https, ou en http après un échec ; même vide : 403, page non HTML) : liens légaux
+    // trouvés, puis chemins usuels sur la même origine.
+    if (!expanded) {
+      expanded = true;
+      for (const l of legalLinks(html, at)) queue.push(l);
+      for (const p of LEGAL_PATHS) queue.push(new URL(at).origin + p);
     }
   }
   return { email: best ? best.email : null, page: best ? best.page : null, pages, title: title || null };
