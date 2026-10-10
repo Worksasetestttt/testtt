@@ -214,6 +214,16 @@ function setStatus(u, status, ends, message, extra = {}) {
   if (changed && message) logEvent(u.id, 'billing', message);
 }
 
+// Abonnement payé pour un compte déjà supprimé : paiement terminé dans un onglet resté ouvert, webhook arrivé après la
+// suppression, ou suppression par l'administration (qui résilie en fin de période). Retrouvé par l'identifiant du compte
+// posé dans les métadonnées à la création de la session, il est à arrêter tout de suite (stripeWebhook, routes.js) :
+// sinon il serait prélevé sans que personne ne puisse plus l'arrêter.
+function orphan(uid, subscription) {
+  const s = sid(subscription);
+  if (!s || typeof uid !== 'string' || !uid) return undefined;
+  return q.get('SELECT 1 FROM users WHERE id = ? AND deleted_at IS NOT NULL', uid) ? { orphan: s } : undefined;
+}
+
 function apply(event) {
   const o = event.data?.object || {};
   const at = eventTime(event);
@@ -225,7 +235,8 @@ function apply(event) {
       if (o.mode && o.mode !== 'subscription') return;
       if (o.payment_status && !['paid', 'no_payment_required'].includes(o.payment_status)) return; // paiement différé : on attend async_payment_succeeded
       const u = userByIds(o.customer, o.subscription) || userByMetadata(o.client_reference_id || o.metadata?.user_id, o.customer);
-      if (!u || late(u)) return;
+      if (!u) return orphan(o.client_reference_id || o.metadata?.user_id, o.subscription);
+      if (late(u)) return;
       const plan = Object.hasOwn(PLANS, o.metadata?.plan ?? '') ? o.metadata.plan : null;
       const billing = ['monthly', 'annual'].includes(o.metadata?.billing) ? o.metadata.billing : null;
       setStatus(u, 'active', null, 'Paiement confirmé par Stripe : abonnement actif.', { customer: sid(o.customer), subscription: sid(o.subscription), plan, billing, at });
@@ -250,7 +261,8 @@ function apply(event) {
     case 'customer.subscription.created':
     case 'customer.subscription.updated': {
       const u = userByIds(o.customer, o.id) || userByMetadata(o.metadata?.user_id, o.customer);
-      if (!u || staleSub(u, o.id) || late(u)) return;
+      if (!u) return ['canceled', 'incomplete_expired', 'incomplete'].includes(o.status) ? undefined : orphan(o.metadata?.user_id, o.id);
+      if (staleSub(u, o.id) || late(u)) return;
       const periodEnd = o.current_period_end || o.items?.data?.[0]?.current_period_end || null;
       const interval = o.items?.data?.[0]?.price?.recurring?.interval || o.plan?.interval || null;
       const extra = { customer: sid(o.customer), subscription: sid(o.id), plan: Object.hasOwn(PLANS, o.metadata?.plan ?? '') ? o.metadata.plan : null, billing: interval === 'year' ? 'annual' : interval === 'month' ? 'monthly' : null, at };
@@ -277,15 +289,18 @@ function apply(event) {
   }
 }
 
-// Traite un événement Stripe une seule fois : un identifiant déjà vu (webhook rejoué) est ignoré.
+// Traite un événement Stripe une seule fois : un identifiant déjà vu (webhook rejoué) est ignoré. Exception : l'annonce
+// d'un abonnement à arrêter pour un compte supprimé ({ orphan }) n'est pas marquée traitée, car l'arrêt chez Stripe se
+// fait après la transaction et peut échouer ; Stripe la renvoie tant qu'elle n'a pas abouti (l'arrêt est rejouable).
 export function handleStripeEvent(event) {
   if (!event || typeof event !== 'object' || typeof event.type !== 'string') throw new Error('Événement invalide.');
   if (typeof event.id !== 'string' || !/^evt_[A-Za-z0-9_]{1,200}$/.test(event.id)) throw new Error('Identifiant d’événement manquant.');
   return tx(() => {
     const ins = q.run('INSERT OR IGNORE INTO stripe_events (id, type, created_at) VALUES (?, ?, ?)', event.id, event.type, now());
     if (!ins.changes) return { duplicate: true, type: event.type };
-    apply(event);
-    return { duplicate: false, type: event.type };
+    const out = apply(event) || {};
+    if (out.orphan) q.run('DELETE FROM stripe_events WHERE id = ?', event.id);
+    return { duplicate: false, type: event.type, ...out };
   });
 }
 
@@ -311,17 +326,23 @@ export async function cancelSubscription(user) {
 // clé Stripe. Rejouable après un échec partiel : un abonnement déjà annulé ne l'est pas deux fois, seules les factures
 // restées ouvertes le sont. Sans abonnement Stripe (simulé, équipe, clé) : résiliation locale, comme cancelSubscription.
 export async function endSubscriptionNow(user) {
-  if (!user.stripe_subscription_id) return ['active', 'past_due'].includes(user.subscription_status) ? cancelSubscription(user) : { ends_at: user.subscription_ends_at || null };
-  if (!STRIPE_KEY) throw new Error('STRIPE_SECRET_KEY absent : l’abonnement Stripe du compte ne peut pas être annulé.');
-  const id = user.stripe_subscription_id, path = `/subscriptions/${encodeURIComponent(id)}`;
-  let sub;
-  try { sub = await stripe('GET', path); } catch (e) { if (e.stripeStatus === 404) return { ends_at: null }; throw e; }   // inconnu de Stripe : rien à prélever
-  if (!['canceled', 'incomplete_expired'].includes(sub.status)) {
-    sub = await stripe('DELETE', path);
+  if (!user.stripe_subscription_id) { if (['active', 'past_due'].includes(user.subscription_status)) await cancelSubscription(user); return; }
+  await stopStripeSubscription(user.stripe_subscription_id, (sub) => {
     q.run(`UPDATE users SET subscription_status = 'canceled', subscription_ends_at = ? WHERE id = ?`, iso(sub.ended_at) || iso(sub.canceled_at) || now(), user.id);
     touch(user.id, answeredAt.get(sub));
     logEvent(user.id, 'billing', `Abonnement arrêté immédiatement pour la suppression du compte${NB}: plus aucun prélèvement.`);
-  }
+  });
+}
+// Abonnement annoncé par un webhook pour un compte déjà supprimé (voir orphan) : arrêté de la même façon.
+export const stopOrphanSubscription = (id) => stopStripeSubscription(id);
+// Annule l'abonnement tout de suite s'il court encore (onStopped reçoit la réponse de Stripe), puis ses factures
+// ouvertes. Rien à faire si Stripe ne le connaît pas (404).
+async function stopStripeSubscription(id, onStopped = () => {}) {
+  if (!STRIPE_KEY) throw new Error('STRIPE_SECRET_KEY absent : l’abonnement Stripe ne peut pas être annulé.');
+  const path = `/subscriptions/${encodeURIComponent(id)}`;
+  let sub;
+  try { sub = await stripe('GET', path); } catch (e) { if (e.stripeStatus === 404) return; throw e; }
+  if (!['canceled', 'incomplete_expired'].includes(sub.status)) onStopped(await stripe('DELETE', path));
   // Une facture annulée sort de la liste des factures ouvertes : la première page est relue jusqu'à épuisement.
   for (let page = 0; page < 10; page += 1) {
     const open = await stripe('GET', '/invoices', { subscription: id, status: 'open', limit: 100 });
@@ -329,5 +350,4 @@ export async function endSubscriptionNow(user) {
     for (const inv of ids) await stripe('POST', `/invoices/${encodeURIComponent(inv)}/void`, undefined, crypto.randomUUID());
     if (!open.has_more || !ids.length) break;
   }
-  return { ends_at: iso(sub.ended_at) || iso(sub.canceled_at) || now() };
 }

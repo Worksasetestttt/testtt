@@ -11,7 +11,7 @@ import {
 } from './auth.js';
 import { sendMail, mailMode } from './mailer.js';
 import { welcomeMail, mandateText, complaintDraft, passwordChangedMail, MANDATE_VERSION } from './templates.js';
-import { PLANS, BILLING_PERIODS, billingMode, startCheckout, cancelSubscription, endSubscriptionNow, verifyStripeSignature, handleStripeEvent } from './billing.js';
+import { PLANS, BILLING_PERIODS, billingMode, startCheckout, cancelSubscription, endSubscriptionNow, stopOrphanSubscription, verifyStripeSignature, handleStripeEvent } from './billing.js';
 import { launchProfile, applyOutcome, tick, ref, DEMO, schedulerState } from './scheduler.js';
 import { EMAIL, publicUser, parseProfile, wrap, isId, str, strList, oneOf, HttpError } from './util.js';
 import { buildDashboard, exportData, complaintReady } from './dashboard.js';
@@ -308,15 +308,21 @@ const redeemPerAccount = rateLimit({ windowMs: 60 * 60000, max: 10, name: 'redee
 api.post('/billing/redeem', requireAuth, redeemPerIp, redeemPerAccount, (req, res) => {
   res.json(redeemKey(req.user.id, str(req.body.key, 'key', 80)));
 });
-// Webhook Stripe : corps brut uniquement, signature obligatoire, cookies ignorés (voir index.js).
-export function stripeWebhook(req, res) {
+// Webhook Stripe : corps brut uniquement, signature obligatoire, cookies ignorés (voir index.js). L'abonnement d'un
+// compte déjà supprimé est arrêté tout de suite ; si Stripe échoue, 500 : Stripe renverra l'événement.
+export async function stripeWebhook(req, res) {
   if (!Buffer.isBuffer(req.body)) return bad(res, 'Corps de requête invalide.');
   const raw = req.body.toString('utf8');
   if (!verifyStripeSignature(raw, req.headers['stripe-signature'])) return bad(res, 'Signature invalide.');
   let event;
   try { event = JSON.parse(raw); } catch { return bad(res, 'Événement invalide.'); }
   if (!event || typeof event !== 'object' || typeof event.type !== 'string') return bad(res, 'Événement invalide.');
-  try { handleStripeEvent(event); } catch (e) { console.error(`[billing] webhook (${req.id}) :`, e); return bad(res, 'Événement non traité.'); }
+  let out;
+  try { out = handleStripeEvent(event); } catch (e) { console.error(`[billing] webhook (${req.id}) :`, e); return bad(res, 'Événement non traité.'); }
+  if (out.orphan) {
+    try { await stopOrphanSubscription(out.orphan); }
+    catch (e) { console.error(`[billing] abonnement d’un compte supprimé non arrêté (${req.id}) :`, e.message); return bad(res, 'Événement non traité.', 500); }
+  }
   res.json({ received: true });
 }
 

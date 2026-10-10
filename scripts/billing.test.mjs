@@ -704,6 +704,62 @@ try {
   }
   step('webhooks : signature absente, malformée, d’un autre secret, modifiée, tronquée, hors tolérance ou sur un corps modifié → 400 sans effet ; rotation acceptée ; comparaison par timingSafeEqual');
 
+  /* ---------- 10. Abonnement d'un compte déjà supprimé : arrêté dès que Stripe l'annonce ---------- */
+  // Un paiement terminé dans un onglet resté ouvert, un webhook arrivé après la suppression, ou une suppression par
+  // l'administration (qui résilie en fin de période) laissaient un abonnement prélevé sans compte pour l'arrêter.
+  {
+    const deletedRow = (id) => !!row(id).deleted_at;
+    const checkoutOf = (a, sub) => ({ object: 'checkout.session', mode: 'subscription', payment_status: 'paid', customer: sub.customer, subscription: sub.id, client_reference_id: a.id, metadata: { user_id: a.id, plan: 'individuel', billing: 'monthly' } });
+    const signedEvent = (type, object, id = `evt_${crypto.randomBytes(8).toString('hex')}`) => { const raw = JSON.stringify({ id, object: 'event', type, created: nowS(), data: { object } }); return () => call('POST', '/billing/webhook', undefined, { raw, headers: { 'content-type': 'application/json', 'stripe-signature': signed(raw) } }); };
+    // a. Paiement terminé après la suppression du compte (session ouverte avant).
+    const O = await actor('orphelin@exemple.fr');
+    assert.equal((await O.call('POST', '/billing/checkout', { plan: 'individuel' })).data.mode, 'stripe');
+    assert.equal((await O.call('DELETE', '/account', { password: STRONG })).status, 200);
+    const subO = fake.addSubscription({ userId: O.id }), invO = fake.addInvoice(subO);
+    let m = fake.mark();
+    await stripeEvent('checkout.session.completed', checkoutOf(O, subO));
+    assert.deepEqual(sig(fake.since(m)), [`GET /v1/subscriptions/${subO.id}`, `DELETE /v1/subscriptions/${subO.id}`, 'GET /v1/invoices', `POST /v1/invoices/${invO.id}/void`]);
+    assert.deepEqual([fake.subs.get(subO.id).status, fake.invoices.get(invO.id).status], ['canceled', 'void']);
+    assert.ok(deletedRow(O.id) && row(O.id).subscription_status !== 'active', 'le compte reste supprimé');
+    m = fake.mark();
+    await stripeEvent('customer.subscription.updated', structuredClone(fake.subs.get(subO.id)));
+    assert.deepEqual(sig(fake.since(m)), [], 'abonnement terminé : plus rien à faire');
+
+    // b. Stripe en erreur : 500 pour que Stripe renvoie l'événement, qui est alors traité.
+    const O2 = await actor('orphelin-echec@exemple.fr');
+    assert.equal((await O2.call('DELETE', '/account', { password: STRONG })).status, 200);
+    const subO2 = fake.addSubscription({ userId: O2.id });
+    const send = signedEvent('customer.subscription.created', structuredClone(subO2));
+    fake.fail('DELETE', `/v1/subscriptions/${subO2.id}`, 500);
+    let r = await send();
+    assert.equal(r.status, 500, r.text); assert.ok(!r.text.includes('faux Stripe'));
+    assert.equal(fake.subs.get(subO2.id).status, 'active');
+    r = await send();   // même événement, renvoyé par Stripe
+    assert.equal(r.status, 200, r.text); assert.equal(fake.subs.get(subO2.id).status, 'canceled');
+
+    // c. Suppression par l'administration (résiliation en fin de période) : l'annonce de Stripe arrête l'abonnement.
+    const ADM = await actor('admin3@exemple.fr');
+    db.prepare(`UPDATE users SET role = 'admin' WHERE id = ?`).run(ADM.id);
+    const H = await actor('supprime-par-admin@exemple.fr');
+    const subH = await paid(H, 'individuel');
+    const invH = fake.addInvoice(subH);
+    assert.equal((await ADM.call('DELETE', `/admin/users/${H.id}`, { reason: 'demande écrite' })).status, 200);
+    assert.ok(deletedRow(H.id)); assert.equal(fake.subs.get(subH.id).cancel_at_period_end, true);
+    m = fake.mark();
+    await stripeEvent('customer.subscription.updated', structuredClone(fake.subs.get(subH.id)));
+    assert.deepEqual(sig(fake.since(m)), [`GET /v1/subscriptions/${subH.id}`, `DELETE /v1/subscriptions/${subH.id}`, 'GET /v1/invoices', `POST /v1/invoices/${invH.id}/void`]);
+    assert.equal(fake.subs.get(subH.id).status, 'canceled');
+
+    // d. Pas de faux positif : un compte vivant, ou un événement sans métadonnées, ne déclenche aucun appel.
+    const Live = await actor('vivant@exemple.fr');
+    const subLive = await paid(Live, 'individuel');
+    m = fake.mark();
+    await stripeEvent('customer.subscription.updated', structuredClone(subLive));
+    await stripeEvent('customer.subscription.updated', { ...structuredClone(fake.addSubscription({ userId: 'inconnu' })), metadata: {} });
+    assert.deepEqual(sig(fake.since(m)), []); assert.equal(fake.subs.get(subLive.id).status, 'active');
+  }
+  step('compte supprimé : un abonnement annoncé ensuite (paiement tardif, suppression par l’administration) est arrêté tout de suite, factures ouvertes annulées ; Stripe en erreur → 500 puis nouvel envoi traité ; aucun faux positif');
+
   db.close();
   assert.ok(!(serverOut + serverErr).includes(SK), 'la clé secrète n’apparaît jamais dans la console du serveur');
   console.log(`✔ Facturation Stripe validée (${passed} groupes de vérifications).`);
