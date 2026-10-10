@@ -59,6 +59,8 @@
   function initials(p) { return ((p.first_name || '?')[0] + (p.last_name || '')[0] || '').toUpperCase(); }
   function fullName(p) { return ((p.first_name || '') + ' ' + (p.last_name || '')).trim() || 'Sans nom'; }
   function onboardingDone() { var u = state.user, p = state.profiles[0]; return !!(u && p && p.first_name && p.last_name && u.mandate_signed_at && !u.mandate_revoked_at && u.subscription_status === 'active'); }
+  /* Page d'accueil après connexion : un administrateur sans abonnement va à l'administration, pas à l'ouverture de dossier. */
+  function home() { return onboardingDone() ? 'dashboard' : state.user && state.user.role === 'admin' && !state.user.mandate_signed_at && state.user.subscription_status !== 'active' ? 'admin' : 'onboarding'; }
   function fileNo(id) { return 'N°' + NBSP + String(id || '').slice(0, 4).toUpperCase(); }
   function scopeOf(p) { return String(p.id || 'new').slice(0, 8); }
 
@@ -428,7 +430,7 @@
     clearInterval(pollTimer);
     if (route === 'billing-success') { toast('Paiement confirmé. Les demandes partent automatiquement.'); location.hash = 'dashboard'; return; }
     if (!state.user && !/^(login|signup)$/.test(route)) { location.hash = 'login' + (location.hash.indexOf('?') > 0 ? location.hash.slice(location.hash.indexOf('?')) : ''); return; }
-    if (state.user && /^(login|signup)$/.test(route)) { location.hash = onboardingDone() ? 'dashboard' : 'onboarding'; return; }
+    if (state.user && /^(login|signup)$/.test(route)) { location.hash = home(); return; }
     if (state.user && route === 'dashboard' && !onboardingDone() && !(state.dash && state.dash.counters.total)) { if (!state.user.mandate_signed_at || !state.profiles[0].first_name) { location.hash = 'onboarding'; return; } }
     if (route === 'admin' && (!state.user || state.user.role !== 'admin')) { location.hash = 'dashboard'; return; }
     if (!views[route]) { location.hash = state.user ? 'dashboard' : 'login'; return; }
@@ -495,7 +497,7 @@
     if (f._busy) return;
     if (f.id === 'login-form' || f.id === 'signup-form') {
       var d = formData(f); busy(f, true); showMsg(f, '');
-      api(f.id === 'login-form' ? '/auth/login' : '/auth/signup', { body: d }).then(function () { state.dash = null; state.profileId = null; return loadMe(); }).then(function () { toast(f.id === 'login-form' ? 'Connecté.' : 'Compte créé. Dossier ouvert.'); go(onboardingDone() ? 'dashboard' : 'onboarding'); }).catch(function (err) { showMsg(f, err.message, true, null, $('#f-password', f)); }).finally(function () { busy(f, false); });
+      api(f.id === 'login-form' ? '/auth/login' : '/auth/signup', { body: d }).then(function () { state.dash = null; state.profileId = null; return loadMe(); }).then(function () { toast(f.id === 'login-form' ? 'Connecté.' : 'Compte créé. Dossier ouvert.'); go(home()); }).catch(function (err) { showMsg(f, err.message, true, null, $('#f-password', f)); }).finally(function () { busy(f, false); });
     } else if (f.classList.contains('profile-form')) {
       var pd = profilePayload(f); busy(f, true); showMsg(f, '');
       api('/profiles/' + f.getAttribute('data-id'), { method: 'PUT', body: pd }).then(function () { return loadMe(); }).then(function () { toast('Informations enregistrées.'); if (params().route === 'onboarding') render(); else { var s = $('.sheet__head .mono--plain', f); if (s) s.textContent = 'Enregistré à l’instant'; } }).catch(function (err) { showMsg(f, err.message, true, null, $('input[name="first_name"]', f)); }).finally(function () { busy(f, false); });

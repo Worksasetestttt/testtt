@@ -382,7 +382,7 @@ h1 em, h2 em { font-style: italic; font-weight: 400; }
 }
 @media (max-width: 1023px) {
   .top__inner { gap: 24px; }
-  .top__nav { gap: 20px; }
+  .top__nav { gap: 16px; }
   .top__user .mono { display: none; }
   .onb { grid-template-columns: 1fr; gap: 28px; }
   .rail { position: static; flex-direction: row; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
@@ -408,6 +408,7 @@ h1 em, h2 em { font-style: italic; font-weight: 400; }
   .top__inner { gap: 8px 14px; height: auto; padding: 8px 16px 0; flex-wrap: wrap; }
   .top__nav { order: 3; width: 100%; gap: 0; justify-content: space-between; overflow: visible; }
   .top__nav a { font-size: .86rem; letter-spacing: -.01em; padding: 12px 0; }
+  .top__nav:has(#nav-admin:not([hidden])) a { font-size: .8rem; }
   .top__user button { height: 44px; }
   .view { padding: 28px 16px 96px; }
   .sheet__head, .sheet__body, .sheet__foot, .sheet__more, .row, .row--head, .timeline, .deadlines, .member, .tools, .rows__more, .empty, .next { padding-left: 20px; padding-right: 20px; }
