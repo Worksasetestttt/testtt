@@ -161,7 +161,13 @@ try {
     row2 = db2.prepare('SELECT status, attempts, last_error FROM requests WHERE id = ?').get(sid);
     assert.ok(row2.attempts >= 1 && row2.last_error, 'adresse publiée par le site : envoi tenté');
     db2.close();
-  } finally { smtp.kill(); fs.rmSync(tmp2, { recursive: true, force: true }); }
+    // Le message brut du serveur d'envoi (ici « connect ECONNREFUSED 127.0.0.1:9 ») reste dans last_error, pour l'équipe.
+    const seen = JSON.stringify((await c2('GET', '/dashboard', null, S)).data) + JSON.stringify((await c2('GET', '/export', null, S)).data);
+    assert.ok(!seen.includes(row2.last_error) && !seen.includes('127.0.0.1'), 'erreur SMTP brute invisible pour l’abonné (journal, note, export)');
+  } finally {
+    if (smtp.exitCode === null) await new Promise((r) => { smtp.once('exit', r); smtp.kill(); setTimeout(r, 5000).unref(); });
+    fs.rmSync(tmp2, { recursive: true, force: true });
+  }
   step('envoi réel : adresse présumée jamais écrite, adresse publiée par le site envoyée automatiquement');
 
   console.log(`✔ Sites ajoutés validés (${passed} groupes de vérifications).`);

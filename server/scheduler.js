@@ -73,16 +73,18 @@ export function launchProfile(user, profile) {
 }
 
 // Échec d’envoi : recul exponentiel, puis statut « error » (demande initiale) ou nouvel essai quotidien (relance).
+// Le message brut du serveur d’envoi (hôte, port, refus d’authentification…) ne va que dans last_error, lu par
+// l’administration : le journal et la note, que l’abonné voit et exporte, gardent un texte générique.
 function recordFailure(r, user, broker, e, kind) {
   const attempts = (r.attempts || 0) + 1;
   const message = errMsg(e);
   if (kind === 'initial' && attempts >= MAX_ATTEMPTS) {
-    q.run(`UPDATE requests SET status = 'error', attempts = ?, last_error = ?, next_attempt_at = NULL, note = ? WHERE id = ? AND status = 'queued'`, attempts, message, `Envoi impossible après ${attempts} tentatives : ${message}`, r.id);
-    logEvent(user.id, 'error', `Envoi impossible à ${broker.name} après ${attempts} tentatives : ${message}`, { profile_id: r.profile_id, request_id: r.id });
+    q.run(`UPDATE requests SET status = 'error', attempts = ?, last_error = ?, next_attempt_at = NULL, note = ? WHERE id = ? AND status = 'queued'`, attempts, message, `Envoi impossible après ${attempts} tentatives : notre équipe vérifie l’adresse de contact.`, r.id);
+    logEvent(user.id, 'error', `Envoi impossible à ${broker.name} après ${attempts} tentatives : notre équipe vérifie l’adresse de contact, puis la demande repart.`, { profile_id: r.profile_id, request_id: r.id });
     return;
   }
   q.run('UPDATE requests SET attempts = ?, last_error = ?, next_attempt_at = ? WHERE id = ?', attempts, message, backoffDate(attempts), r.id);
-  if (attempts === 1) logEvent(user.id, 'error', `${kind === 'initial' ? 'Envoi' : 'Relance'} à ${broker.name} différé${kind === 'initial' ? '' : 'e'} : ${message} Nouvel essai automatique.`, { profile_id: r.profile_id, request_id: r.id });
+  if (attempts === 1) logEvent(user.id, 'error', `${kind === 'initial' ? 'Envoi' : 'Relance'} à ${broker.name} différé${kind === 'initial' ? '' : 'e'} : le courrier n’a pas pu partir. Nouvel essai automatique.`, { profile_id: r.profile_id, request_id: r.id });
 }
 
 async function sendQueued() {
