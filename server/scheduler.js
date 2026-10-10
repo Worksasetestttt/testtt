@@ -3,7 +3,8 @@
 //
 // Machine à états d’une demande : queued → sent → (in_progress | action_required | done | refused)
 //   · action_required → in_progress (vérification fournie par l’abonné, routes.js)
-//   · done → nouveau cycle (nouvelle demande queued, cycle + 1) quand next_check_at est atteint
+//   · done | refused → nouveau cycle (nouvelle demande queued, cycle + 1) quand next_check_at est atteint ; un refus
+//     programme ce nouvel envoi après recheck_days jours, et l’abonné peut relancer plus tôt (sites.js, relaunchRequest)
 //   · queued → error après SEND_MAX_ATTEMPTS échecs d’envoi (recul exponentiel entre deux essais) ; error → queued via applyOutcome(r, 'queued')
 //   · queued → refused quand le mandat est révoqué (routes.js) ; ces demandes sont relancées dans un nouveau cycle après re-signature.
 import crypto from 'node:crypto';
@@ -120,7 +121,7 @@ async function followUps() {
 
 function rechecks() {
   const t = now();
-  const rows = q.all(`SELECT * FROM requests WHERE status = 'done' AND next_check_at IS NOT NULL AND next_check_at <= ? ORDER BY next_check_at LIMIT ?`, t, BATCH);
+  const rows = q.all(`SELECT * FROM requests WHERE status IN ('done', 'refused') AND next_check_at IS NOT NULL AND next_check_at <= ? ORDER BY next_check_at LIMIT ?`, t, BATCH);
   for (const r of rows) {
     try {
       const user = q.get('SELECT * FROM users WHERE id = ?', r.user_id);
@@ -133,7 +134,7 @@ function rechecks() {
         q.run('UPDATE requests SET next_check_at = NULL WHERE id = ?', r.id);
         if (!newer) insertRequest(r.user_id, r.profile_id, r.broker_id, r.cycle + 1);
       });
-      if (!newer) logEvent(user.id, 'recheck', `Nouvelle vérification chez ${broker.name} (cycle ${r.cycle + 1}) : une demande est renvoyée.`, { profile_id: r.profile_id });
+      if (!newer) logEvent(user.id, 'recheck', r.status === 'refused' ? `Nouvelle demande à ${broker.name} (cycle ${r.cycle + 1}) après son refus.` : `Nouvelle vérification chez ${broker.name} (cycle ${r.cycle + 1}) : une demande est renvoyée.`, { profile_id: r.profile_id });
     } catch (e) { console.error('[scheduler] revérification', r.id, e); }
   }
 }
@@ -159,8 +160,8 @@ export async function applyOutcome(r, outcome, note = '') {
     try { await sendMail({ to: user.email, subject: m.subject, text: m.text, request_id: r.id, user_id: user.id }); }
     catch (e) { logEvent(user.id, 'error', `E-mail d’alerte non envoyé : ${errMsg(e)}`, ctx); }
   } else if (outcome === 'refused') {
-    q.run(`UPDATE requests SET status = 'refused', next_check_at = NULL, note = ? WHERE id = ?`, note || 'Refus du courtier : réclamation à préparer.', r.id);
-    logEvent(user.id, 'refused', `${broker.name} refuse la demande : réclamation à préparer auprès de l’autorité de contrôle.`, ctx);
+    q.run(`UPDATE requests SET status = 'refused', next_check_at = ?, next_attempt_at = NULL, note = ? WHERE id = ?`, addDays(at, broker.recheck_days), note || 'Refus du courtier.', r.id);
+    logEvent(user.id, 'refused', `${broker.name} refuse la demande : plainte possible auprès de l’autorité de contrôle, nouvelle demande dans ${broker.recheck_days} jours.`, ctx);
   } else if (outcome === 'queued') {
     q.run(`UPDATE requests SET status = 'queued', attempts = 0, next_attempt_at = NULL, last_error = NULL, next_check_at = NULL, note = ? WHERE id = ?`, note || null, r.id);
     logEvent(user.id, 'queued', `Demande à ${broker.name} remise en file d’envoi${note ? ' — ' + note : ''}.`, ctx);

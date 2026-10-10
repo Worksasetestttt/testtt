@@ -71,8 +71,56 @@ try {
   assert.equal(mail.length, 1); assert.equal(mail[0].to_addr, 'lea@exemple.fr');
   assert.match(mail[0].body, /Léa Moreau/); assert.match(mail[0].body, /Exposition estimée : \d+ %/); assert.match(mail[0].body, /#settings/);
   r = await call('POST', '/admin/reports/run', {}, admin); assert.equal(r.data.sent, 0, 'pas de second rapport dans les 30 jours');
-  db.close();
+  assert.equal(db.prepare(`SELECT COUNT(*) AS c FROM mails WHERE subject LIKE 'Votre rapport mensuel%'`).get().c, 1);
   step('rapport mensuel : activé par défaut, envoyé après 30 jours, désinscription respectée, pas de doublon');
+
+  /* ---------- 4. Refus : nouvelle demande programmée, plainte prête à déposer ---------- */
+  r = await call('GET', '/dashboard', undefined, A.cookie);
+  const [r1, r2] = r.data.requests.filter((x) => x.status === 'sent');
+  assert.equal(r1.complaint, false);
+  assert.equal((await call('GET', `/requests/${r1.id}/complaint`, undefined, A.cookie)).status, 400, 'pas de plainte pendant le délai de réponse');
+  assert.equal((await call('POST', `/admin/requests/${r1.id}/outcome`, { outcome: 'refused', note: 'Données nécessaires à nos obligations légales' }, admin)).status, 200);
+  r = await call('GET', '/dashboard', undefined, A.cookie);
+  let row = r.data.requests.find((x) => x.id === r1.id);
+  assert.equal(row.status, 'refused'); assert.equal(row.complaint, true);
+  assert.ok(row.next_check_at > new Date().toISOString(), 'un refus programme une nouvelle demande');
+  r = await call('GET', `/requests/${r1.id}/complaint`, undefined, A.cookie);
+  assert.equal(r.status, 200); assert.equal(r.data.authority.short, 'CNIL'); assert.match(r.data.authority.url, /^https:\/\/www\.cnil\.fr\//);
+  assert.match(r.data.subject, /refusée/); assert.match(r.data.text, /«\u00a0Données nécessaires à nos obligations légales\u00a0»/);
+  assert.match(r.data.text, /OUBLI-[A-F0-9]{10}/); assert.match(r.data.text, /MOREAU/); assert.match(r.data.text, /article 17 du RGPD/);
+  assert.ok(r.data.text.includes('Les faits :'), 'typographie française (espace insécable avant les deux-points)');
+  assert.equal((await call('GET', `/requests/${r1.id}/complaint`, undefined, B.cookie)).status, 404, 'plainte d’un autre abonné invisible');
+  // Une relance restée sans réponse huit jours rend aussi la plainte possible.
+  const late = new Date(Date.now() - 40 * 86400000).toISOString(), lateFollow = new Date(Date.now() - 9 * 86400000).toISOString();
+  db.prepare('UPDATE requests SET status = ?, due_at = ?, followup_sent_at = ? WHERE id = ?').run('in_progress', late, lateFollow, r2.id);
+  r = await call('GET', `/requests/${r2.id}/complaint`, undefined, A.cookie);
+  assert.equal(r.status, 200); assert.match(r.data.subject, /restée sans réponse/); assert.match(r.data.text, /Une relance a été envoyée le/);
+  step('refus : nouvelle demande programmée, plainte rédigée (refus ou relance sans réponse), cloisonnée');
+
+  /* ---------- 5. « Mes données sont réapparues » : relance immédiate ---------- */
+  assert.equal((await call('POST', `/requests/${r2.id}/relaunch`, {}, A.cookie)).status, 400, 'une demande en cours ne se relance pas');
+  assert.equal((await call('POST', `/requests/${r1.id}/relaunch`, { url: 'https://autre-site.fr/fiche' }, A.cookie)).status, 400, 'adresse d’un autre site refusée');
+  assert.equal((await call('POST', `/requests/${r1.id}/relaunch`, {}, B.cookie)).status, 404);
+  r = await call('POST', `/requests/${r1.id}/relaunch`, { url: `https://www.${row.domain}/fiche/lea-moreau` }, A.cookie);
+  assert.equal(r.status, 201); assert.equal(r.data.cycle, 2);
+  assert.equal((await call('POST', `/requests/${r1.id}/relaunch`, {}, A.cookie)).status, 409, 'un cycle ne se relance qu’une fois');
+  const relaunched = r.data.request_id;
+  let sentMail = null;
+  for (let i = 0; i < 40 && !sentMail; i++) { await wait(100); sentMail = db.prepare('SELECT body FROM mails WHERE request_id = ?').get(relaunched); }
+  assert.ok(sentMail, 'la nouvelle demande part sans attendre'); assert.ok(sentMail.body.includes(`https://www.${row.domain}/fiche/lea-moreau`), 'la fiche signalée est citée');
+  r = await call('GET', '/dashboard', undefined, A.cookie);
+  row = r.data.requests.find((x) => x.broker === row.broker);
+  assert.equal(row.cycle, 2); assert.equal(row.id, relaunched);
+  // Le refus de Basile, arrivé à échéance, déclenche le nouveau cycle tout seul.
+  const rb = (await call('GET', '/dashboard', undefined, B.cookie)).data.requests.find((x) => x.status === 'sent');
+  await call('POST', `/admin/requests/${rb.id}/outcome`, { outcome: 'refused' }, admin);
+  db.prepare('UPDATE requests SET next_check_at = ? WHERE id = ?').run(new Date(Date.now() - 60000).toISOString(), rb.id);
+  await call('POST', '/admin/tick', {}, admin);
+  r = await call('GET', '/dashboard', undefined, B.cookie);
+  assert.equal(r.data.requests.find((x) => x.broker === rb.broker).cycle, 2);
+  assert.ok(r.data.events.some((e) => /après son refus/.test(e.message)));
+  db.close();
+  step('relance : nouvelle demande immédiate avec la fiche citée, une seule par cycle ; un refus échu repart seul');
 
   console.log(`✔ Fonctions validées (${passed} groupes de vérifications).`);
 } catch (e) {

@@ -81,6 +81,33 @@ export function addSite(user, profile, input) {
   return { ...result, registry: !!registry, site };
 }
 
+// « Mes données sont réapparues » : nouvelle demande immédiate (nouveau cycle) pour une demande effacée ou refusée, sans
+// attendre la revérification. L'adresse de la fiche, facultative, doit appartenir au courtier ; elle est citée dans le courrier.
+export function relaunchRequest(user, r, input) {
+  if (!['done', 'refused'].includes(r.status)) throw new HttpError(400, 'Seule une demande effacée ou refusée peut être relancée : celle-ci est encore en cours.');
+  const broker = q.get('SELECT * FROM brokers WHERE id = ?', r.broker_id);
+  if (!broker || !broker.active) throw new HttpError(400, 'Ce courtier a été retiré du service : aucune demande ne peut lui être adressée.');
+  if (!isEligible(user)) throw new HttpError(400, 'Le mandat doit être signé et l’abonnement actif pour envoyer une demande.');
+  let url = r.source_url || null;
+  if (input) {
+    const site = normalizeSite(input);
+    if (site.error) throw new HttpError(400, site.error);
+    if (site.host !== broker.domain && !site.host.endsWith(`.${broker.domain}`)) throw new HttpError(400, `Cette adresse n’appartient pas à ${broker.name} (${broker.domain}).`);
+    url = site.url;
+  }
+  const profile = q.get('SELECT * FROM profiles WHERE id = ? AND user_id = ?', r.profile_id, user.id);
+  if (!profile) throw new HttpError(404, 'Profil introuvable.');
+  const request = tx(() => {
+    const latest = q.get('SELECT id FROM requests WHERE profile_id = ? AND broker_id = ? ORDER BY cycle DESC, created_at DESC LIMIT 1', r.profile_id, r.broker_id);
+    if (latest.id !== r.id) throw new HttpError(409, 'Une demande plus récente existe déjà pour ce courtier.');
+    q.run('UPDATE requests SET next_check_at = NULL WHERE id = ?', r.id);
+    return insertRequest(user, profile, broker, r.cycle + 1, url);
+  });
+  logEvent(user.id, 'recheck', `Données signalées de nouveau chez ${broker.name} : nouvelle demande d’effacement (cycle ${request.cycle}).`, { profile_id: r.profile_id, request_id: request.id });
+  setTimeout(() => tick(), 10);
+  return { request_id: request.id, cycle: request.cycle, url };
+}
+
 /* ---------- Recherche du contact (arrière-plan) ---------- */
 const running = new Set();
 export function runDiscovery(brokerId, { force = false } = {}) {

@@ -105,6 +105,62 @@ ${COMPANY}, mandataire — Référence : ${ref}`,
   };
 }
 
+// Autorité de contrôle compétente pour une plainte : celle du pays de résidence (article 77 du RGPD), avec sa page d’accueil
+// ou de dépôt de plainte. Hors Union européenne et Royaume-Uni, le texte ne cite pas d’article du RGPD.
+export const AUTHORITIES = {
+  FR: { name: 'la CNIL', short: 'CNIL', url: 'https://www.cnil.fr/fr/plaintes' },
+  BE: { name: 'l’Autorité de protection des données', short: 'APD', url: 'https://www.autoriteprotectiondonnees.be' },
+  LU: { name: 'la Commission nationale pour la protection des données', short: 'CNPD', url: 'https://cnpd.public.lu' },
+  CH: { name: 'le Préposé fédéral à la protection des données et à la transparence', short: 'PFPDT', url: 'https://www.edoeb.admin.ch' },
+  DE: { name: 'le BfDI ou l’autorité de protection des données de votre Land', short: 'BfDI', url: 'https://www.bfdi.bund.de' },
+  ES: { name: 'l’Agencia Española de Protección de Datos', short: 'AEPD', url: 'https://www.aepd.es' },
+  IT: { name: 'le Garante per la protezione dei dati personali', short: 'Garante', url: 'https://www.garanteprivacy.it' },
+  NL: { name: 'l’Autoriteit Persoonsgegevens', short: 'AP', url: 'https://autoriteitpersoonsgegevens.nl' },
+  PT: { name: 'la Comissão Nacional de Proteção de Dados', short: 'CNPD', url: 'https://www.cnpd.pt' },
+  GB: { name: 'l’Information Commissioner’s Office', short: 'ICO', url: 'https://ico.org.uk/make-a-complaint/' },
+  US: { name: 'la California Privacy Protection Agency', short: 'CPPA', url: 'https://cppa.ca.gov' },
+  CA: { name: 'le Commissariat à la protection de la vie privée du Canada', short: 'CPVP', url: 'https://www.priv.gc.ca' },
+};
+const GDPR_COUNTRIES = new Set(['FR', 'BE', 'LU', 'DE', 'ES', 'IT', 'NL', 'PT', 'GB']);
+// Typographie française du texte produit : espace insécable avant : ; ? ! et à l’intérieur des « ».
+const frTypo = (s) => s.replace(/ ([:;?!»])/g, '\u00a0$1').replace(/« /g, '«\u00a0');
+const deName = (name) => (/^[aeiouyàâéèêëîïôûü]/i.test(name) ? `d’${name}` : `de ${name}`);   // « auprès d’Acxiom »
+
+// Plainte rédigée au nom de la personne, prête à déposer auprès de l’autorité : après un refus du courtier, ou quand la
+// relance est restée sans réponse. Le motif n’est cité que s’il vient du courtier (pas une note interne par défaut).
+export function complaintDraft({ profile, broker, user, ref, request, refusedAt = null }) {
+  const country = String(profile?.country || 'FR').toUpperCase();
+  const authority = AUTHORITIES[country] || AUTHORITIES.FR;
+  const gdpr = GDPR_COUNTRIES.has(country), law = country === 'GB' ? 'UK GDPR' : 'RGPD';
+  const refused = request.status === 'refused';
+  const motive = refused && request.note && !/^(Refus du courtier|réponse reçue de)/i.test(request.note) ? request.note : '';
+  const facts = [
+    `• Le ${fmtDate(request.sent_at || request.created_at)}, une demande d’effacement de mes données personnelles${gdpr ? ` (article 17 du ${law})` : ''} et d’opposition à leur traitement${gdpr ? ' (article 21)' : ''} a été adressée en mon nom à ${broker.name} (${broker.domain}) par ${COMPANY}, que j’ai mandaté à cet effet${user.mandate_signed_at ? ` le ${fmtDate(user.mandate_signed_at)}` : ''}. Référence : ${ref}.`,
+    request.source_url ? `• La fiche me concernant était consultable à l’adresse : ${request.source_url}` : null,
+    refused
+      ? `• ${refusedAt ? `Le ${fmtDate(refusedAt)}, ` : ''}${broker.name} a refusé d’y donner suite${motive ? ` (motif indiqué : « ${motive} »)` : ''}.`
+      : `• Le délai de réponse${gdpr ? ` d’un mois prévu par l’article 12, paragraphe 3, du ${law}` : ' légal'} a expiré le ${fmtDate(request.due_at)}. Une relance a été envoyée le ${fmtDate(request.followup_sent_at)} ; elle est restée sans réponse.`,
+  ].filter(Boolean).join('\n');
+  const text = `Madame, Monsieur,
+
+Je souhaite déposer une plainte contre ${broker.name} (${broker.domain}), qui n’a pas donné suite à ma demande d’effacement de données personnelles.
+
+Les faits :
+${facts}
+
+Je vous demande d’intervenir auprès ${deName(broker.name)} afin que mes données soient effacées et que leur utilisation à des fins de prospection ou de profilage cesse${gdpr ? ` (articles 17, 21 et 77 du ${law})` : ''}.
+
+Je tiens à votre disposition la copie de la demande d’effacement${refused ? ' et de la réponse reçue' : ' et de la relance'}, ainsi que le mandat de représentation.
+
+${profile.first_name || ''} ${String(profile.last_name || '').toUpperCase()}
+${user.email}`;
+  return {
+    subject: frTypo(`Plainte contre ${broker.name} : demande d’effacement ${refused ? 'refusée' : 'restée sans réponse'}`),
+    text: frTypo(text),
+    authority,
+  };
+}
+
 // Rapport mensuel : un bloc par personne protégée, chiffres du cycle en cours et actions à faire.
 export function monthlyReport({ month, blocks }) {
   const lines = blocks.map((b) => [
@@ -112,7 +168,7 @@ export function monthlyReport({ month, blocks }) {
     `  • ${b.done} effacement${b.done > 1 ? 's' : ''} confirmé${b.done > 1 ? 's' : ''}${b.doneMonth ? ` (dont ${b.doneMonth} ce mois-ci)` : ''}`,
     `  • ${b.inProgress} demande${b.inProgress > 1 ? 's' : ''} en cours`,
     b.action ? `  • ${b.action} vérification${b.action > 1 ? 's' : ''} attend${b.action > 1 ? 'ent' : ''} votre action` : null,
-    b.refused ? `  • ${b.refused} refus : réclamation en préparation` : null,
+    b.refused ? `  • ${b.refused} refus : nouvelle demande programmée, plainte prête à déposer depuis le tableau de bord` : null,
     `  • Exposition estimée : ${b.exposure} %`,
   ].filter(Boolean).join('\n')).join('\n\n');
   return {

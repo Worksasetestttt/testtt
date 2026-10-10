@@ -10,12 +10,12 @@ import {
   isSuspended, isBlockedEmail, endImpersonation,
 } from './auth.js';
 import { sendMail, mailMode } from './mailer.js';
-import { welcomeMail, mandateText, MANDATE_VERSION } from './templates.js';
+import { welcomeMail, mandateText, complaintDraft, MANDATE_VERSION } from './templates.js';
 import { PLANS, BILLING_PERIODS, billingMode, startCheckout, cancelSubscription, verifyStripeSignature, handleStripeEvent } from './billing.js';
-import { launchProfile, applyOutcome, tick, DEMO } from './scheduler.js';
+import { launchProfile, applyOutcome, tick, ref, DEMO } from './scheduler.js';
 import { EMAIL, publicUser, parseProfile, wrap, isId, str, strList, oneOf } from './util.js';
-import { buildDashboard, exportData } from './dashboard.js';
-import { addSite } from './sites.js';
+import { buildDashboard, exportData, complaintReady } from './dashboard.js';
+import { addSite, relaunchRequest } from './sites.js';
 import { admin, auditAs, currentAnnouncement, toCsv } from './admin.js';
 
 export const api = express.Router();
@@ -218,6 +218,21 @@ api.get('/requests/:id/details', requireAuth, (req, res) => {
     events: q.all('SELECT id, type, message, created_at FROM events WHERE request_id = ? AND user_id = ? ORDER BY id DESC LIMIT 50', r.id, req.user.id),
     mails: q.all('SELECT id, to_addr, subject, body, mode, created_at FROM mails WHERE request_id = ? AND user_id = ? ORDER BY id', r.id, req.user.id),
   });
+});
+// Plainte auprès de l'autorité de contrôle : texte rédigé au nom de l'abonné, à déposer lui-même (refus, ou relance sans réponse).
+api.get('/requests/:id/complaint', requireAuth, (req, res) => {
+  const r = ownRequest(req);
+  if (!r) return bad(res, 'Demande introuvable.', 404);
+  if (!complaintReady(r)) return bad(res, 'Une plainte se prépare après un refus du courtier, ou quand la relance est restée sans réponse huit jours.');
+  const profile = q.get('SELECT * FROM profiles WHERE id = ?', r.profile_id), broker = q.get('SELECT * FROM brokers WHERE id = ?', r.broker_id);
+  const refusedAt = r.status === 'refused' ? q.get(`SELECT created_at FROM events WHERE request_id = ? AND type = 'refused' ORDER BY id DESC LIMIT 1`, r.id)?.created_at || null : null;
+  res.json(complaintDraft({ profile, broker, user: fresh(req), ref: ref(r), request: r, refusedAt }));
+});
+// « Mes données sont réapparues » : nouvelle demande immédiate pour un courtier qui a effacé (ou refusé).
+api.post('/requests/:id/relaunch', requireAuth, rateLimit({ windowMs: 60 * 60000, max: 20 }), (req, res) => {
+  const r = ownRequest(req);
+  if (!r) return bad(res, 'Demande introuvable.', 404);
+  res.status(201).json(relaunchRequest(fresh(req), r, str(req.body.url, 'url', 2048)));
 });
 // Demandes du profil en CSV (rapport imprimable) : cycle en cours, une ligne par courtier ou site.
 api.get('/requests.csv', requireAuth, rateLimit({ max: 30 }), (req, res) => {

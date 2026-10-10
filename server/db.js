@@ -158,6 +158,13 @@ ensureColumn('requests', 'source_url', 'TEXT');         // page où figure la fi
 ensureColumn('users', 'monthly_report', 'INTEGER NOT NULL DEFAULT 1');
 ensureColumn('users', 'last_report_at', 'TEXT');
 
+// Refus enregistrés avant que le refus ne programme un nouveau cycle : la dernière demande refusée par un courtier actif
+// (hors arrêt par révocation du mandat) reçoit sa date de nouvelle demande. Sans effet une fois ce cycle créé.
+db.exec(`UPDATE requests SET next_check_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+' || (SELECT recheck_days FROM brokers b WHERE b.id = requests.broker_id) || ' days')
+  WHERE status = 'refused' AND next_check_at IS NULL AND COALESCE(note, '') NOT LIKE 'Mandat révoqué%'
+    AND EXISTS (SELECT 1 FROM brokers b WHERE b.id = requests.broker_id AND b.active = 1)
+    AND NOT EXISTS (SELECT 1 FROM requests r2 WHERE r2.profile_id = requests.profile_id AND r2.broker_id = requests.broker_id AND r2.cycle > requests.cycle)`);
+
 // Jeton de référence (OUBLI-XXXXXXXXXX) : il identifie une demande dans les réponses des courtiers, donc il est unique.
 export function newToken() {
   for (;;) {
