@@ -13,7 +13,7 @@ import { sendMail, mailMode } from './mailer.js';
 import { welcomeMail, mandateText, complaintDraft, passwordChangedMail, MANDATE_VERSION } from './templates.js';
 import { PLANS, BILLING_PERIODS, billingMode, startCheckout, cancelSubscription, verifyStripeSignature, handleStripeEvent } from './billing.js';
 import { launchProfile, applyOutcome, tick, ref, DEMO, schedulerState } from './scheduler.js';
-import { EMAIL, publicUser, parseProfile, wrap, isId, str, strList, oneOf, HttpError } from './util.js';
+import { EMAIL, MAIL_ADDRESS, publicUser, parseProfile, wrap, isId, str, strList, oneOf, HttpError } from './util.js';
 import { buildDashboard, exportData, complaintReady } from './dashboard.js';
 import { addSite, relaunchRequest } from './sites.js';
 import { admin, auditAs, currentAnnouncement, toCsv, classifyReply } from './admin.js';
@@ -45,7 +45,7 @@ const adminNotice = (user) => (adminPending(user) ? { admin_verification: mailMo
 api.post('/auth/signup', rateLimit({ windowMs: 60 * 60000, max: 20 }), wrap(async (req, res) => {
   const email = str(req.body.email, 'email', 160).toLowerCase();
   const password = req.body.password;
-  if (!EMAIL.test(email)) return bad(res, 'Adresse e-mail invalide.');
+  if (!MAIL_ADDRESS.test(email)) return bad(res, 'Adresse e-mail invalide.');
   if (isBlockedEmail(email)) return bad(res, 'Inscription impossible avec cette adresse.', 403);
   const problem = passwordProblem(password, email);
   if (problem) return bad(res, problem);
@@ -141,7 +141,7 @@ api.put('/profiles/:id', requireAuth, (req, res) => {
   const country = (b.country === undefined ? p.country : str(b.country, 'country', 2)).toUpperCase() || 'FR';
   if (!COUNTRY.test(country)) return bad(res, 'Pays invalide (code à deux lettres).');
   const emails = b.emails === undefined ? cur.emails : strList(b.emails, 'emails', 10);
-  if (emails.some((e) => !EMAIL.test(e))) return bad(res, 'Une adresse e-mail est invalide.');
+  if (emails.some((e) => !MAIL_ADDRESS.test(e))) return bad(res, 'Une adresse e-mail est invalide.');
   const phones = b.phones === undefined ? cur.phones : strList(b.phones, 'phones', 10, 40);
   if (phones.some((t) => !PHONE.test(t))) return bad(res, 'Un numéro de téléphone est invalide.');
   const addresses = b.addresses === undefined ? cur.addresses : strList(b.addresses, 'addresses', 6, 160);
@@ -344,13 +344,13 @@ api.post('/inbound', rateLimit({ windowMs: 60000, max: 120 }), wrap(async (req, 
 /* ---------- Divers : newsletter, contact, export RGPD, suppression ---------- */
 api.post('/newsletter', rateLimit({ max: 20 }), (req, res) => {
   const email = str(req.body.email, 'email', 160).toLowerCase();
-  if (!EMAIL.test(email)) return bad(res, 'Adresse invalide.');
+  if (!MAIL_ADDRESS.test(email)) return bad(res, 'Adresse invalide.');
   q.run('INSERT OR IGNORE INTO newsletter (email, created_at) VALUES (?, ?)', email, now());
   res.json({ ok: true });
 });
 api.post('/contact', rateLimit({ windowMs: 60 * 60000, max: 10 }), (req, res) => {
   const email = str(req.body.email, 'email', 160).toLowerCase(), message = str(req.body.message, 'message', 4000), subject = str(req.body.subject, 'subject', 200);
-  if (!EMAIL.test(email) || message.length < 5) return bad(res, 'Adresse ou message invalide.');
+  if (!MAIL_ADDRESS.test(email) || message.length < 5) return bad(res, 'Adresse ou message invalide.');
   q.run('INSERT INTO contacts (email, subject, message, created_at) VALUES (?, ?, ?, ?)', email, subject, message, now());
   res.json({ ok: true });
 });

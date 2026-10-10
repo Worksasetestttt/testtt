@@ -11,7 +11,7 @@ import { db, q, now, logEvent } from './db.js';
 import * as scheduler from './scheduler.js';
 import { sendMail, mailMode } from './mailer.js';
 import { PLANS, billingMode, cancelSubscription } from './billing.js';
-import { EMAIL, clean, parseProfile, wrap } from './util.js';
+import { EMAIL, MAIL_ADDRESS, clean, parseProfile, wrap } from './util.js';
 import { isSuspended, isBlockedEmail, startImpersonation, SUPPORT_MINUTES } from './auth.js';
 import { exportData } from './dashboard.js';
 import { runDiscovery } from './sites.js';
@@ -378,7 +378,7 @@ admin.post('/users/:id/email', wrap(async (req, res) => {
   const u = getUser(req.params.id);
   if (!u || u.deleted_at) return bad(res, 'Compte introuvable.', 404);
   const email = clean(req.body.email, 160).toLowerCase();
-  if (!EMAIL.test(email)) return bad(res, 'Adresse e-mail invalide.');
+  if (!MAIL_ADDRESS.test(email)) return bad(res, 'Adresse e-mail invalide.');
   if (email === u.email) return bad(res, 'C’est déjà l’adresse du compte.');
   if (isBlockedEmail(email)) return bad(res, 'Cette adresse est dans la liste de blocage.');
   if (q.get('SELECT id FROM users WHERE email = ?', email)) return bad(res, 'Un compte existe déjà avec cette adresse.', 409);
@@ -518,7 +518,7 @@ function brokerInput(body, cur) {
   if (!cur || has('legal_basis')) { v.legal_basis = clean(body.legal_basis, 5).toLowerCase(); if (!BASES.includes(v.legal_basis)) return { error: 'Base légale inconnue (rgpd, ccpa ou both).' }; }
   if (!cur || has('sensitivity')) { v.sensitivity = int(body.sensitivity, cur ? cur.sensitivity : 2); if (v.sensitivity < 1 || v.sensitivity > 3) return { error: 'Sensibilité entre 1 et 3.' }; }
   if (!cur || has('recheck_days')) { v.recheck_days = int(body.recheck_days, cur ? cur.recheck_days : 60); if (v.recheck_days < 7 || v.recheck_days > 365) return { error: 'Revérification entre 7 et 365 jours.' }; }
-  if (!cur || has('contact_email')) { v.contact_email = clean(body.contact_email, 160).toLowerCase(); if (!EMAIL.test(v.contact_email)) return { error: 'Adresse de contact invalide.' }; }
+  if (!cur || has('contact_email')) { v.contact_email = clean(body.contact_email, 160).toLowerCase(); if (!MAIL_ADDRESS.test(v.contact_email)) return { error: 'Adresse de contact invalide.' }; }
   if (!cur || has('contact_verified')) v.contact_verified = body.contact_verified === true || body.contact_verified === 1 || body.contact_verified === 'true' || body.contact_verified === '1' ? 1 : 0;
   if (!cur || has('active')) v.active = body.active === false || body.active === 0 || body.active === 'false' || body.active === '0' ? 0 : 1;
   return { values: v };

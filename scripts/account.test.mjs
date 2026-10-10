@@ -1,7 +1,8 @@
 // Test des fonctions de compte : mot de passe oublié (réponse neutre, jeton jamais stocké en clair, expiration, usage
 // unique, remplacement, sessions fermées, limitation de débit, politique de mot de passe, comptes suspendus, bloqués ou
 // supprimés) et appareils connectés (liste sans identifiant de session, révocation cloisonnée, « déconnecter les autres
-// appareils », accès support en lecture seule). Serveur sur un port libre, base et boîte d'envoi temporaires.
+// appareils », accès support en lecture seule), adresses acceptées à l'inscription. Serveur sur un port libre, base et
+// boîte d'envoi temporaires.
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -314,8 +315,24 @@ try {
   }
   assert.equal((await me(L1)).email, lea.email, 'la session de l’abonnée est intacte');
   assert.ok((await call('GET', '/sessions', undefined, { cookie: L1 })).data.sessions.some((s) => s.support && !s.current), 'l’abonnée voit l’accès support');
-  db.close();
   step('accès support : liste visible, révocations et réinitialisation refusées (lecture seule)');
+
+  /* ---------- 15. Adresses : l'inscription n'accepte que des adresses auxquelles on peut écrire ---------- */
+  // L'inscription acceptait des adresses que l'envoi refusait ensuite (compte qui ne reçoit rien, pas même un lien de
+  // réinitialisation), et l'envoi refusait l'apostrophe, pourtant permise (o'neil@…).
+  const apos = await signup("o'neil@exemple.fr");
+  r = await call('POST', '/auth/forgot', { email: apos.email });
+  assert.equal(r.status, 200);
+  const mailsOf = () => db.prepare('SELECT subject, error FROM mails WHERE to_addr = ? ORDER BY id').all(apos.email);
+  for (let i = 0; i < 60 && mailsOf().length < 2; i++) await wait(50);
+  assert.equal(mailsOf().length, 2, 'bienvenue et réinitialisation'); assert.ok(mailsOf().every((m) => m.error === null), JSON.stringify(mailsOf()));
+  for (const bad of ['a,b@exemple.fr', 'a;b@exemple.fr', '<a@exemple.fr>', '"a"@exemple.fr', 'a(b)@exemple.fr', 'a\\b@exemple.fr', 'a@exemple', 'a@exemple.f', "a@o'neil.fr"]) {
+    assert.equal((await call('POST', '/auth/signup', { email: bad, password: STRONG })).status, 400, `inscription refusée : ${bad}`);
+  }
+  r = await call('POST', '/contact', { email: 'a,b@exemple.fr', message: 'Bonjour, une question.' });
+  assert.equal(r.status, 400, 'formulaire de contact : même règle');
+  db.close();
+  step('adresses : apostrophe acceptée et courriers envoyés ; virgule, point-virgule, chevrons, guillemets, parenthèses ou domaine incomplet refusés dès l’inscription');
 
   console.log(`✔ Comptes validés (${passed} groupes de vérifications).`);
 } catch (e) {

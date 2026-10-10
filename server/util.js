@@ -2,6 +2,11 @@
 import crypto from 'node:crypto';
 
 export const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+// Adresse à laquelle on peut écrire (inscription, contact, adresses d'un dossier, contact d'un courtier), même règle que
+// l'envoi (mailer.js) : aucun caractère qui ferait lire au serveur d'envoi plusieurs destinataires, un nom affiché ou un
+// commentaire (< > , ; : " ( ) [ ] \), domaine complet ; l'apostrophe est permise avant l'arobase (o'neil@…). EMAIL, plus
+// large, sert aux recherches (connexion, mot de passe oublié) : un compte créé avant cette règle n'est jamais bloqué.
+export const MAIL_ADDRESS = /^[^\s@<>,;:"()[\]\\]+@[^\s@<>,;:"'()[\]\\]+\.[a-z0-9-]{2,}$/i;
 export const clean = (v, max = 200) => String(v ?? '').trim().slice(0, max);
 export const arr = (v, max = 10) => (Array.isArray(v) ? v : String(v ?? '').split(/[\n,;]+/)).map((s) => clean(s, 160)).filter(Boolean).slice(0, max);
 // Vue publique d'un utilisateur : jamais de mot de passe, d'identifiants Stripe, d'adresse IP ni de session.

@@ -6,12 +6,11 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { q, now } from './db.js';
+import { MAIL_ADDRESS } from './util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OUTBOX = path.resolve(process.env.OUTBOX_DIR || path.join(__dirname, '..', 'data', 'outbox'));
 const SEND_TIMEOUT_MS = Math.max(1000, Number(process.env.MAIL_TIMEOUT_MS) || 30000);
-// Adresse nue (pas de nom affiché, pas de caractères spéciaux d’en-tête).
-const ADDRESS = /^[^\s@<>,;:"'()[\]\\]+@[^\s@<>,;:"'()[\]\\]+\.[a-z0-9-]{2,}$/i;
 
 // Un en-tête ne contient jamais de retour à la ligne : neutralise toute injection d’en-têtes.
 const header = (v) => String(v ?? '').replace(/[\r\n\t\0]+/g, ' ').trim();
@@ -49,7 +48,7 @@ export async function sendMail({ to, subject, text, html, headers = {}, request_
   const extra = Object.fromEntries(Object.entries(headers || {}).filter(([k]) => /^[a-z0-9-]+$/i.test(k)).map(([k, v]) => [k, header(v)]));
   const record = (message_id, error) => q.run('INSERT INTO mails (request_id, user_id, to_addr, subject, body, mode, message_id, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', request_id, user_id, addr, subj, stored, mailMode, message_id, error, now());
   try {
-    if (!ADDRESS.test(addr) || addr.length > 254) throw new Error(`Adresse destinataire invalide : « ${addr || '—'} »`);
+    if (!MAIL_ADDRESS.test(addr) || addr.length > 254) throw new Error(`Adresse destinataire invalide : « ${addr || '—'} »`);
     if (!subj) throw new Error('Objet du message manquant.');
     let messageId;
     if (transport) {
