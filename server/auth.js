@@ -63,7 +63,8 @@ export function passwordProblem(password, email = '') {
   if (password.length > PASSWORD_MAX) return `Le mot de passe ne peut pas dépasser ${PASSWORD_MAX} caractères.`;
   const lower = password.toLowerCase();
   const core = lower.replace(/^[^a-z]+|[^a-z]+$/g, '');
-  if (/^(.)\1*$/.test(lower) || /^\d+$/.test(lower) || COMMON.has(lower) || COMMON.has(core)) return 'Ce mot de passe est trop courant : choisissez-en un plus original.';
+  const repeated = (lower + lower).indexOf(lower, 1) !== lower.length; // motif court répété (abcabcabcabc)
+  if (new Set(lower).size < 4 || repeated || /^\d+$/.test(lower) || COMMON.has(lower) || COMMON.has(core)) return 'Ce mot de passe est trop simple ou trop courant : choisissez-en un plus original.';
   const address = String(email || '').toLowerCase().trim();
   const local = address.split('@')[0];
   const parts = [local, ...local.split(/[._+-]+/)].filter((p) => p.length >= 3);

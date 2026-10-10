@@ -8,7 +8,8 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env server/index.js",
     "dev": "node --watch --disable-warning=ExperimentalWarning --env-file-if-exists=.env server/index.js",
-    "test": "node --disable-warning=ExperimentalWarning scripts/smoke.mjs"
+    "test": "node --disable-warning=ExperimentalWarning scripts/smoke.mjs && node --disable-warning=ExperimentalWarning scripts/security.test.mjs",
+    "test:security": "node --disable-warning=ExperimentalWarning scripts/security.test.mjs"
   },
   "dependencies": {
     "express": "^5.1.0",
