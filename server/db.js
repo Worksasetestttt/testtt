@@ -1,7 +1,12 @@
 // Base de données SQLite (module natif node:sqlite, aucune dépendance native).
+// Le schéma est créé à la volée. Une base existante est mise à niveau au démarrage : ensureColumn() ajoute les
+// colonnes manquantes (PRAGMA table_info), les index sont créés s’ils n’existent pas, les jetons dupliqués sont
+// régénérés avant la pose de l’index unique, et le registre de courtiers est resynchronisé sans écraser les
+// champs gérés par l’administrateur.
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -60,7 +65,7 @@ CREATE TABLE IF NOT EXISTS brokers (
   name TEXT NOT NULL,
   domain TEXT NOT NULL,
   category TEXT NOT NULL,
-  jurisdiction TEXT NOT NULL,        -- US | EU | UK | CA | CH
+  jurisdiction TEXT NOT NULL,        -- FR | EU | UK | US | CA | CH
   legal_basis TEXT NOT NULL,         -- rgpd | ccpa | both
   contact_email TEXT NOT NULL,
   contact_verified INTEGER NOT NULL DEFAULT 0,
@@ -68,13 +73,14 @@ CREATE TABLE IF NOT EXISTS brokers (
   recheck_days INTEGER NOT NULL DEFAULT 60,
   active INTEGER NOT NULL DEFAULT 1
 );
+-- Les demandes d’un profil supprimé disparaissent avec lui (ON DELETE CASCADE) : plus rien n’est envoyé en son nom.
 CREATE TABLE IF NOT EXISTS requests (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
   broker_id INTEGER NOT NULL REFERENCES brokers(id),
   cycle INTEGER NOT NULL DEFAULT 1,
-  status TEXT NOT NULL DEFAULT 'queued', -- queued | sent | in_progress | action_required | done | refused
+  status TEXT NOT NULL DEFAULT 'queued', -- queued | sent | in_progress | action_required | done | refused | error
   token TEXT NOT NULL,
   created_at TEXT NOT NULL,
   sent_at TEXT,
@@ -82,10 +88,11 @@ CREATE TABLE IF NOT EXISTS requests (
   followup_sent_at TEXT,
   completed_at TEXT,
   next_check_at TEXT,
-  note TEXT
+  note TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0, -- tentatives d’envoi du courrier en cours (demande initiale ou relance)
+  next_attempt_at TEXT,                -- prochain essai après un échec d’envoi (recul exponentiel)
+  last_error TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_requests_profile ON requests(profile_id, status);
-CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id TEXT NOT NULL,
@@ -95,7 +102,6 @@ CREATE TABLE IF NOT EXISTS events (
   message TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, id DESC);
 CREATE TABLE IF NOT EXISTS mails (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   request_id TEXT,
@@ -105,6 +111,7 @@ CREATE TABLE IF NOT EXISTS mails (
   body TEXT NOT NULL,
   mode TEXT NOT NULL,                -- smtp | outbox
   message_id TEXT,
+  error TEXT,                        -- renseigné quand l’envoi a échoué (message_id NULL)
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS newsletter (
@@ -118,24 +125,108 @@ CREATE TABLE IF NOT EXISTS contacts (
   message TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+-- Événements Stripe déjà traités : un webhook rejoué (même id) est ignoré.
+CREATE TABLE IF NOT EXISTS stripe_events (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 `);
 
-// Registre de courtiers : chargé une fois depuis brokers.json.
-const count = db.prepare('SELECT COUNT(*) AS c FROM brokers').get().c;
-if (count === 0) {
-  const seed = JSON.parse(fs.readFileSync(path.join(__dirname, 'brokers.json'), 'utf8'));
-  const ins = db.prepare(`INSERT INTO brokers (slug, name, domain, category, jurisdiction, legal_basis, contact_email, contact_verified, sensitivity, recheck_days, active)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 1)`);
-  for (const b of seed) ins.run(b.slug, b.name, b.domain, b.category, b.jurisdiction, b.legal_basis, b.contact_email || `privacy@${b.domain}`, b.sensitivity, b.recheck_days);
+/* ---------- Mise à niveau d’une base existante ---------- */
+// Ajoute une colonne absente d’une table (ALTER TABLE … ADD COLUMN). Idempotent ; renvoie true si la colonne a été ajoutée.
+export function ensureColumn(table, column, ddl) {
+  if (!/^[a-z_]+$/.test(table) || !/^[a-z_]+$/.test(column)) throw new Error('Nom de table ou de colonne invalide.');
+  if (db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column)) return false;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+  return true;
+}
+ensureColumn('requests', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('requests', 'next_attempt_at', 'TEXT');
+ensureColumn('requests', 'last_error', 'TEXT');
+ensureColumn('mails', 'error', 'TEXT');
+
+// Jeton de référence (OUBLI-XXXXXXXXXX) : il identifie une demande dans les réponses des courtiers, donc il est unique.
+export function newToken() {
+  for (;;) {
+    const t = crypto.randomBytes(5).toString('hex').toUpperCase();
+    if (!db.prepare('SELECT 1 FROM requests WHERE token = ?').get(t)) return t;
+  }
+}
+for (const { token } of db.prepare('SELECT token FROM requests GROUP BY token HAVING COUNT(*) > 1').all()) {
+  for (const r of db.prepare('SELECT id FROM requests WHERE token = ? ORDER BY created_at, id').all(token).slice(1)) {
+    db.prepare('UPDATE requests SET token = ? WHERE id = ?').run(newToken(), r.id);
+  }
 }
 
+db.exec(`
+CREATE UNIQUE INDEX IF NOT EXISTS idx_requests_token ON requests(token);
+CREATE INDEX IF NOT EXISTS idx_requests_user ON requests(user_id);
+CREATE INDEX IF NOT EXISTS idx_requests_profile ON requests(profile_id, status);
+CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
+CREATE INDEX IF NOT EXISTS idx_requests_broker ON requests(profile_id, broker_id, cycle);
+CREATE INDEX IF NOT EXISTS idx_requests_due ON requests(due_at);
+CREATE INDEX IF NOT EXISTS idx_requests_next_check ON requests(next_check_at);
+CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_mails_request ON mails(request_id);
+CREATE INDEX IF NOT EXISTS idx_mails_user ON mails(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_users_stripe_customer ON users(stripe_customer_id);
+CREATE INDEX IF NOT EXISTS idx_users_stripe_subscription ON users(stripe_subscription_id);
+`);
+
+/* ---------- Registre de courtiers ---------- */
+// brokers.json est la source : chaque démarrage ajoute les courtiers nouveaux et rafraîchit les champs descriptifs.
+// Les champs gérés par l’administrateur (contact, vérification, activation) sont conservés ; seule l’adresse générée
+// par défaut (privacy@domaine) d’un contact encore non vérifié est remplacée par celle du registre.
+{
+  const seed = JSON.parse(fs.readFileSync(path.join(__dirname, 'brokers.json'), 'utf8'));
+  const upsert = db.prepare(`INSERT INTO brokers (slug, name, domain, category, jurisdiction, legal_basis, contact_email, contact_verified, sensitivity, recheck_days, active)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 1)
+    ON CONFLICT(slug) DO UPDATE SET name = excluded.name, domain = excluded.domain, category = excluded.category, jurisdiction = excluded.jurisdiction,
+      legal_basis = excluded.legal_basis, sensitivity = excluded.sensitivity, recheck_days = excluded.recheck_days,
+      contact_email = CASE WHEN brokers.contact_verified = 0 AND brokers.contact_email = 'privacy@' || brokers.domain THEN excluded.contact_email ELSE brokers.contact_email END`);
+  db.exec('BEGIN');
+  try {
+    for (const b of seed) {
+      if (!b.slug || !b.name || !b.domain || !b.category) throw new Error(`brokers.json : entrée incomplète (${b.slug || '?'})`);
+      upsert.run(b.slug, b.name, b.domain, b.category, b.jurisdiction || 'EU', b.legal_basis || 'rgpd', b.contact_email || `privacy@${b.domain}`, [1, 2, 3].includes(b.sensitivity) ? b.sensitivity : 2, b.recheck_days || 60);
+    }
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+}
+
+// Ménage : les sessions expirées ne servent plus à rien.
+db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(new Date().toISOString());
+
+/* ---------- Aides ---------- */
 export const now = () => new Date().toISOString();
 export const addDays = (iso, days) => new Date(new Date(iso).getTime() + days * 86400000).toISOString();
+// Mois calendaire (délai de l’article 12 §3 du RGPD) : 31 janvier + 1 mois = 28 (ou 29) février.
+export const addMonths = (iso, months) => {
+  const d = new Date(iso);
+  const day = d.getUTCDate();
+  d.setUTCDate(1);
+  d.setUTCMonth(d.getUTCMonth() + months);
+  const last = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+  d.setUTCDate(Math.min(day, last));
+  return d.toISOString();
+};
 export const q = {
   get: (sql, ...p) => db.prepare(sql).get(...p),
   all: (sql, ...p) => db.prepare(sql).all(...p),
   run: (sql, ...p) => db.prepare(sql).run(...p),
 };
+// Transaction imbriquable (SAVEPOINT) : tout ou rien, même appelée depuis une transaction déjà ouverte.
+let depth = 0;
+export function tx(fn) {
+  const sp = `sp${depth++}`;
+  db.exec(`SAVEPOINT ${sp}`);
+  try { const out = fn(); db.exec(`RELEASE ${sp}`); return out; }
+  catch (e) { db.exec(`ROLLBACK TO ${sp}`); db.exec(`RELEASE ${sp}`); throw e; }
+  finally { depth--; }
+}
 export function logEvent(user_id, type, message, { profile_id = null, request_id = null } = {}) {
-  q.run('INSERT INTO events (user_id, profile_id, request_id, type, message, created_at) VALUES (?, ?, ?, ?, ?, ?)', user_id, profile_id, request_id, type, message, now());
+  q.run('INSERT INTO events (user_id, profile_id, request_id, type, message, created_at) VALUES (?, ?, ?, ?, ?, ?)', user_id, profile_id, request_id, type, String(message).slice(0, 1000), now());
 }
