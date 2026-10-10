@@ -41,7 +41,7 @@ const iso = (s) => (Number.isFinite(Number(s)) && Number(s) > 0 ? new Date(Numbe
 const label = (plan, billing) => `${PLANS[plan]?.name || plan} (${billing === 'annual' ? 'annuel' : 'mensuel'})`;
 
 export async function startCheckout(user, plan, billing) {
-  const p = PLANS[plan];
+  const p = Object.hasOwn(PLANS, plan) ? PLANS[plan] : null;
   if (!p || !BILLING_PERIODS.includes(billing)) throw new Error('Offre inconnue.');
   if (!user || user.deleted_at) throw new Error('Compte introuvable.');
   // Offre trop petite pour le dossier : les proches en trop resteraient protégés sans être couverts par l'abonnement.
@@ -68,9 +68,11 @@ export async function startCheckout(user, plan, billing) {
       product_data: { name: `Oubli ${p.name}` },
     } } },
   }, crypto.randomUUID());
-  // Offre retenue avant le paiement, sauf pendant un abonnement en cours (clé, équipe) : il garderait sinon l'offre
-  // choisie sans payer si le paiement est abandonné. Le webhook pose l'offre payée (métadonnées).
-  if (user.subscription_status !== 'active') q.run('UPDATE users SET plan = ?, billing = ? WHERE id = ?', plan, billing, user.id);
+  // Offre retenue avant le paiement seulement pour un compte sans aucun accès. Pendant un abonnement en cours (clé,
+  // équipe) ou une période déjà payée après résiliation, l'abonné garderait sinon l'offre choisie (Famille, 5 profils)
+  // en abandonnant le paiement. Le webhook pose l'offre payée (métadonnées).
+  const access = user.subscription_status === 'active' || (user.subscription_status === 'canceled' && !!user.subscription_ends_at && user.subscription_ends_at > now());
+  if (!access) q.run('UPDATE users SET plan = ?, billing = ? WHERE id = ?', plan, billing, user.id);
   return { mode: 'stripe', url: session.url };
 }
 
@@ -130,7 +132,7 @@ function apply(event) {
       if (o.payment_status && !['paid', 'no_payment_required'].includes(o.payment_status)) return; // paiement différé : on attend async_payment_succeeded
       const u = userByIds(o.customer, o.subscription) || userByMetadata(o.client_reference_id || o.metadata?.user_id, o.customer);
       if (!u) return;
-      const plan = PLANS[o.metadata?.plan] ? o.metadata.plan : null;
+      const plan = Object.hasOwn(PLANS, o.metadata?.plan ?? '') ? o.metadata.plan : null;
       const billing = ['monthly', 'annual'].includes(o.metadata?.billing) ? o.metadata.billing : null;
       setStatus(u, 'active', null, 'Paiement confirmé par Stripe : abonnement actif.', { customer: sid(o.customer), subscription: sid(o.subscription), plan, billing });
       return;
@@ -157,7 +159,7 @@ function apply(event) {
       if (!u || staleSub(u, o.id)) return;
       const periodEnd = o.current_period_end || o.items?.data?.[0]?.current_period_end || null;
       const interval = o.items?.data?.[0]?.price?.recurring?.interval || o.plan?.interval || null;
-      const extra = { customer: sid(o.customer), subscription: sid(o.id), plan: PLANS[o.metadata?.plan] ? o.metadata.plan : null, billing: interval === 'year' ? 'annual' : interval === 'month' ? 'monthly' : null };
+      const extra = { customer: sid(o.customer), subscription: sid(o.id), plan: Object.hasOwn(PLANS, o.metadata?.plan ?? '') ? o.metadata.plan : null, billing: interval === 'year' ? 'annual' : interval === 'month' ? 'monthly' : null };
       switch (o.status) {
         case 'active': case 'trialing':
           if (o.cancel_at_period_end) setStatus(u, 'canceled', iso(o.cancel_at) || iso(periodEnd), 'Résiliation enregistrée ; accès maintenu jusqu’à la fin de la période payée.', extra);
