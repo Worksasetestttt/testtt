@@ -71,19 +71,31 @@ function isPublicV4(ip) {
   if (a === 203 && b === 0 && c === 113) return false;                               // 203.0.113/24
   return true;
 }
+// Adresse IPv6 déjà validée par net.isIP → 8 mots de 16 bits (forme compressée « :: », IPv4 finale et zone %eth0 acceptées).
+function v6words(ip) {
+  let s = ip.toLowerCase().replace(/%.*$/, '');
+  const tail = s.match(/(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (tail) { const [a, b, c, d] = tail.slice(1).map(Number); s = `${s.slice(0, tail.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`; }
+  const [head, rest] = s.split('::');
+  const h = head ? head.split(':') : [], t = rest ? rest.split(':') : [];
+  return (rest === undefined ? h : [...h, ...Array(8 - h.length - t.length).fill('0'), ...t]).map((x) => parseInt(x, 16));
+}
+// Les règles portent sur la valeur de l'adresse, pas sur son écriture : dns.lookup rend par exemple une adresse NAT64
+// en hexadécimal (64:ff9b::a9fe:a9fe = 169.254.169.254), qu'une passerelle NAT64 joint dans un réseau IPv6 seul.
 export function isPublicIp(ip) {
   const kind = net.isIP(String(ip || ''));
   if (kind === 4) return isPublicV4(ip);
   if (kind !== 6) return false;
-  const s = ip.toLowerCase();
-  const mapped = s.match(/^(?:::ffff:|::|64:ff9b::)(\d+\.\d+\.\d+\.\d+)$/);        // IPv4 encapsulée
-  if (mapped) return isPublicV4(mapped[1]);
-  if (s === '::' || s === '::1') return false;
-  const head = parseInt(s.split(':')[0] || '0', 16);
-  if ((head & 0xfe00) === 0xfc00) return false;                                      // fc00::/7 (adresses uniques locales)
-  if ((head & 0xffc0) === 0xfe80) return false;                                      // fe80::/10 (lien local)
-  if ((head & 0xff00) === 0xff00) return false;                                      // ff00::/8 (multicast)
-  if (s.startsWith('2001:db8:') || s.startsWith('2001:0db8:')) return false;         // documentation
+  const w = v6words(String(ip));
+  const v4at = (i) => `${w[i] >> 8}.${w[i] & 255}.${w[i + 1] >> 8}.${w[i + 1] & 255}`;
+  const zeros = (from, to) => w.slice(from, to).every((x) => x === 0);
+  if (zeros(0, 5) && (w[5] === 0 || w[5] === 0xffff)) return isPublicV4(v4at(6));     // ::a.b.c.d, ::ffff:a.b.c.d (::, ::1 compris)
+  if (zeros(0, 4) && w[4] === 0xffff && w[5] === 0) return isPublicV4(v4at(6));       // ::ffff:0:a.b.c.d (IPv4 traduite)
+  if (w[0] === 0x64 && w[1] === 0xff9b && zeros(2, 6)) return isPublicV4(v4at(6));    // 64:ff9b::/96 (NAT64)
+  if (w[0] === 0x2002) return isPublicV4(v4at(1));                                    // 2002::/16 (6to4)
+  if ((w[0] & 0xe000) !== 0x2000) return false;                                        // hors 2000::/3 : fc00::/7, fe80::/10, ff00::/8, réservé…
+  if (w[0] === 0x2001 && (w[1] < 0x200 || w[1] === 0xdb8)) return false;              // 2001::/23 (Teredo, ORCHID…), 2001:db8::/32
+  if (w[0] === 0x3fff && w[1] < 0x1000) return false;                                  // 3fff::/20 (documentation)
   return true;
 }
 // Résolution vérifiée, compatible avec l'option « all » de net.connect (sélection automatique de famille).
@@ -97,13 +109,17 @@ function guardedLookup(hostname, options, callback) {
     callback(null, list[0].address, list[0].family);
   });
 }
-// Lecture d'une page HTML : ports 80/443, redirections revérifiées, durée et taille plafonnées.
-export function safeFetch(url, { timeoutMs = 6000, maxBytes = 600000, redirects = 3 } = {}) {
+// Lecture d'une page HTML : ports 80/443, redirections revérifiées, taille plafonnée, durée plafonnée. timeoutMs borne
+// aussi la durée totale (redirections comprises) : le délai d'inactivité seul ne coupe jamais un site qui envoie un octet
+// de temps en temps, et la connexion resterait ouverte indéfiniment.
+export function safeFetch(url, { timeoutMs = 6000, maxBytes = 600000, redirects = 3, deadline = Date.now() + timeoutMs } = {}) {
   return new Promise((resolve, reject) => {
     let u;
     try { u = new URL(url); } catch { return reject(new Error('URL invalide.')); }
     const check = normalizeSite(u.href);
     if (check.error) return reject(new Error(check.error));
+    const left = deadline - Date.now();
+    if (left <= 0) return reject(new Error('Délai dépassé.'));
     const lib = u.protocol === 'https:' ? https : http;
     const req = lib.request(u, { method: 'GET', lookup: guardedLookup, headers: { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.1', 'Accept-Language': 'fr,en;q=0.8' }, timeout: timeoutMs }, (res) => {
       const status = res.statusCode || 0;
@@ -112,7 +128,7 @@ export function safeFetch(url, { timeoutMs = 6000, maxBytes = 600000, redirects 
         if (redirects <= 0) return reject(new Error('Trop de redirections.'));
         let next;
         try { next = new URL(res.headers.location, u).href; } catch { return reject(new Error('Redirection invalide.')); }
-        return safeFetch(next, { timeoutMs, maxBytes, redirects: redirects - 1 }).then(resolve, reject);
+        return safeFetch(next, { timeoutMs, maxBytes, redirects: redirects - 1, deadline }).then(resolve, reject);
       }
       const type = String(res.headers['content-type'] || '');
       if (status >= 400 || (type && !/text\/html|application\/xhtml/i.test(type))) { res.resume(); return resolve({ status, url: u.href, html: '' }); }
@@ -121,6 +137,8 @@ export function safeFetch(url, { timeoutMs = 6000, maxBytes = 600000, redirects 
       res.on('end', () => resolve({ status, url: u.href, html: Buffer.concat(chunks).toString('utf8') }));
       res.on('error', reject);
     });
+    const timer = setTimeout(() => { const e = new Error('Délai dépassé.'); reject(e); req.destroy(e); }, left);
+    req.on('close', () => clearTimeout(timer));
     req.on('timeout', () => req.destroy(new Error('Délai dépassé.')));
     req.on('error', reject);
     req.end();
@@ -128,12 +146,14 @@ export function safeFetch(url, { timeoutMs = 6000, maxBytes = 600000, redirects 
 }
 
 /* ---------- Extraction ---------- */
+// Le HTML vient d'un site choisi par l'abonné (600 Ko au plus) et le serveur est mono-processus : aucune expression ne doit
+// avoir un coût quadratique (répétitions non bornées suivies d'un échec). Les espaces autour de [at] sont donc bornés.
 const ENTITIES = { '&#64;': '@', '&#x40;': '@', '&commat;': '@', '&#46;': '.', '&#x2e;': '.', '&period;': '.', '&amp;': '&', '&nbsp;': ' ' };
 function deobfuscate(html) {
   return String(html || '')
     .replace(/&#(?:64|x40);|&commat;|&#(?:46|x2e);|&period;|&amp;|&nbsp;/gi, (m) => ENTITIES[m.toLowerCase()] || m)
-    .replace(/\s*[[(]\s*(?:at|arobase)\s*[\])]\s*/gi, '@')
-    .replace(/\s*[[(]\s*(?:dot|point)\s*[\])]\s*/gi, '.');
+    .replace(/\s{0,20}[[(]\s{0,20}(?:at|arobase)\s{0,20}[\])]\s{0,20}/gi, '@')
+    .replace(/\s{0,20}[[(]\s{0,20}(?:dot|point)\s{0,20}[\])]\s{0,20}/gi, '.');
 }
 const PREFERRED = [/^(dpo|rgpd|gdpr|privacy|privacidad|privacidade|datenschutz|dataprotection|data-protection|data\.protection|protection-?donnees|donnees(-?personnelles)?|cnil|vie-?privee|confidentialite)\b/, /^(legal|juridique|compliance|conformite)\b/, /^(contact|support|service-?client|serviceclient|hello|bonjour|info|infos|help|aide)\b/];
 const IGNORE = /^(no-?reply|ne-?pas-?repondre|donotreply|mailer-daemon|postmaster|abuse|webmaster|example|exemple|nom|name|prenom|votre|your|email|e-mail|test|john\.doe|jean\.dupont)\b/;
@@ -155,15 +175,23 @@ export function extractContacts(html, domain) {
   return [...found.entries()].sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0])).map(([e, score]) => ({ email: e, score }));
 }
 // Liens internes qui mènent aux pages utiles (mentions légales, confidentialité, contact).
+// Lecture balise par balise (chaque caractère n'est parcouru qu'une fois) : une expression unique sur toute la page
+// avait un coût quadratique, voire cubique, sur des balises <a jamais fermées.
 export function legalLinks(html, base) {
-  const out = [];
-  const re = /<a\b[^>]*href\s*=\s*["']([^"'#]+)["'][^>]*>([\s\S]{0,200}?)<\/a>/gi;
+  const out = [], s = String(html || ''), open = /<a\b/gi;
   let m;
-  while ((m = re.exec(String(html || ''))) && out.length < 12) {
-    const label = `${m[1]} ${m[2].replace(/<[^>]+>/g, ' ')}`.toLowerCase();
+  while ((m = open.exec(s)) && out.length < 12) {
+    const end = s.indexOf('>', m.index);
+    if (end < 0) break;
+    open.lastIndex = end + 1;
+    let href = null;                                                                       // dernier href de la balise
+    for (const h of s.slice(m.index, end).matchAll(/href\s*=\s*["']([^"'#]+)["']/gi)) href = h[1];
+    const after = s.slice(end + 1, end + 205), close = after.search(/<\/a>/i);
+    if (!href || close < 0 || close > 200) continue;
+    const label = `${href} ${after.slice(0, close).replace(/<[^>]+>/g, ' ')}`.toLowerCase();
     if (!/(confidentialit|privacy|mentions|l[ée]gal|rgpd|gdpr|donn[ée]es|cookies|contact|dpo)/.test(label)) continue;
     try {
-      const u = new URL(m[1], base);
+      const u = new URL(href, base);
       if (u.hostname.replace(/^www\d?\./, '') === new URL(base).hostname.replace(/^www\d?\./, '') && !out.includes(u.href)) out.push(u.href);
     } catch { /* lien ignoré */ }
   }
@@ -183,7 +211,7 @@ export async function discoverContact(host, { fetchPage = safeFetch, budgetMs = 
     let page;
     try { page = await fetchPage(url, { timeoutMs: Math.max(1000, Math.min(6000, deadline - Date.now())) }); } catch { if (pages === 1) queue.push(`http://${host}/`); continue; }
     if (!page || !page.html) continue;
-    if (title === null) { const t = page.html.match(/<title[^>]*>([^<]{1,200})<\/title>/i); title = t ? t[1].replace(/\s+/g, ' ').trim().slice(0, 80) : ''; }
+    if (title === null) { const t = page.html.match(/<title[^>]{0,200}>([^<]{1,200})<\/title>/i); title = t ? t[1].replace(/\s+/g, ' ').trim().slice(0, 80) : ''; }
     const c = extractContacts(page.html, domain)[0];
     if (c && (!best || c.score < best.score)) best = { ...c, page: page.url || url };
     if (best && best.score < 10) break;                                                // adresse DPO / confidentialité : inutile d'aller plus loin

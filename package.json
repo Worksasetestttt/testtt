@@ -8,11 +8,12 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env server/index.js",
     "dev": "node --watch --disable-warning=ExperimentalWarning --env-file-if-exists=.env server/index.js",
-    "test": "node --disable-warning=ExperimentalWarning scripts/smoke.mjs && node --disable-warning=ExperimentalWarning scripts/security.test.mjs && node --disable-warning=ExperimentalWarning scripts/admin.test.mjs && node --disable-warning=ExperimentalWarning scripts/sites.test.mjs && node --disable-warning=ExperimentalWarning scripts/features.test.mjs",
+    "test": "node --disable-warning=ExperimentalWarning scripts/smoke.mjs && node --disable-warning=ExperimentalWarning scripts/security.test.mjs && node --disable-warning=ExperimentalWarning scripts/admin.test.mjs && node --disable-warning=ExperimentalWarning scripts/sites.test.mjs && node --disable-warning=ExperimentalWarning scripts/features.test.mjs && node --disable-warning=ExperimentalWarning scripts/security2.test.mjs",
     "test:security": "node --disable-warning=ExperimentalWarning scripts/security.test.mjs",
     "test:admin": "node --disable-warning=ExperimentalWarning scripts/admin.test.mjs",
     "test:sites": "node --disable-warning=ExperimentalWarning scripts/sites.test.mjs",
     "test:features": "node --disable-warning=ExperimentalWarning scripts/features.test.mjs",
+    "test:security2": "node --disable-warning=ExperimentalWarning scripts/security2.test.mjs",
     "test:ui": "node scripts/ui.audit.cjs"
   },
   "dependencies": {

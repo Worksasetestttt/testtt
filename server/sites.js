@@ -30,10 +30,15 @@ const slugFor = (host) => `site-${host.replace(/[^a-z0-9]+/g, '-').replace(/^-+|
 export function registryBrokerFor(host) {
   return q.all('SELECT * FROM brokers WHERE custom = 0').filter((b) => host === b.domain || host.endsWith(`.${b.domain}`)).sort((a, b) => b.domain.length - a.domain.length)[0] || null;
 }
+// Courtier personnalisé : partagé seulement entre abonnés qui ont ajouté exactement le même nom d'hôte. Le slug ne suffit
+// pas : « fiches-annuaire.fr » et « fiches.annuaire.fr » (ou deux noms longs tronqués) donnent le même, et la demande d'un
+// abonné partait alors, avec son identité, au contact du site enregistré en premier par un autre.
 function customBrokerFor(site, userId) {
-  const slug = slugFor(site.host);
-  const existing = q.get('SELECT * FROM brokers WHERE slug = ?', slug);
+  const existing = q.get('SELECT * FROM brokers WHERE custom = 1 AND domain = ? ORDER BY id LIMIT 1', site.host);
   if (existing) return { broker: existing, created: false };
+  const base = slugFor(site.host);
+  let slug = base;
+  for (let i = 2; q.get('SELECT 1 FROM brokers WHERE slug = ?', slug); i += 1) slug = `${base.slice(0, 54).replace(/-+$/, '')}-${i}`;
   const law = lawFor(site.host);
   q.run(`INSERT INTO brokers (slug, name, domain, category, jurisdiction, legal_basis, contact_email, contact_verified, sensitivity, recheck_days, active, custom, contact_source, discovery_status, added_by, created_at)
     VALUES (?, ?, ?, 'Site ajouté', ?, ?, ?, 0, 2, 90, 1, 1, 'guess', ?, ?, ?)`, slug, site.host, site.host, law.jurisdiction, law.legal_basis, `privacy@${site.domain}`, DISCOVERY ? 'pending' : 'skipped', userId, now());
@@ -58,7 +63,7 @@ export function addSite(user, profile, input) {
     let broker = registry, created = false;
     if (!broker) {
       const counted = q.get('SELECT COUNT(DISTINCT r.broker_id) AS c FROM requests r JOIN brokers b ON b.id = r.broker_id WHERE r.profile_id = ? AND b.custom = 1', profile.id).c;
-      const known = q.get('SELECT 1 FROM requests r JOIN brokers b ON b.id = r.broker_id WHERE r.profile_id = ? AND b.slug = ?', profile.id, slugFor(site.host));
+      const known = q.get('SELECT 1 FROM requests r JOIN brokers b ON b.id = r.broker_id WHERE r.profile_id = ? AND b.custom = 1 AND b.domain = ?', profile.id, site.host);
       if (!known && counted >= MAX_SITES_PER_PROFILE) throw new HttpError(400, `Limite atteinte : ${MAX_SITES_PER_PROFILE} sites ajoutés pour ce profil.`);
       ({ broker, created } = customBrokerFor(site, user.id));
     }

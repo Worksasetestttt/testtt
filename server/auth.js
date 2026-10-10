@@ -1,6 +1,7 @@
 // Authentification : mots de passe scrypt (asynchrones), sessions en base, cookie signé HMAC,
 // verrouillage par compte, limitation de débit en mémoire avec nettoyage périodique.
 import crypto from 'node:crypto';
+import net from 'node:net';
 import { promisify } from 'node:util';
 import { q, now, db, ensureColumn } from './db.js';
 
@@ -234,9 +235,24 @@ export function noteLoginFailure(email) {
 export function clearLoginFailures(email) { failures.delete(lockKey(email)); }
 
 const buckets = new Map(); // « METHOD route|ip » → { n, reset }
+// Clé de route : le motif Express (req.route.path), sinon le chemin. Express ignore la casse et la barre finale du chemin ;
+// la clé aussi, sinon chaque écriture (/api/Contact, /API/contact/…) aurait son propre compteur et le plafond tomberait.
+const routeKey = (req) => `${req.method} ${`${req.baseUrl}${req.route ? req.route.path : req.path}`.toLowerCase().replace(/\/+$/, '')}`;
+// Client compté : l'adresse IPv4 (éventuellement mappée ::ffff:a.b.c.d), ou le préfixe /64 d'une adresse IPv6 : un hôte IPv6
+// dispose d'ordinaire d'un /64 entier et changerait sinon d'adresse à chaque requête.
+function clientKey(ip) {
+  const s = String(ip || '').toLowerCase();
+  if (net.isIP(s) !== 6) return s;
+  const mapped = s.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (mapped) return mapped[1];
+  const [head, rest] = s.split('::');
+  const h = head ? head.split(':') : [], t = rest ? rest.split(':') : [];
+  const groups = rest === undefined ? h : [...h, ...Array(Math.max(0, 8 - h.length - t.length - (rest.includes('.') ? 1 : 0))).fill('0'), ...t];
+  return `${groups.slice(0, 4).map((g) => parseInt(g, 16).toString(16)).join(':')}::/64`;
+}
 export function rateLimit({ windowMs = 15 * 60000, max = 30, name } = {}) {
   return (req, res, next) => {
-    const key = `${name || `${req.method} ${req.baseUrl}${req.path}`}|${req.ip}`;
+    const key = `${name || routeKey(req)}|${clientKey(req.ip)}`;
     const t = Date.now();
     let b = buckets.get(key);
     if (!b || t >= b.reset) b = { n: 0, reset: t + windowMs };
