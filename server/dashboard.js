@@ -1,7 +1,7 @@
 // Tableau de bord d'un abonné : compteurs, exposition (valeur courante et historique sur 12 semaines),
 // répartition par catégorie et par sensibilité, demandes du cycle courant, journal, échéances.
 import { q, now, addDays } from './db.js';
-import { ref, subscriptionActive, hasAccess } from './scheduler.js';
+import { ref, subscriptionActive, hasAccess, stopCause } from './scheduler.js';
 import { publicUser, parseProfile } from './util.js';
 import { mailMode } from './mailer.js';
 import { MAX_SITES_PER_PROFILE } from './sites.js';
@@ -62,11 +62,12 @@ function siteState(r) {
   return { status: mailMode === 'smtp' ? 'review' : 'presumed', contact: r.broker_contact };
 }
 
-// Plainte possible auprès de l'autorité : refus du courtier (pas un arrêt dû à la révocation du mandat), ou relance
-// restée sans réponse huit jours (le délai accordé dans la relance).
-// Demande arrêtée par la révocation du mandat avant son envoi : « refused » en base (note « Mandat révoqué… »), mais ce
-// n'est pas un refus du courtier. Le tableau de bord, son CSV et le rapport la montrent sous un statut à part : stopped.
-export const isStopped = (r) => r.status === 'refused' && /^Mandat révoqué/.test(r.note || '');
+// Plainte possible auprès de l'autorité : refus du courtier (pas un arrêt avant envoi), ou relance restée sans réponse
+// huit jours (le délai accordé dans la relance).
+// Demande arrêtée avant son envoi, par la révocation du mandat ou parce que le courtier a été retiré du registre :
+// « refused » en base, mais ce n'est pas un refus du courtier (stopCause, scheduler.js). Le tableau de bord, son CSV et
+// le rapport la montrent sous un statut à part, stopped, avec sa cause (stop_reason : mandate ou broker).
+export const isStopped = (r) => !!stopCause(r);
 export const complaintReady = (r) => (r.status === 'refused' && !isStopped(r))
   || (['sent', 'in_progress'].includes(r.status) && !!r.followup_sent_at && addDays(r.followup_sent_at, 8) <= now());
 
@@ -107,7 +108,7 @@ export function buildDashboard(u, requestedProfileId) {
     next_due_at: nextDue, last_sent_at: lastSent,
     last_activity_at: events[0]?.created_at || null,
     sites: { count: active.filter((r) => r.custom).length, max: MAX_SITES_PER_PROFILE },
-    requests: active.map((r) => ({ id: r.id, broker: r.broker_name, custom: !!r.custom, source_url: r.source_url || null, site: r.custom ? siteState(r) : null, domain: r.domain, category: r.category, sensitivity: r.sensitivity, legal_basis: r.legal_basis, jurisdiction: r.jurisdiction, recheck_days: r.recheck_days, status: isStopped(r) ? 'stopped' : r.status, cycle: r.cycle, created_at: r.created_at, sent_at: r.sent_at, due_at: r.due_at, followup_sent_at: r.followup_sent_at, completed_at: r.completed_at, next_check_at: r.next_check_at, note: r.note, ref: ref(r), complaint: complaintReady(r) })),
+    requests: active.map((r) => ({ id: r.id, broker: r.broker_name, custom: !!r.custom, source_url: r.source_url || null, site: r.custom ? siteState(r) : null, domain: r.domain, category: r.category, sensitivity: r.sensitivity, legal_basis: r.legal_basis, jurisdiction: r.jurisdiction, recheck_days: r.recheck_days, status: isStopped(r) ? 'stopped' : r.status, stop_reason: stopCause(r), cycle: r.cycle, created_at: r.created_at, sent_at: r.sent_at, due_at: r.due_at, followup_sent_at: r.followup_sent_at, completed_at: r.completed_at, next_check_at: r.next_check_at, note: r.note, ref: ref(r), complaint: complaintReady(r) })),
     events,
     onboarding: {
       profile_complete: !!(profile?.first_name && profile?.last_name),

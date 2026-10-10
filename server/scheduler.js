@@ -8,6 +8,8 @@
 //   · queued → error après SEND_MAX_ATTEMPTS échecs d’envoi (recul exponentiel entre deux essais) ; error → queued par le
 //     renvoi de l’administration (admin.js, essais et recul remis à zéro) ou applyOutcome(r, 'queued')
 //   · queued → refused quand le mandat est révoqué (routes.js) ; ces demandes sont relancées dans un nouveau cycle après re-signature.
+//   · queued | error → refused quand le courtier est retiré du registre (admin.js, stopRemovedBrokerRequests) ; un nouveau
+//     cycle repart à sa réactivation. Ces deux arrêts ne sont pas des refus (stopCause) : ni plainte ni revérification.
 //   · une réponse « en cours » ou « vérification demandée » ne s’applique qu’à une demande en attente du courtier
 //     (sent, in_progress, action_required) : jamais à une demande en file, en erreur, effacée ou refusée (applyOutcome).
 import crypto from 'node:crypto';
@@ -55,12 +57,19 @@ const insertNext = (user_id, profile_id, broker_id, afterCycle, source_url = nul
   `INSERT INTO requests (id, user_id, profile_id, broker_id, cycle, status, token, created_at, source_url)
    SELECT ?, ?, ?, ?, ?, 'queued', ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM requests WHERE profile_id = ? AND broker_id = ? AND cycle > ?)`,
   crypto.randomUUID(), user_id, profile_id, broker_id, afterCycle + 1, token, now(), source_url, profile_id, broker_id, afterCycle).changes);
-const revokedStop = (r) => r.status === 'refused' && /^Mandat révoqué/.test(r.note || '');
+// Demande arrêtée avant son envoi : « refused » en base (la machine à états la traite comme close), mais pas un refus du
+// courtier. La note en donne la cause : « mandate » (mandat révoqué par l'abonné, routes.js) ou « broker » (courtier ou
+// site retiré du registre par l'équipe, admin.js). Le tableau de bord, son CSV et le rapport mensuel la montrent sous le
+// statut virtuel « stopped » (dashboard.js), sans plainte.
+export const BROKER_STOP_NOTE = 'Courtier retiré du registre par l’équipe Oubli avant l’envoi.';
+export const stopCause = (r) => (r?.status !== 'refused' ? null : /^Mandat révoqué/.test(r.note || '') ? 'mandate' : /^Courtier retiré/.test(r.note || '') ? 'broker' : null);
+const STOP_NOTE_SQL = `(r.note LIKE 'Mandat révoqué%' OR r.note LIKE 'Courtier retiré%')`;
 
 // Crée (si besoin) les demandes d’un profil complet. Idempotent : un courtier qui a déjà une demande vivante n’en reçoit
 // pas de seconde ; un courtier actif du registre sans demande (nouveau profil, courtier ajouté) en reçoit une de cycle 1 ;
-// une demande abandonnée par révocation du mandat est relancée dans un nouveau cycle (après re-signature), y compris pour
-// un site que l'abonné avait ajouté (les autres sites ajoutés ne concernent que leurs propres profils).
+// une demande arrêtée avant son envoi (mandat révoqué, courtier retiré du registre) est relancée dans un nouveau cycle
+// dès que le mandat est re-signé et que le courtier est actif, y compris pour un site que l'abonné avait ajouté (les
+// autres sites ajoutés ne concernent que leurs propres profils).
 export function launchProfile(user, profile) {
   if (!isEligible(user)) return { created: 0, reason: 'Mandat non signé ou abonnement inactif.' };
   if (!profile || profile.user_id !== user.id) return { created: 0, reason: 'Profil introuvable.' };
@@ -69,7 +78,7 @@ export function launchProfile(user, profile) {
   const latest = new Map();
   for (const r of q.all('SELECT broker_id, cycle, status, note, source_url FROM requests WHERE profile_id = ? ORDER BY cycle, created_at', profile.id)) latest.set(r.broker_id, r);
   // Jetons tirés avant la transaction : sa première instruction est une insertion (voir insertNext).
-  const todo = brokers.map((b) => ({ b, last: latest.get(b.id) })).filter(({ b, last }) => (last ? revokedStop(last) : !b.custom)).map((x) => ({ ...x, token: newToken() }));
+  const todo = brokers.map((b) => ({ b, last: latest.get(b.id) })).filter(({ b, last }) => (last ? !!stopCause(last) : !b.custom)).map((x) => ({ ...x, token: newToken() }));
   let created = 0;
   if (todo.length) tx(() => { for (const { b, last, token } of todo) created += insertNext(user.id, profile.id, b.id, last ? last.cycle : 0, last?.source_url || null, token); });
   if (created) logEvent(user.id, 'launch', `${created} demande${created > 1 ? 's' : ''} préparée${created > 1 ? 's' : ''} pour ${profile.first_name} ${profile.last_name} (${brokers.filter((b) => !b.custom).length} courtiers surveillés).`, { profile_id: profile.id });
@@ -163,6 +172,25 @@ function rechecks() {
   }
 }
 
+// Courtier retiré du registre (désactivé par l'équipe) : ses demandes jamais envoyées, en file ou en erreur, sont closes
+// sans revérification et l'abonné en est informé dans son journal. Avec brokerId : un courtier (désactivation dans
+// l'administration) ; sans : tous les courtiers inactifs, à chaque passage (base antérieure à ce correctif, demande remise
+// en file entre-temps). Renvoie le nombre de demandes arrêtées.
+export function stopRemovedBrokerRequests(brokerId = null) {
+  const one = brokerId != null;
+  const rows = q.all(`SELECT r.id, r.user_id, r.profile_id, b.name, b.custom FROM requests r JOIN brokers b ON b.id = r.broker_id
+    WHERE b.active = 0 AND r.status IN ('queued', 'error')${one ? ' AND b.id = ?' : ` LIMIT ${BATCH}`}`, ...(one ? [brokerId] : []));
+  let n = 0;
+  for (const r of rows) {
+    if (!q.run(`UPDATE requests SET status = 'refused', note = ?, next_check_at = NULL, next_attempt_at = NULL WHERE id = ? AND status IN ('queued', 'error')`, BROKER_STOP_NOTE, r.id).changes) continue;
+    n += 1;
+    logEvent(r.user_id, 'stopped', r.custom
+      ? `Site ${r.name} retiré du service par notre équipe : la demande ne lui a pas été envoyée. Ce n’est pas un refus ; une nouvelle demande partira s’il est rétabli.`
+      : `Courtier ${r.name} retiré de notre registre : la demande ne lui a pas été envoyée. Ce n’est pas un refus ; une nouvelle demande partira s’il y revient.`, { profile_id: r.profile_id, request_id: r.id });
+  }
+  return n;
+}
+
 // Un accusé de réception ou une demande de vérification suppose une demande en attente du courtier : sans objet pour une
 // demande jamais partie (file, erreur), qu'elle bloquerait sans échéance, ou déjà close (effacée, refusée), dont la
 // revérification serait perdue et que la relance rouvrirait auprès d'un courtier qui a déjà répondu.
@@ -235,8 +263,9 @@ export function expireKeySubscriptions(at = now()) {
 // Lancement automatique des profils éligibles (même règle que isEligible, écrite en SQL ; launchProfile la revérifie).
 // · À chaque passage, requête légère : les profils sans aucune demande (nouveau dossier).
 // · Au démarrage, quand le registre change (courtier ajouté dans brokers.json ou par l'administration, réactivé), sur
-//   demande (requestFullScan : abonnement réactivé, suspension levée…) et toutes les 10 minutes : les profils à qui il
-//   manque une demande pour un courtier actif du registre (custom = 0). Cette recherche coûte une lecture d'index
+//   demande (requestFullScan : abonnement réactivé, suspension levée, courtier ou site réactivé…) et toutes les 10 minutes :
+//   les profils à qui il manque une demande pour un courtier actif du registre (custom = 0), ou dont la dernière demande
+//   à un courtier actif a été arrêtée avant son envoi (stopCause). Cette recherche coûte une lecture d'index
 //   (idx_requests_broker) par courtier et par profil, environ 0,6 s pour 20 000 profils : elle n'a donc pas lieu à chaque
 //   passage, et se fait par tranches de profils pour laisser passer les requêtes HTTP.
 // Aucun doublon : launchProfile n'insère qu'une demande absente (insertNext).
@@ -246,6 +275,8 @@ const ELIGIBLE_SQL = `u.deleted_at IS NULL AND u.mandate_signed_at IS NOT NULL A
   AND ((u.subscription_status = 'active' AND (u.billing_mode IS NOT 'key' OR u.subscription_ends_at > :at)) OR (u.subscription_status = 'canceled' AND u.subscription_ends_at > :at))
   AND p.first_name <> '' AND p.last_name <> ''`;
 const MISSING_SQL = 'EXISTS (SELECT 1 FROM brokers b WHERE b.active = 1 AND b.custom = 0 AND NOT EXISTS (SELECT 1 FROM requests r WHERE r.profile_id = p.id AND r.broker_id = b.id))';
+const RELAUNCH_SQL = `EXISTS (SELECT 1 FROM requests r JOIN brokers b ON b.id = r.broker_id WHERE r.profile_id = p.id AND r.status = 'refused' AND ${STOP_NOTE_SQL} AND b.active = 1
+  AND NOT EXISTS (SELECT 1 FROM requests n WHERE n.profile_id = r.profile_id AND n.broker_id = r.broker_id AND n.cycle > r.cycle))`;
 let scannedRegistry = null, scannedAt = 0, scanWanted = false;
 // Demande une recherche complète au prochain passage (un profil a pu redevenir éligible).
 export const requestFullScan = () => { scanWanted = true; };
@@ -260,7 +291,7 @@ async function autoLaunch() {
   scanWanted = false;
   const last = q.get('SELECT MAX(rowid) AS m FROM profiles').m || 0;
   for (let lo = 0; lo < last && !stopped; lo += SCAN_CHUNK) {
-    for (const p of q.all(`SELECT p.* FROM profiles p JOIN users u ON u.id = p.user_id WHERE p.rowid > :lo AND p.rowid <= :hi AND ${ELIGIBLE_SQL} AND ${MISSING_SQL}`, { at, lo, hi: lo + SCAN_CHUNK })) launch(p);
+    for (const p of q.all(`SELECT p.* FROM profiles p JOIN users u ON u.id = p.user_id WHERE p.rowid > :lo AND p.rowid <= :hi AND ${ELIGIBLE_SQL} AND (${MISSING_SQL} OR ${RELAUNCH_SQL})`, { at, lo, hi: lo + SCAN_CHUNK })) launch(p);
     beat = Date.now();
     await new Promise((r) => setImmediate(r));
   }
@@ -282,7 +313,7 @@ export function tick() {
     do {
       again = false;
       beat = Date.now();
-      try { expireKeySubscriptions(); await autoLaunch(); await sendQueued(); await followUps(); rechecks(); if (DEMO) await simulateReplies(); }
+      try { expireKeySubscriptions(); stopRemovedBrokerRequests(); await autoLaunch(); await sendQueued(); await followUps(); rechecks(); if (DEMO) await simulateReplies(); }
       catch (e) { console.error('[scheduler]', e); }
       lastTick = now();
       beat = Date.now();

@@ -27,7 +27,8 @@ export async function runMonthlyReports() {
     for (const u of dueUsers()) {
       const blocks = q.all('SELECT id FROM profiles WHERE user_id = ? ORDER BY is_primary DESC, created_at', u.id).map((p) => {
         const d = buildDashboard(u, p.id), c = d.counters, prof = d.profiles.find((x) => x.id === p.id) || {};
-        return { name: `${prof.first_name || ''} ${prof.last_name || ''}`.trim() || 'Votre dossier', done: c.done, doneMonth: d.requests.filter((r) => r.status === 'done' && r.completed_at >= since).length, inProgress: c.in_progress + c.queued, action: c.action_required, refused: c.refused, exposure: d.exposure, total: c.total };
+        // removed : demandes arrêtées parce que le courtier a été retiré du registre (ni en cours ni refusées).
+        return { name: `${prof.first_name || ''} ${prof.last_name || ''}`.trim() || 'Votre dossier', done: c.done, doneMonth: d.requests.filter((r) => r.status === 'done' && r.completed_at >= since).length, inProgress: c.in_progress + c.queued, action: c.action_required, refused: c.refused, removed: d.requests.filter((r) => r.status === 'stopped' && r.stop_reason === 'broker').length, exposure: d.exposure, total: c.total };
       }).filter((b) => b.total);
       if (!blocks.length) continue;
       const m = monthlyReport({ month, blocks });

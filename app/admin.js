@@ -479,6 +479,8 @@
     return '<datalist id="adm-cats">' + d.categories.map(function (c) { return '<option value="' + esc(c) + '">'; }).join('') + '</datalist>' + bar + fl + warn + create +
       sheet('adm-br-h', 'Registre', meta(num(d.verified) + NB + '/' + NB + num(d.active) + ' contacts vérifiés'), table('Registre des courtiers', [th('Courtier'), th('Juridiction'), th('Contact'), th('Résultats'), th('Statut'), th('<span class="vh">Actions</span>', 'act')], rows, 'Aucun courtier ne correspond.') + '<div class="pager"><span>' + pl(list.length, 'courtier affiché', 'courtiers affichés') + ' sur ' + num(d.total) + '</span></div>');
   }
+  // Désactivation : demandes jamais envoyées arrêtées par le serveur (réponse { stopped }).
+  function stoppedText(r) { return r && r.stopped ? ', ' + pl(r.stopped, 'demande en attente arrêtée', 'demandes en attente arrêtées') : ''; }
   function brokerPayload(form) {
     var o = {}; new FormData(form).forEach(function (v, k) { o[k] = typeof v === 'string' ? v.trim() : v; });
     o.sensitivity = Number(o.sensitivity); o.recheck_days = Number(o.recheck_days);
@@ -707,7 +709,7 @@
       var on = t.getAttribute('data-broker-active') === '1', brid = t.getAttribute('data-broker');
       if (!on && !arm(t, 'Confirmer la désactivation')) return;
       lock(t, true);
-      (on ? api('/admin/brokers/' + brid, { method: 'PUT', body: { active: true } }) : api('/admin/brokers/' + brid, { method: 'DELETE', body: {} })).then(function () { done(on ? 'Courtier réactivé.' : 'Courtier désactivé' + NB + ': plus aucune nouvelle demande ne lui sera adressée.', 'bact-' + brid); }).catch(function (err) { fail(err); lock(t, false); });
+      (on ? api('/admin/brokers/' + brid, { method: 'PUT', body: { active: true } }) : api('/admin/brokers/' + brid, { method: 'DELETE', body: {} })).then(function (r) { done(on ? 'Courtier réactivé' + NB + ': les demandes arrêtées repartent dans un nouveau cycle.' : 'Courtier désactivé' + NB + ': plus aucune nouvelle demande ne lui sera adressée' + stoppedText(r) + '.', 'bact-' + brid); }).catch(function (err) { fail(err); lock(t, false); });
     }
     else if (t.hasAttribute('data-mail-open')) openMail(t.getAttribute('data-mail-open'), t);
     else if (t.hasAttribute('data-unsuspend')) { lock(t, true); api('/admin/users/' + t.getAttribute('data-unsuspend') + '/unsuspend', { body: {} }).then(function () { done('Compte réactivé' + NB + ': connexion et envois rétablis.'); }).catch(function (err) { fail(err); lock(t, false); }); }
@@ -764,7 +766,7 @@
       var missing = ['name', 'slug', 'domain', 'category', 'contact_email'].filter(function (k) { return !bd[k]; })[0];
       if (missing) { formError(f, 'Ce champ est obligatoire.', $('[name="' + missing + '"]', f)); return; }
       lock(b2, true); formOk(f);
-      api(isNew ? '/admin/brokers' : '/admin/brokers/' + id, { method: isNew ? 'POST' : 'PUT', body: bd }).then(function (r) { done(isNew ? 'Courtier créé' + NB + ': ' + r.broker.name + '.' : 'Courtier enregistré.', 'bedit-' + r.broker.id, isNew ? { q: r.broker.slug, f: null, cat: null } : {}); }).catch(function (err) { formError(f, err.message); lock(b2, false); });
+      api(isNew ? '/admin/brokers' : '/admin/brokers/' + id, { method: isNew ? 'POST' : 'PUT', body: bd }).then(function (r) { done(isNew ? 'Courtier créé' + NB + ': ' + r.broker.name + '.' : 'Courtier enregistré' + stoppedText(r) + '.', 'bedit-' + r.broker.id, isNew ? { q: r.broker.slug, f: null, cat: null } : {}); }).catch(function (err) { formError(f, err.message); lock(b2, false); });
     } else if (f.id === 'adm-imp-form') {
       var ir = fd(f); if (ir.reason.length < 3) { formError(f, 'Indiquez le motif de l’accès.', $('[name="reason"]', f)); return; }
       var ib2 = $('button[type="submit"]', f); lock(ib2, true); formOk(f);

@@ -169,6 +169,9 @@ export function monthlyReport({ month, blocks }) {
     `  • ${b.inProgress} demande${b.inProgress > 1 ? 's' : ''} en cours`,
     b.action ? `  • ${b.action} vérification${b.action > 1 ? 's' : ''} attend${b.action > 1 ? 'ent' : ''} votre action` : null,
     b.refused ? `  • ${b.refused} refus : nouvelle demande programmée, plainte prête à déposer depuis le tableau de bord` : null,
+    b.removed ? (b.removed > 1
+      ? `  • ${b.removed} demandes arrêtées : ces courtiers ont été retirés de notre registre avant l’envoi ; une nouvelle demande partira s’ils y reviennent`
+      : '  • 1 demande arrêtée : ce courtier a été retiré de notre registre avant l’envoi ; une nouvelle demande partira s’il y revient') : null,
     `  • Exposition estimée : ${b.exposure} %`,
   ].filter(Boolean).join('\n')).join('\n\n');
   return {

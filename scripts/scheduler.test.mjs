@@ -1,6 +1,7 @@
 // Tests du planificateur et des flux qui l'alimentent, un groupe par correctif :
 //   1. recherche du contact d'un site pendant laquelle l'équipe saisit l'adresse ;
 //   2. courtier ajouté au registre (brokers.json ou administration) : demandes pour les abonnés existants ;
+//   3. courtier désactivé puis réactivé : demandes jamais envoyées arrêtées, puis relancées ;
 // Chaque groupe démarre ses serveurs (port libre, base temporaire, jamais data/). SCHED_ONLY=2,4 ne lance que ces groupes.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -246,9 +247,102 @@ try {
   }
   if (want(2)) step('courtier ajouté au registre (brokers.json ou administration) : une demande de cycle 1 par profil éligible, sans doublon, rattrapage des profils redevenus éligibles');
 
+  /* ---------- Serveur principal des groupes 3 et 4 (boîte d'envoi locale, paiement simulé) ---------- */
+  const S = want(3) || want(4) || want(5) ? await start('main') : null;
+  const ADM = S ? await adminOf(S) : null;
+  const db = S ? S.sql() : null;
+  const reqRow = (id) => db.prepare('SELECT * FROM requests WHERE id = ?').get(id);
+  const brokerOf = (id) => db.prepare('SELECT b.* FROM requests r JOIN brokers b ON b.id = r.broker_id WHERE r.id = ?').get(id);
+
+  /* ---------- 3. Courtier désactivé : demandes jamais envoyées closes, montrées « arrêtées », relancées à la réactivation ---------- */
+  // Ses demandes en file ou en erreur restaient « À envoyer » pour toujours.
+  if (want(3)) {
+    const M = await member(S), N = await member(S), P = await member(S);
+    const site = await S.call('POST', '/sites', { url: 'https://annuaire-retire.fr/fiche/lea' }, M.cookie);
+    assert.equal(site.status, 201);
+    await settle(S);
+    const X = db.prepare('SELECT id, name FROM brokers WHERE custom = 0 AND active = 1 ORDER BY id LIMIT 1').get();
+    const reqOf = (u, broker) => db.prepare('SELECT * FROM requests WHERE user_id = ? AND broker_id = ? ORDER BY cycle DESC LIMIT 1').get(u.id, broker);
+    const mx = reqOf(M, X.id), nx = reqOf(N, X.id), px = reqOf(P, X.id), mw = reqOf(M, site.data.broker.id);
+    db.prepare(`UPDATE requests SET status = 'queued', sent_at = NULL, due_at = NULL WHERE id IN (?, ?)`).run(mx.id, mw.id);       // pas encore parties
+    db.prepare(`UPDATE requests SET status = 'error', sent_at = NULL, due_at = NULL, attempts = 6, last_error = 'refus SMTP' WHERE id = ?`).run(nx.id);
+    let r = await S.call('DELETE', `/admin/brokers/${X.id}`, {}, ADM);
+    assert.equal(r.status, 200); assert.equal(r.data.broker.active, 0); assert.equal(r.data.stopped, 2, 'deux demandes jamais parties closes');
+    r = await S.call('PUT', `/admin/brokers/${site.data.broker.id}`, { active: false }, ADM);   // case « Actif » décochée dans la fiche
+    assert.equal(r.status, 200); assert.equal(r.data.stopped, 1);
+    for (const id of [mx.id, nx.id, mw.id]) { const x = reqRow(id); assert.equal(x.status, 'refused'); assert.match(x.note, /^Courtier retiré/); assert.equal(x.next_check_at, null); }
+    assert.equal(reqRow(px.id).status, 'sent', 'une demande déjà envoyée n’est pas touchée');
+    // Tableau de bord, CSV, plainte, rapport mensuel : « arrêtée », jamais un refus.
+    let dash = (await S.call('GET', '/dashboard', undefined, M.cookie)).data;
+    const rowX = dash.requests.find((x) => x.id === mx.id), rowW = dash.requests.find((x) => x.id === mw.id);
+    for (const row of [rowX, rowW]) { assert.equal(row.status, 'stopped'); assert.equal(row.stop_reason, 'broker'); assert.equal(row.complaint, false); }
+    assert.equal(dash.counters.stopped, 2); assert.equal(dash.counters.refused, 0, 'pas un refus');
+    const csv = (await S.call('GET', '/requests.csv', undefined, M.cookie)).text;
+    assert.equal(csv.match(/Arrêtée \(courtier retiré du registre\)/g)?.length, 2, 'CSV : arrêtées, cause indiquée');
+    assert.ok(!/Refusée|mandat révoqué/.test(csv), 'CSV : ni refus ni mandat révoqué');
+    assert.equal((await S.call('GET', `/requests/${mx.id}/complaint`, undefined, M.cookie)).status, 400, 'aucune plainte proposée');
+    assert.equal((await S.call('GET', '/admin/brokers', undefined, ADM)).data.brokers.find((b) => b.id === X.id).refused, 0, 'administration : pas compté comme un refus');
+    assert.ok(dash.events.some((e) => e.request_id === mx.id && /retiré de notre registre/.test(e.message)), 'journal : arrêt expliqué');
+    db.prepare('UPDATE users SET created_at = ?, last_report_at = NULL WHERE id = ?').run(ago(31 * DAY), M.id);
+    r = await S.call('POST', '/admin/reports/run', {}, ADM); assert.ok(r.data.sent >= 1);
+    const report = db.prepare(`SELECT body FROM mails WHERE user_id = ? AND subject LIKE 'Votre rapport mensuel%' ORDER BY id DESC LIMIT 1`).get(M.id).body;
+    assert.match(report, /2 demandes arrêtées/); assert.match(report, /retirés de notre registre/); assert.doesNotMatch(report, /refus/i);
+    await S.call('POST', '/admin/tick', {}, ADM);
+    assert.equal(reqRow(mx.id).status, 'refused', 'pas de nouveau cycle tant que le courtier est retiré');
+    assert.equal(db.prepare('SELECT COUNT(*) AS c FROM requests WHERE broker_id = ? AND user_id = ?').get(X.id, M.id).c, 1);
+    // Un renvoi par l'administration vers un courtier désactivé est refusé (il resterait « à envoyer »).
+    r = await S.call('POST', `/admin/requests/${mx.id}/resend`, {}, ADM);
+    assert.equal(r.status, 400); assert.match(r.data.error, /désactivé/);
+    // Réactivation : un nouveau cycle repart, comme après une nouvelle signature du mandat.
+    r = await S.call('PUT', `/admin/brokers/${X.id}`, { active: true }, ADM); assert.equal(r.status, 200);
+    await settle(S);
+    for (const u of [M, N]) { const next = reqOf(u, X.id); assert.equal(next.cycle, 2, 'nouveau cycle'); assert.equal(next.status, 'sent'); }
+    assert.equal(reqOf(M, site.data.broker.id).id, mw.id, 'le site, toujours retiré, reste arrêté');
+    r = await S.call('PUT', `/admin/brokers/${site.data.broker.id}`, { active: true }, ADM); assert.equal(r.status, 200);   // site : hors registre
+    await settle(S);
+    assert.equal(reqOf(M, site.data.broker.id).cycle, 2, 'site rétabli : nouveau cycle'); assert.equal(reqOf(M, site.data.broker.id).status, 'sent');
+    assert.equal(reqOf(M, site.data.broker.id).source_url, 'https://annuaire-retire.fr/fiche/lea', 'la fiche signalée reste citée');
+    assert.equal(reqOf(P, X.id).id, px.id, 'la demande déjà envoyée suit son cours');
+    dash = (await S.call('GET', '/dashboard', undefined, M.cookie)).data;
+    assert.equal(dash.counters.stopped, 0, 'plus aucune demande arrêtée');
+    // Courtier déjà inactif avec une demande en file (base antérieure au correctif) : arrêtée au passage suivant.
+    const old = await S.call('POST', '/sites', { url: 'https://ancien-annuaire.fr/fiche/lea' }, M.cookie);
+    await settle(S);
+    db.prepare('UPDATE brokers SET active = 0 WHERE id = ?').run(old.data.broker.id);
+    db.prepare(`UPDATE requests SET status = 'queued', sent_at = NULL, due_at = NULL WHERE id = ?`).run(old.data.request_id);
+    await S.call('POST', '/admin/tick', {}, ADM);
+    assert.equal(reqRow(old.data.request_id).status, 'refused'); assert.match(reqRow(old.data.request_id).note, /^Courtier retiré/);
+    // Abonné suspendu pendant la réactivation : rien ne repart, même après un redémarrage (la reprise des anciens refus
+    // au démarrage ne transforme pas l'arrêt en refus) ; la levée de la suspension relance la demande.
+    const T1 = await start('arret-1');
+    const O = await member(T1), TA = await adminOf(T1);
+    await settle(T1);
+    const tdb = T1.sql();
+    const Z = tdb.prepare('SELECT id FROM brokers WHERE custom = 0 AND active = 1 ORDER BY id LIMIT 1').get().id;
+    const oz = tdb.prepare('SELECT id FROM requests WHERE user_id = ? AND broker_id = ?').get(O.id, Z).id;
+    tdb.prepare(`UPDATE requests SET status = 'queued', sent_at = NULL, due_at = NULL WHERE id = ?`).run(oz);
+    tdb.close();
+    assert.equal((await T1.call('DELETE', `/admin/brokers/${Z}`, {}, TA)).data.stopped, 1);
+    assert.equal((await T1.call('POST', `/admin/users/${O.id}/suspend`, { reason: 'vérification du compte' }, TA)).status, 200);
+    assert.equal((await T1.call('PUT', `/admin/brokers/${Z}`, { active: true }, TA)).status, 200);
+    await settle(T1);
+    await T1.stop();
+    const T2 = await start('arret-2', {}, { db: T1.db });
+    const t2db = T2.sql();
+    const stoppedRow = () => t2db.prepare('SELECT status, note, next_check_at FROM requests WHERE id = ?').get(oz);
+    assert.equal(stoppedRow().status, 'refused'); assert.match(stoppedRow().note, /^Courtier retiré/);
+    assert.equal(stoppedRow().next_check_at, null, 'redémarrage : pas de nouvelle demande programmée comme après un refus');
+    assert.equal((await T2.call('POST', `/admin/users/${O.id}/unsuspend`, {}, await adminOf(T2))).status, 200);
+    await settle(T2);
+    const relaunched = t2db.prepare('SELECT cycle, status FROM requests WHERE user_id = ? AND broker_id = ? ORDER BY cycle DESC LIMIT 1').get(O.id, Z);
+    assert.deepEqual({ ...relaunched }, { cycle: 2, status: 'sent' }, 'suspension levée : la demande arrêtée repart');
+    t2db.close(); await T2.stop();
+  }
+  if (want(3)) step('courtier désactivé : demandes jamais parties closes (« arrêtées », cause propre, sans plainte ni refus, CSV et rapport) ; nouveau cycle à la réactivation');
 
 
 
+  if (db) db.close();
   console.log(`✔ Planificateur validé (${passed} groupes de vérifications).`);
 } catch (e) {
   console.error('✘ Échec :', e.message);

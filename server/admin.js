@@ -475,6 +475,8 @@ admin.post('/requests/:id/outcome', wrap(async (req, res) => {
 admin.post('/requests/:id/resend', (req, res) => {
   const r = getRequest(req.params.id);
   if (!r) return bad(res, 'Demande introuvable.', 404);
+  // Courtier désactivé : la demande resterait « à envoyer » (puis serait de nouveau arrêtée par le planificateur).
+  if (!q.get('SELECT active FROM brokers WHERE id = ?', r.broker_id)?.active) return bad(res, 'Ce courtier est désactivé : réactivez-le avant de renvoyer la demande.');
   // Nouvel envoi immédiat : compteur d'échecs et recul remis à zéro (sinon une demande en erreur y retombe au premier
   // échec, et une demande en recul attend la fin du délai).
   q.run(`UPDATE requests SET status = 'queued', sent_at = NULL, due_at = NULL, followup_sent_at = NULL, completed_at = NULL, next_check_at = NULL, attempts = 0, next_attempt_at = NULL, last_error = NULL, note = ? WHERE id = ?`, 'Nouvel envoi demandé par l’équipe Oubli.', r.id);
@@ -505,7 +507,7 @@ admin.post('/requests/bulk', wrap(async (req, res) => {
 /* ---------- Courtiers ---------- */
 const BROKER_STATS = `(SELECT COUNT(*) FROM requests r WHERE r.broker_id = b.id AND r.sent_at IS NOT NULL) AS sent,
   (SELECT COUNT(*) FROM requests r WHERE r.broker_id = b.id AND r.status = 'done') AS done,
-  (SELECT COUNT(*) FROM requests r WHERE r.broker_id = b.id AND r.status = 'refused') AS refused,
+  (SELECT COUNT(*) FROM requests r WHERE r.broker_id = b.id AND r.status = 'refused' AND COALESCE(r.note, '') NOT LIKE 'Mandat révoqué%' AND COALESCE(r.note, '') NOT LIKE 'Courtier retiré%') AS refused,
   (SELECT COUNT(*) FROM requests r WHERE r.broker_id = b.id AND r.status = 'action_required') AS action_required,
   (SELECT COUNT(*) FROM requests r WHERE r.broker_id = b.id AND r.status IN ('sent', 'in_progress')) AS pending,
   (SELECT ROUND(AVG(julianday(r.completed_at) - julianday(r.sent_at)), 1) FROM requests r WHERE r.broker_id = b.id AND r.status = 'done' AND r.sent_at IS NOT NULL AND r.completed_at IS NOT NULL) AS avg_days_to_done`;
@@ -553,15 +555,21 @@ admin.put('/brokers/:id', (req, res) => {
   if (!keys.length) return bad(res, 'Rien à modifier.');
   q.run(`UPDATE brokers SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`, ...keys.map((k) => v[k]), b.id);
   const changes = Object.fromEntries(keys.filter((k) => v[k] !== b[k]).map((k) => [k, { from: b[k], to: v[k] }]));
-  audit(req, 'broker.update', b.id, { slug: b.slug, changes });
-  res.json({ broker: brokerRow(b.id) });
+  // Case « Actif » décochée : comme la désactivation. Recochée : les demandes arrêtées repartent dans un nouveau cycle
+  // (recherche complète au prochain passage, lancé tout de suite), comme après une nouvelle signature du mandat.
+  const stopped = v.active === 0 && b.active ? scheduler.stopRemovedBrokerRequests(b.id) : undefined;
+  if (v.active === 1 && !b.active) { scheduler.requestFullScan(); setTimeout(() => tick(), 10); }
+  audit(req, 'broker.update', b.id, { slug: b.slug, changes, stopped });
+  res.json({ broker: brokerRow(b.id), ...(stopped === undefined ? {} : { stopped }) });
 });
+// Désactivation : plus aucune nouvelle demande, et les demandes jamais envoyées (en file ou en erreur) sont arrêtées.
 admin.delete('/brokers/:id', (req, res) => {
   const b = getBroker(req.params.id);
   if (!b) return bad(res, 'Courtier introuvable.', 404);
   q.run('UPDATE brokers SET active = 0 WHERE id = ?', b.id);
-  audit(req, 'broker.deactivate', b.id, { slug: b.slug });
-  res.json({ ok: true, broker: brokerRow(b.id) });
+  const stopped = scheduler.stopRemovedBrokerRequests(b.id);
+  audit(req, 'broker.deactivate', b.id, { slug: b.slug, stopped });
+  res.json({ ok: true, broker: brokerRow(b.id), stopped });
 });
 // Relance la recherche du contact d'un site ajouté par un abonné (la réponse attend la fin de la recherche).
 admin.post('/brokers/:id/discover', wrap(async (req, res) => {

@@ -265,7 +265,8 @@ api.post('/requests/:id/relaunch', requireAuth, rateLimit({ windowMs: 60 * 60000
 api.get('/requests.csv', requireAuth, rateLimit({ max: 30 }), (req, res) => {
   const d = buildDashboard(fresh(req), isId(req.query.profile_id) ? req.query.profile_id : undefined);
   const STATUS = { queued: 'À envoyer', sent: 'Envoyée', in_progress: 'En cours', action_required: 'Action requise', done: 'Effacée', refused: 'Refusée', error: 'Erreur d’envoi', stopped: 'Arrêtée (mandat révoqué)' };
-  const rows = d.requests.map((r) => ({ courtier: r.broker, domaine: r.domain, categorie: r.category, statut: STATUS[r.status] || r.status, base_legale: r.legal_basis === 'ccpa' ? 'CCPA' : r.legal_basis === 'both' ? 'RGPD et CCPA' : 'RGPD', cycle: r.cycle, envoyee_le: r.sent_at || '', echeance: r.due_at || '', effacee_le: r.completed_at || '', reverification: r.next_check_at || '', fiche: r.source_url || '', reference: r.ref }));
+  const statut = (r) => (r.status === 'stopped' && r.stop_reason === 'broker' ? 'Arrêtée (courtier retiré du registre)' : STATUS[r.status] || r.status);
+  const rows = d.requests.map((r) => ({ courtier: r.broker, domaine: r.domain, categorie: r.category, statut: statut(r), base_legale: r.legal_basis === 'ccpa' ? 'CCPA' : r.legal_basis === 'both' ? 'RGPD et CCPA' : 'RGPD', cycle: r.cycle, envoyee_le: r.sent_at || '', echeance: r.due_at || '', effacee_le: r.completed_at || '', reverification: r.next_check_at || '', fiche: r.source_url || '', reference: r.ref }));
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="oubli-demandes-${now().slice(0, 10)}.csv"`);
   res.send(toCsv(['courtier', 'domaine', 'categorie', 'statut', 'base_legale', 'cycle', 'envoyee_le', 'echeance', 'effacee_le', 'reverification', 'fiche', 'reference'], rows));
