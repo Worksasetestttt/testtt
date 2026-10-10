@@ -18,7 +18,7 @@ Oubli est un service « type Incogni » : il envoie, suit et relance des demande
 npm install
 npm start                    # http://localhost:3000 (landing) et /app/ (application)
 DEMO_MODE=true npm start     # les courtiers « répondent » après environ 45 s
-npm test                     # onze suites (voir package.json) ; npm run test:<suite> pour une seule
+npm test                     # douze suites (voir package.json) ; npm run test:<suite> pour une seule
 npm run test:ui              # audit navigateur, hors npm test
 PORT=3081 node server/index.js
 ```
@@ -41,7 +41,8 @@ Sans `.env`, le serveur tourne en mode développement : abonnement simulé, cour
 | `server/sites.js`, `server/sitediscovery.js` | Sites ajoutés par les abonnés (`addSite`, `relaunchRequest`, `runDiscovery`) et recherche du contact sur le site, derrière une garde SSRF (`safeFetch`, `guardedLookup`, `isPublicIp`). |
 | `server/reports.js` | Rapport mensuel par e-mail (`runMonthlyReports`, `startReports`) ; un échec d'envoi ou un dossier sans rien à rapporter repousse le prochain essai au lendemain (`report_retry_at`). |
 | `server/util.js` | Helpers partagés : `EMAIL`, `MAIL_ADDRESS`, `clean`, `arr`, `publicUser`, `parseProfile`, `wrap`, `sessionHandle`, `deviceLabel`. |
-| `server/auth.js` | scrypt, sessions en base, cookie signé HMAC, limitation de débit (`rateLimit({ by })`), `requireAdmin`, promotion des administrateurs (`ADMIN_VERIFY`, `adminPending`, `promoteIfAdmin`). |
+| `server/auth.js` | scrypt, sessions en base, cookie signé HMAC, limitation de débit (`rateLimit({ by })`), verrouillage de connexion par couple (adresse, client) avec plafond global par adresse (`failureLock`, `LOGIN_LOCK`), `deriveKey` (HKDF sur `SESSION_SECRET`), `requireAdmin`, promotion des administrateurs (`ADMIN_VERIFY`, `adminPending`, `promoteIfAdmin`). |
+| `server/totp.js`, `server/twofactor.js` | Double authentification : TOTP (RFC 6238, module pur), clé chiffrée (AES-256-GCM, `deriveKey`), codes de secours, jetons de l'étape « code » (`/auth/login/2fa`), routes `/auth/2fa*`, garde `requireAdminTwoFactor` (`ADMIN_REQUIRE_2FA`, active par défaut en production). |
 | `server/db.js` | Schéma SQLite, index, seed des courtiers depuis `server/brokers.json`. |
 | `server/scheduler.js` | Envoi, relances à 30 j (RGPD) ou 45 j (CCPA), nouveau cycle après 60 à 90 j, simulation en démo, fin des abonnements par clé (`expireKeySubscriptions`). `applyOutcome` renvoie `{ applied, error? }`. |
 | `server/billing.js` | Stripe Checkout en REST (sans SDK, adresse `STRIPE_API_BASE`), webhooks signés, abonnement simulé. Formule unique, mensuelle, sans engagement : 5 € par mois (Individuel), 9,99 € par mois (Famille). Plus d’offre annuelle (`BILLING_PERIODS`) ; les anciens comptes « annual » restent lisibles. Un abonnement résilié encore payé est repris (`resumeSubscription`), jamais doublé ; un webhook plus ancien que le dernier appliqué au compte est ignoré (`users.stripe_event_created`) ; à la suppression d’un compte (abonné ou administration), `endSubscriptionNow` arrête l’abonnement et annule les factures ouvertes ; l’abonnement annoncé pour un compte déjà supprimé est arrêté (`stopOrphanSubscription`). |
@@ -49,20 +50,21 @@ Sans `.env`, le serveur tourne en mode développement : abonnement simulé, cour
 | `app/index.html`, `app/app.js`, `app/app.css` | Application abonné en JS vanilla, routage par hash. |
 | `app/admin.js`, `app/admin.css` | Panel d’administration (11 onglets, dont « Clés »). Chargé à la demande par `app.js` uniquement pour les administrateurs. Classes préfixées `adm-` (ne pas réutiliser `.chart`, déjà pris par le tableau de bord). |
 | `scripts/smoke.mjs` | Parcours complet de bout en bout. |
-| `scripts/admin-cli.mjs` | `npm run admin -- promote <adresse>` (rôle administrateur, adresse tenue pour confirmée) et `npm run admin -- keys --plan --days --count --uses --expires --note` (clés affichées une fois). Lit `.env` ; une option inconnue n'exécute rien. |
+| `scripts/admin-cli.mjs` | `npm run admin -- promote <adresse>` (rôle administrateur, adresse tenue pour confirmée), `npm run admin -- keys --plan --days --count --uses --expires --note` (clés affichées une fois) et `npm run admin -- 2fa-off <adresse>` (dernier recours, inscrit à l’audit et au journal). Lit `.env` ; une option inconnue n'exécute rien. |
 | `scripts/security.test.mjs` | Tests de sécurité : en-têtes, cookies, autorisations, limitation de débit, webhooks. |
 | `scripts/admin.test.mjs` | Tests de l’API d’administration : autorisations, comptes, demandes, courtiers, exports, audit. |
 | `scripts/ui.audit.cjs` | Audit navigateur (`npm run test:ui`, hors `npm test`) : écrans de connexion, offre et clé, tableau de bord (tiroir, plainte, focus, 304), vues, onglets et fiche admin, à 1280 et 390 px (débordement, ids, cibles de 44 px), sur un serveur (port attribué par le système) et une base temporaires. Relance-le après toute modification de l’interface. |
 | `scripts/sites.test.mjs`, `scripts/features.test.mjs` | Sites ajoutés (SSRF, découverte, règle d’envoi, erreurs SMTP internes) ; fonctions du tableau de bord (détail, CSV, rapport mensuel, refus, plainte, relance, demandes arrêtées). |
 | `scripts/security2.test.mjs`, `scripts/account.test.mjs`, `scripts/keys.test.mjs`, `scripts/perf.test.mjs`, `scripts/regressions.test.mjs` | Sécurité (seconde série, dont un serveur en mode production) ; comptes ; clés d’activation ; performance et fiabilité ; régressions des bugs corrigés. |
 | `scripts/billing.test.mjs` | Facturation contre un faux Stripe (`STRIPE_API_BASE`) : session de paiement, reprise d’un abonnement, webhooks en retard, suppression (abonné et administration), identifiants jamais renvoyés, signatures. |
+| `scripts/twofactor.test.mjs` | Double authentification (vecteurs des RFC 4226 et 6238, anti-rejeu, codes de secours, jetons, administration en production) et verrouillage de connexion par client. |
 | `docs/handoff/` | Rapports des relectures (bureau, accessibilité, mobile) et contrat de découpage des fichiers. Lis-les avant de toucher l'interface. |
 
 ### Contrats à ne pas casser
 
 - `server/util.js`, `server/auth.js`, `server/scheduler.js` et `server/db.js` exportent des fonctions utilisées ailleurs. Ajoute des exports, ne change pas les signatures sans mettre à jour tous les appelants.
 - `window.Oubli` (exposé par `app/app.js`) sert au module admin : `registerView`, `api`, `esc`, `toast`, `fmtDate`, `chip`, `params`, `state`, `subActive`, etc. Ajoute, ne renomme pas. Une erreur de `api()` porte `status` et `code` (codes `invalid`, `expired`, `used` des liens).
-- Exports ajoutés : `scheduler.js` (`subscriptionActive`, `hasAccess`, `expireKeySubscriptions`, `schedulerState`, `stopScheduler`), `db.js` (`dbPing`, `closeDb`), `reports.js` (`stopReports`), `auth.js` (`ADMIN_VERIFY`, `adminPending`), `account.js` (`sendAdminVerification`), `billing.js` (`endSubscriptionNow`, `stopOrphanSubscription`), `util.js` (`MAIL_ADDRESS`). `handleStripeEvent` peut renvoyer `{ orphan }` (abonnement à arrêter, événement non marqué traité) et `stripeWebhook` est asynchrone.
+- Exports ajoutés : `scheduler.js` (`subscriptionActive`, `hasAccess`, `expireKeySubscriptions`, `schedulerState`, `stopScheduler`), `db.js` (`dbPing`, `closeDb`), `reports.js` (`stopReports`), `auth.js` (`ADMIN_VERIFY`, `adminPending`), `account.js` (`sendAdminVerification`), `billing.js` (`endSubscriptionNow`, `stopOrphanSubscription`), `util.js` (`MAIL_ADDRESS`, `frTypo`), `auth.js` (`deriveKey`, `failureLock`, `LOGIN_LOCK`, `clearClientLoginFailures` ; `loginLockRemaining(email, ip)` et `noteLoginFailure(email, ip)` prennent le client en second argument), `twofactor.js` (`twoFactorEnabled`, `twoFactorStatus`, `checkSecondFactor`, jetons de l’étape « code », `requireAdminTwoFactor`, `ADMIN_REQUIRE_2FA`). `handleStripeEvent` peut renvoyer `{ orphan }` (abonnement à arrêter, événement non marqué traité) et `stripeWebhook` est asynchrone.
 - `scripts/smoke.mjs` attend `GET /api/admin/stats` avec les champs `users`, `active`, `requests`, `mails`, `action_required`, et `POST /api/admin/requests/:id/outcome`.
 - Les ids `#f-first_name`, `#f-last_name`, `#f-birth_date`, `#f-country`, `#add-emails` restent non scopés sur l'écran d'onboarding (le script de test les utilise).
 
@@ -94,7 +96,9 @@ Sans `.env`, le serveur tourne en mode développement : abonnement simulé, cour
 - Le webhook Stripe et `/api/inbound` ne lisent pas les cookies. Ils vérifient leur signature ou leur jeton (comparaison à temps constant).
 - En SMTP réel, le planificateur n'écrit qu'aux courtiers dont le contact est vérifié par un administrateur. Seule exception (`canMail` dans scheduler.js, réglable par `AUTO_SEND_SITE_CONTACTS`) : l’adresse publiée par un site ajouté par un abonné sur son propre domaine.
 - `DEMO_MODE` ne doit jamais être activé en production.
-- Administrateurs : en production (`ADMIN_VERIFY`), une adresse de `ADMIN_EMAILS` n’obtient le rôle qu’après avoir prouvé sa boîte (lien `#verify` ou réinitialisation par e-mail, `email_verified_at`). Ne réintroduis pas de promotion sans cette preuve.
+- Administrateurs : en production (`ADMIN_VERIFY`), une adresse de `ADMIN_EMAILS` n’obtient le rôle qu’après avoir prouvé sa boîte (lien `#verify` ou réinitialisation par e-mail, `email_verified_at`). Ne réintroduis pas de promotion sans cette preuve. L’administration exige en plus la double authentification en production (`ADMIN_REQUIRE_2FA`, garde `requireAdminTwoFactor` sur `/api/admin`).
+- Double authentification : pour un compte protégé, une session n’existe qu’après le code (`/auth/login/2fa`), ou à l’activation, qui ferme les autres sessions ; une réinitialisation du mot de passe n’ouvre pas de session. Toute nouvelle façon d’ouvrir une session doit vérifier `twoFactorEnabled`. La clé est chiffrée avec une clé dérivée de `SESSION_SECRET` : changer ce secret la rend illisible (codes de secours ou `npm run admin -- 2fa-off` seulement).
+- Verrouillage de connexion : par couple (adresse, client), 10 échecs en 15 minutes, et plafond global de 100 par adresse ; une connexion réussie ne remet à zéro que le compteur de ce client ; les codes faux de l’étape « code » comptent. Compteurs en mémoire (perdus au redémarrage, non partagés entre instances).
 - Secrets envoyés par e-mail (liens de réinitialisation et de confirmation) : empreinte SHA-256 seule en base, jeton masqué dans `mails` (`redact`). Clés d’activation : empreinte et indice seulement, affichées une seule fois, jamais journalisées.
 - Limitation de débit : la clé est le motif de la route (casse et barre finale ignorées) et le client (IPv4, ou /64 en IPv6). Une route à identifiant a donc un seul compteur par client.
 - Découverte des sites : aucune répétition non bornée sur le HTML lu (coût quadratique sur un serveur mono-processus) ; `timeoutMs` borne la durée totale d’une lecture ; `isPublicIp` juge une IPv6 sur sa valeur. Un courtier personnalisé se retrouve par nom d’hôte exact, jamais par slug.
@@ -119,14 +123,16 @@ Fait et poussé :
 - Audit de sécurité (découverte des sites, limitation de débit, courtiers personnalisés, CSV, erreurs SMTP), chasse aux bugs (`regressions.test.mjs` : un groupe par bug corrigé, dont le rapport mensuel retenté le lendemain et l’exposition passée inchangée après une revérification), performance (compression, cache, ETag, santé, sauvegardes, arrêt propre).
 - Adresses : une seule règle (`MAIL_ADDRESS`) pour l’envoi et pour les adresses saisies ; la landing n’affiche plus de fausse confirmation d’inscription quand le serveur ne répond pas.
 - Facturation Stripe : reprise d’un abonnement résilié encore payé (même offre sans paiement, autre offre au prorata), webhooks en retard ignorés, arrêt immédiat à la suppression du compte, abonnement d’un compte supprimé arrêté ; `scripts/billing.test.mjs` contre un faux Stripe.
-- `npm test` passe (onze suites) ; `npm run test:ui` passe à 1280 et 390 px. README à jour.
+- Double authentification (TOTP, codes de secours, exigée pour l’administration en production) et verrouillage de connexion par client (un tiers ne peut plus bloquer un compte en échouant 10 fois) ; `scripts/twofactor.test.mjs`.
+- `npm test` passe (douze suites) ; `npm run test:ui` passe à 1280 et 390 px. README à jour.
 
 Pistes suivantes (non commencées) :
 - Landing : témoignages et chiffres du tableau de bord illustré fictifs ; pages légales (mentions, CGU, confidentialité), presse et carrières absentes.
-- Authentification à deux facteurs pour les administrateurs ; vérification de l’adresse de tous les abonnés (inscription : 409 « compte existant » révèle encore l’existence d’un compte).
+- Vérification de l’adresse de tous les abonnés (inscription : 409 « compte existant » révèle encore l’existence d’un compte).
+- Double authentification : aucun e-mail d’avis quand elle est désactivée, quand un code de secours sert ou quand les codes sont renouvelés (journal seulement) ; pas d’action du panel pour la réinitialiser (seulement `npm run admin -- 2fa-off`) ; suppression du compte et changement de mot de passe sans code ; pas de rotation de clé (`SESSION_SECRET` précédent).
 - Stripe : deux paiements terminés en parallèle (deux onglets) créent deux abonnements, le compte ne garde que le dernier ; aucun moyen pour l’abonné de changer de carte en cas d’impayé (ni lien vers la facture ni portail client) ; à la suppression, les factures en brouillon ne sont pas annulées et rien n’est remboursé ; un changement d’offre d’un abonnement actif répond encore 409 (« résiliez d’abord ») ; `cancelSubscription` force l’état local « résilié » même si Stripe répond « impayé ».
 - Planificateur : les nouveaux courtiers du registre ne reçoivent pas de demande pour les abonnés existants (`autoLaunch` ne traite que les profils sans demande) ; les demandes en file d’un courtier désactivé restent « À envoyer » ; un courrier peut partir deux fois avec deux instances (réserver la demande avant l’envoi).
-- Verrouillage de connexion par adresse seulement (un tiers peut bloquer un compte) ; `/api/inbound` accepte tout expéditeur qui connaît une référence ; scrypt N=2^14 (OWASP recommande 2^17) ; l’indice de 4 caractères d’une clé ramène sa recherche à 40 bits depuis une copie de la base.
+- `/api/inbound` accepte tout expéditeur qui connaît une référence ; scrypt N=2^14 (OWASP recommande 2^17) ; l’indice de 4 caractères d’une clé ramène sa recherche à 40 bits depuis une copie de la base.
 
 ## Pièges connus
 

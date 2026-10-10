@@ -9,7 +9,7 @@ Service « type Incogni » : une landing page, une application abonné et une AP
 ```bash
 npm install
 npm start          # http://localhost:3000  (landing)  ·  http://localhost:3000/app/  (application)
-npm test           # onze suites : parcours, sécurité (deux séries), administration, sites, fonctions, comptes, clés, performance, régressions, facturation
+npm test           # douze suites : parcours, sécurité (deux séries), administration, sites, fonctions, comptes, clés, performance, régressions, facturation, double authentification
 ```
 
 Sans fichier `.env`, le serveur tourne en mode développement : abonnement simulé (pas de Stripe), e-mails écrits dans `data/outbox/` au lieu d'être envoyés, et mode démo désactivé. Pour voir le pipeline « vivre » (les courtiers répondent en quelques minutes), lancez `DEMO_MODE=true npm start`.
@@ -50,17 +50,19 @@ Parcours : créer un compte → renseigner les informations à faire effacer →
 | `scripts/account.test.mjs`, `scripts/keys.test.mjs` | Mot de passe oublié et appareils connectés ; clés d'activation. |
 | `scripts/perf.test.mjs`, `scripts/regressions.test.mjs` | Compression, cache, santé, sauvegardes, arrêt ; régressions des bugs corrigés. |
 | `scripts/ui.audit.cjs` | Audit navigateur (Playwright, hors `npm test`) de tous les écrans à 1280 et 390 px. |
-| `scripts/admin-cli.mjs` | `npm run admin` : rôle administrateur et clés d'activation en ligne de commande, sur la base du serveur. |
+| `scripts/admin-cli.mjs` | `npm run admin` : rôle administrateur, clés d'activation et désactivation de la double authentification d'un compte (dernier recours), en ligne de commande, sur la base du serveur. |
+| `server/totp.js`, `server/twofactor.js` | Double authentification : codes TOTP (RFC 6238), clé chiffrée en base (AES-256-GCM, clé dérivée de `SESSION_SECRET`), codes de secours, étape « code » de la connexion, garde de l'administration. |
+| `scripts/twofactor.test.mjs` | Test de la double authentification et du verrouillage de connexion (vecteurs des RFC, anti-rejeu, codes de secours, administration en production). |
 
 ## Configuration (`.env`)
 
 Copiez `.env.example` en `.env`. Variables principales :
 
-- `SESSION_SECRET` (obligatoire en production), `APP_URL`, `PORT`, `TRUST_PROXY`.
+- `SESSION_SECRET` (obligatoire en production), `APP_URL`, `PORT`, `TRUST_PROXY`. Il chiffre aussi les clés de double authentification : sauvegardez-le avec la base (s'il change, seuls les codes de secours permettent de se reconnecter).
 - `SMTP_URL` (`smtps://user:pass@smtp.exemple.fr:465`), `MAIL_FROM`, `MAIL_REPLY_TO`.
 - `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` : événements `checkout.session.completed` et `async_payment_*`, `customer.subscription.created` · `updated` · `deleted`, `invoice.paid` · `payment_succeeded` · `payment_failed`, vers `/api/billing/webhook`. Les événements d'un ancien abonnement du même client, ou plus anciens que le dernier appliqué au compte, sont ignorés. `STRIPE_API_BASE` : adresse de l'API (l'API réelle par défaut ; https obligatoire en production) ; un changement d'offre crée au besoin un prix « Oubli Individuel » ou « Oubli Famille » (clé de recherche `oubli_<offre>_<montant>_eur_month`).
 - `INBOUND_TOKEN` : jeton du webhook `/api/inbound` qui reçoit les réponses des courtiers (depuis Postmark, Mailgun, SendGrid Inbound Parse… en POST JSON `{from, subject, text}`). La référence `OUBLI-XXXXXXXXXX` présente dans l'objet rattache la réponse à la demande.
-- `ADMIN_EMAILS` : comptes ayant accès à `/app/#admin` et `/api/admin/*`. En production, l'accès n'est accordé qu'une fois l'adresse confirmée (lien reçu par e-mail, ou réinitialisation du mot de passe) ; `ADMIN_EMAIL_VERIFICATION=on|off` force ce réglage.
+- `ADMIN_EMAILS` : comptes ayant accès à `/app/#admin` et `/api/admin/*`. En production, l'accès n'est accordé qu'une fois l'adresse confirmée (lien reçu par e-mail, ou réinitialisation du mot de passe) ; `ADMIN_EMAIL_VERIFICATION=on|off` force ce réglage. `ADMIN_REQUIRE_2FA=on|off` (actif par défaut en production) : l'administration exige en plus la double authentification ; le panel invite à l'activer dans les Paramètres.
 - `BACKUP_DIR` : dossier des sauvegardes quotidiennes de la base (7 gardées), hors des dossiers publics ; vide = désactivé. `SHUTDOWN_TIMEOUT_MS` (8000 par défaut) : délai laissé aux requêtes en cours à l'arrêt.
 - `DEMO_MODE` : ne jamais activer en production.
 
@@ -77,8 +79,10 @@ Toutes les réponses sont en JSON ; les erreurs ont la forme `{ "error": "messag
 | Méthode & route | Description |
 |---|---|
 | `GET /api/health`, `GET /api/config` | Santé (200, ou 503 si la base ne répond pas, si le planificateur est figé ou pendant l'arrêt ; détail dans `checks`), offres, nombre de courtiers. |
-| `POST /api/auth/signup` · `/login` · `/logout` · `GET /api/me` · `POST /api/auth/password` | Compte et session. Un changement de mot de passe prévient le titulaire par e-mail. |
-| `POST /api/auth/forgot` · `/reset` | Mot de passe oublié : même réponse et même délai que le compte existe ou non ; lien valable une heure, à usage unique ; toutes les sessions fermées. |
+| `POST /api/auth/signup` · `/login` · `/logout` · `GET /api/me` · `POST /api/auth/password` | Compte et session. Un changement de mot de passe prévient le titulaire par e-mail. Avec la double authentification, `/login` répond `{ two_factor, challenge, expires_at }` sans session. |
+| `POST /api/auth/login/2fa` | Étape « code » de la connexion : `{ challenge, code }` (code de l'application ou de secours) ; jeton de 5 minutes, 5 essais, usage unique. |
+| `GET /api/auth/2fa`, `POST /api/auth/2fa/setup` · `/enable` · `/disable` · `/recovery` | Double authentification : état ; mise en place (mot de passe, puis clé et lien `otpauth://`, puis premier code, 10 codes de secours montrés une fois) ; désactivation et nouveaux codes de secours (mot de passe et code). |
+| `POST /api/auth/forgot` · `/reset` | Mot de passe oublié : même réponse et même délai que le compte existe ou non ; lien valable une heure, à usage unique ; toutes les sessions fermées. Compte avec double authentification : aucune session ouverte (`signed_in: false, two_factor: true`), connexion avec le nouveau mot de passe puis le code. |
 | `POST /api/auth/verify` | Confirmation de l'adresse d'un administrateur (lien reçu par e-mail). |
 | `GET /api/sessions`, `DELETE /api/sessions/:handle`, `POST /api/sessions/revoke-others` | Appareils connectés : liste par poignée (jamais l'identifiant, l'IP ni le User-Agent brut), déconnexion d'un appareil ou des autres. |
 | `GET/POST /api/profiles`, `PUT/DELETE /api/profiles/:id` | Personnes protégées (1 en Individuel, 5 en Famille). |
@@ -153,13 +157,14 @@ Sans passer par le panel (ou s'il n'y a pas encore d'administrateur), sur la mac
 ```bash
 npm run admin -- keys --plan famille --days 90 --count 3 --note "Amis"   # affiche les clés et leurs liens, une seule fois
 npm run admin -- promote moi@exemple.fr                                   # donne le rôle administrateur à un compte existant
+npm run admin -- 2fa-off moi@exemple.fr                                   # dernier recours : téléphone et codes de secours perdus
 ```
 
 Une clé démarre l'abonnement aussitôt et lance les demandes. Elle remplace un abonnement simulé (environnement sans Stripe), pas un abonnement payé par carte. Une clé Individuel est refusée tant que le dossier protège plusieurs personnes. Les durées se cumulent (une clé prolonge un abonnement offert, ou prend le relais à la fin d'une période déjà payée) ; l'abonnement s'arrête de lui-même à sa date de fin, sans rien à résilier. Une clé ne remplace jamais un abonnement payé en cours. La révocation empêche toute nouvelle activation, les abonnements déjà accordés vont à leur terme. Seules l'empreinte SHA-256 et les 4 derniers caractères sont stockés : une clé perdue ne se retrouve pas, elle se révoque et se remplace.
 
 ## Panel d'administration
 
-Accès : `/app/#admin`, pour les adresses listées dans `ADMIN_EMAILS`. Hors production, le rôle est attribué à l'inscription ou à la connexion suivante ; en production, après confirmation de l'adresse par le lien envoyé à l'inscription (ou par une réinitialisation du mot de passe). Sans serveur d'envoi, ce lien n'arrive nulle part : l'application l'indique, et `npm run admin -- promote <adresse>` sur le serveur donne le rôle. Un administrateur sans abonnement arrive directement sur l'administration après la connexion. Le code du panel n'est téléchargé que par les administrateurs. Onze onglets :
+Accès : `/app/#admin`, pour les adresses listées dans `ADMIN_EMAILS`. Hors production, le rôle est attribué à l'inscription ou à la connexion suivante ; en production, après confirmation de l'adresse par le lien envoyé à l'inscription (ou par une réinitialisation du mot de passe). Sans serveur d'envoi, ce lien n'arrive nulle part : l'application l'indique, et `npm run admin -- promote <adresse>` sur le serveur donne le rôle. En production, l'administration exige aussi la double authentification (`ADMIN_REQUIRE_2FA`) : sans elle, le panel affiche une invitation à l'activer dans les Paramètres. Un administrateur sans abonnement arrive directement sur l'administration après la connexion. Le code du panel n'est téléchargé que par les administrateurs. Onze onglets :
 
 | Onglet | Contenu |
 |---|---|
@@ -181,7 +186,9 @@ Les filtres et les pages se rechargent sans perdre le focus ; les actions destru
 
 - **En-têtes** : CSP stricte (scripts du même domaine, scripts en ligne autorisés par empreinte SHA-256), `frame-ancestors 'none'`, COOP, CORP, `nosniff`, `Referrer-Policy`, `Permissions-Policy`, HSTS en production. Réponses de l'API en `no-store`.
 - **Sessions** : cookie HttpOnly, `SameSite=Lax`, signé HMAC, `Secure` et préfixe `__Host-` en production. Sessions en base : 30 jours au plus, 14 jours d'inactivité, 10 par compte. `SESSION_SECRET` (32 caractères au moins) est obligatoire en production.
-- **Mots de passe** : scrypt, 10 à 128 caractères, mots de passe courants et contenant l'e-mail refusés. Verrouillage après 10 échecs, sans révéler l'existence du compte.
+- **Mots de passe** : scrypt, 10 à 128 caractères, mots de passe courants et contenant l'e-mail refusés.
+- **Verrouillage de connexion** : 10 échecs en 15 minutes bloquent un client (IPv4, ou /64 en IPv6) pour une adresse, pendant 15 minutes, sans gêner l'abonné qui se connecte d'ailleurs ; plafond global de 100 échecs par adresse, tous clients confondus, contre les attaques réparties. Une adresse sans compte se verrouille de même. Les codes faux de l'étape « code » comptent aussi (et 20 par compte en 15 minutes bloquent cette étape).
+- **Double authentification** : codes TOTP (application d'authentification) ou codes de secours à usage unique ; clé chiffrée en base (AES-256-GCM, liée au compte) ; anti-rejeu ; aucune session sans le code, même après une réinitialisation du mot de passe ; exigée pour l'administration en production (`ADMIN_REQUIRE_2FA`). Activer la protection ferme les autres sessions.
 - **CSRF** : les méthodes non sûres n'acceptent que du JSON et vérifient `Origin` ou `Referer`.
 - **Limitation de débit** : clé = motif de la route (casse et barre finale ignorées) et client (adresse IPv4, ou préfixe /64 en IPv6). Derrière un proxy, `TRUST_PROXY` est indispensable, sinon tous les abonnés partagent le même compteur.
 - **Mot de passe oublié** : réponse identique (contenu et délai) que le compte existe ou non ; 3 demandes par heure et par adresse ; jeton de 256 bits dont seule l'empreinte est stockée ; lien d'une heure, à usage unique, invalidé si l'adresse du compte change.
@@ -199,7 +206,7 @@ Les filtres et les pages se rechargent sans perdre le focus ; les actions destru
 ## Tests
 
 ```bash
-npm test                    # les onze suites, l'une après l'autre
+npm test                    # les douze suites, l'une après l'autre
 npm run test:security       # sécurité (en-têtes, cookies, CSRF, autorisations, webhooks)
 npm run test:security2      # sécurité, seconde série (découverte des sites, débit, administrateurs en production)
 npm run test:admin          # administration
@@ -210,6 +217,7 @@ npm run test:keys           # clés d'activation
 npm run test:perf           # compression, cache, santé, sauvegardes, arrêt propre
 npm run test:regressions    # bugs corrigés
 npm run test:billing        # facturation contre un faux Stripe (reprise, webhooks en retard, suppression, signatures)
+npm run test:twofactor      # double authentification et verrouillage de connexion
 npm run test:ui             # audit navigateur (Playwright installé à part), 1280 et 390 px
 ```
 
@@ -236,4 +244,4 @@ Fonctionne tel quel sur Render, Fly.io, Railway ou un VPS derrière Nginx (`TRUS
 2. Vérifier les adresses de contact des courtiers et compléter le registre (`server/brokers.json` ou admin).
 3. Configurer SMTP + domaine d'envoi (SPF/DKIM), le webhook entrant et Stripe.
 4. Définir `BACKUP_DIR`, chiffrer le volume de la base, et n'inscrire dans `ADMIN_EMAILS` que des adresses dont vous contrôlez la boîte.
-5. Ajouter l'authentification à deux facteurs pour les administrateurs ; envisager la vérification de l'adresse de tous les abonnés (aujourd'hui, seule celle des administrateurs l'est).
+5. Activer la double authentification de chaque administrateur (exigée en production) et sauvegarder `SESSION_SECRET` avec la base ; envisager la vérification de l'adresse de tous les abonnés (aujourd'hui, seule celle des administrateurs l'est).
