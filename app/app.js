@@ -5,8 +5,8 @@
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
   var view = $('#view'), nav = $('#nav'), topUser = $('#top-user'), toastEl = $('#toast'), announceEl = $('#announce');
-  var state = { user: null, impersonation: null, profiles: [], config: null, dash: null, profileId: null, filter: 'all', search: '', sort: 'status', page: 1, journalAll: false };
-  var PAGE = 25, JOURNAL = 8;
+  var state = { user: null, impersonation: null, profiles: [], config: null, dash: null, profileId: null, filter: 'all', search: '', sort: 'status', page: 1, journalAll: false, catsAll: false };
+  var PAGE = 15, JOURNAL = 8;
   var pollTimer = null, sigs = {}, searchTimer = null, resizeTimer = null, barKey = null, noticeKey = null;
   var MARK = '<svg viewBox="0 0 32 32" width="44" height="44" fill="none" aria-hidden="true"><circle cx="16" cy="16" r="10.5" stroke="currentColor" stroke-width="3.2"/><path d="M3.5 17.8 L28.5 14.2" stroke="#C8471F" stroke-width="3.2" stroke-linecap="round"/></svg>';
   var COUNTRIES = { FR: 'France', BE: 'Belgique', CH: 'Suisse', LU: 'Luxembourg', DE: 'Allemagne', ES: 'Espagne', IT: 'Italie', NL: 'Pays-Bas', PT: 'Portugal', GB: 'Royaume-Uni', US: 'États-Unis', CA: 'Canada' };
@@ -39,7 +39,7 @@
   }
   function params() { var h = location.hash.slice(1), i = h.indexOf('?'); var out = { route: i < 0 ? h : h.slice(0, i), q: {} }; if (i >= 0) new URLSearchParams(h.slice(i + 1)).forEach(function (v, k) { out.q[k] = v; }); return out; }
   function go(hash) { if (location.hash === '#' + hash) render(); else location.hash = hash; }
-  function statusLabel(s) { return { queued: 'À envoyer', sent: 'Envoyée', in_progress: 'En cours', action_required: 'Action requise', done: 'Terminée', refused: 'Refusée', error: 'Erreur d’envoi' }[s] || s; }
+  function statusLabel(s) { return { queued: 'À envoyer', sent: 'Envoyée', in_progress: 'En cours', action_required: 'Action requise', done: 'Effacée', refused: 'Refusée', error: 'Erreur d’envoi' }[s] || s; }
   function subLabel(s) { return { none: 'Aucun abonnement', active: 'Actif', past_due: 'Paiement en attente', canceled: 'Résilié' }[s] || s; }
   function chip(s, label) { return '<span class="chip chip--' + esc(s) + '">' + esc(label || statusLabel(s)) + '</span>'; }
   function dots(n) { var o = '<span class="dots" title="' + (SENS[n] || 'Sensibilité ' + n + ' sur 3') + '"><span class="vh">' + (SENS[n] || 'Sensibilité ' + n + ' sur 3') + '.</span>'; for (var i = 1; i <= 3; i++) o += '<i class="' + (i <= n ? 'on' : '') + '"></i>'; return o + '</span>'; }
@@ -168,88 +168,270 @@
 
   /* ---------- tableau de bord ---------- */
   function currentProfile(d) { return d.profiles.filter(function (p) { return p.id === d.profile_id; })[0] || d.profiles[0] || {}; }
+  function readOnly() { return !!state.impersonation; }   // accès support : consultation seulement
+  function canAddSite(d) { return !!(d.sites && d.onboarding.mandate && d.onboarding.subscription && !readOnly()); }
+  /* Pastille d'initiale : la teinte suit la catégorie, pour repérer d'un coup d'œil les courtiers de même nature. */
+  var HUES = [16, 35, 150, 195, 222, 262, 320, 95];
+  function hueOf(s) { var h = 0; s = String(s || ''); for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return HUES[h % HUES.length]; }
+  function mark(name, cat, big) { var n = String(name || '?').replace(/^www\./i, ''); return '<span class="mark' + (big ? ' mark--lg' : '') + '" style="--h:' + hueOf(cat || n) + '" aria-hidden="true">' + esc(n.charAt(0).toUpperCase()) + '</span>'; }
+  function basisLabel(r) { return r.legal_basis === 'ccpa' ? 'CCPA' : r.legal_basis === 'both' ? 'RGPD et CCPA' : 'RGPD'; }
+  function rowById(id) { return state.dash ? state.dash.requests.filter(function (r) { return r.id === id; })[0] || null : null; }
+
+  /* Indicateur « en direct » : le tableau de bord se rafraîchit seul ; hors ligne, il le dit et réessaie. */
+  var live = { state: 'ok', text: 'En direct' };
+  function setLive(st, text) {
+    live.state = st; live.text = text;
+    var el = $('#dash-live'); if (el && (el.getAttribute('data-state') !== st || el.textContent !== text)) { el.setAttribute('data-state', st); el.textContent = text; }
+  }
 
   function dashHead(d) {
-    var c = d.counters, prof = currentProfile(d), o = d.onboarding;
-    var tabs = '';
+    var c = d.counters, prof = currentProfile(d), o = d.onboarding, tabs = '';
     if (d.profiles.length > 1 || (o.max_profiles > 1 && d.profiles.length < o.max_profiles)) {
       tabs = '<div class="ptabs" role="group" aria-label="Dossier affiché">' + d.profiles.map(function (p) {
         return '<button type="button" class="ptab" aria-pressed="' + (p.id === d.profile_id) + '" data-profile="' + esc(p.id) + '"><span class="avatar avatar--sm" aria-hidden="true">' + esc(initials(p)) + '</span><span>' + esc(fullName(p)) + '</span></button>';
-      }).join('') + (d.profiles.length < o.max_profiles ? '<a class="ptab ptab--add" href="#dossier"><span aria-hidden="true">+</span> Ajouter un proche</a>' : '') + '</div>';
+      }).join('') + (d.profiles.length < o.max_profiles && !readOnly() ? '<a class="ptab ptab--add" href="#dossier"><span aria-hidden="true">+</span> Ajouter un proche</a>' : '') + '</div>';
     }
-    var eyebrow = 'Dossier ' + fileNo(d.profile_id) + SEP + (d.last_activity_at ? 'Dernière activité le ' + fmtWhen(d.last_activity_at) : 'Ouvert le ' + fmtDate(prof.created_at));
     var lead;
-    if (!c.total) lead = 'Les premières demandes partiront dès que le dossier sera complet.';
-    else if (c.active && c.done === c.active) lead = 'Les ' + c.active + NBSP + 'courtiers surveillés ont confirmé l’effacement.' + (d.next_check_at ? ' Prochaine vérification le ' + fmtDate(d.next_check_at) + '.' : '');
-    else lead = c.brokers + NBSP + 'courtiers surveillés, ' + plural(c.done, 'effacement confirmé', 'effacements confirmés') + '.' + (c.in_progress ? ' ' + plural(c.in_progress, 'réponse attendue', 'réponses attendues') + (d.next_due_at ? ' avant le ' + fmtDate(d.next_due_at) : '') + '.' : '') + (d.next_check_at ? ' Prochaine vérification le ' + fmtDate(d.next_check_at) + '.' : '');
-    return tabs + '<div class="dash-head__main"><div><span class="mono">' + eyebrow + '</span><h1>' + esc(fullName(prof)) + '</h1><p class="lead">' + lead + '</p></div><a class="btn btn--outline btn--sm" href="#report">Rapport imprimable</a></div>';
+    if (!c.total) lead = 'Les premières demandes partent dès que le dossier est complet.';
+    else if (c.active && c.done === c.active) lead = 'Tous les courtiers ont confirmé l’effacement.' + (d.next_check_at ? ' Prochaine vérification le ' + fmtDate(d.next_check_at) + '.' : '');
+    else lead = plural(c.active, 'courtier ou site suivi', 'courtiers et sites suivis') + (d.last_activity_at ? SEP + 'dernière activité le ' + fmtWhen(d.last_activity_at) : '') + '.';
+    var acts = '<div class="dash-head__acts">' + (canAddSite(d) ? '<button type="button" class="btn btn--sm" id="jump-addsite"><span aria-hidden="true">+</span>' + NBSP + 'Ajouter un site</button>' : '') + '<a class="btn btn--outline btn--sm" href="#report">Rapport</a></div>';
+    return tabs + '<div class="dash-head__main"><div class="dash-head__id"><p class="mono dash-eyebrow"><span>Dossier ' + fileNo(d.profile_id) + '</span><span class="live" id="dash-live" data-state="' + live.state + '">' + esc(live.text) + '</span></p><h1>' + esc(fullName(prof)) + '</h1><p class="lead">' + lead + '</p></div>' + acts + '</div>';
   }
-  function sigHead(d) { var c = d.counters; return JSON.stringify([d.profile_id, d.profiles.map(function (p) { return p.id + fullName(p); }), c.total, c.done, c.in_progress, c.active, d.next_due_at, d.next_check_at, d.last_activity_at, d.onboarding]); }
+  function sigHead(d) { var c = d.counters; return JSON.stringify([d.profile_id, d.profiles.map(function (p) { return p.id + fullName(p); }), c.total, c.done, c.active, d.next_check_at, d.last_activity_at, d.onboarding, !!d.sites, readOnly()]); }
 
   function nextStep(d) {
     var u = d.user, c = d.counters, o = d.onboarding, prof = currentProfile(d);
-    function card(kind, title, text, action) { return '<section class="next next--' + kind + '" aria-labelledby="next-h"><div class="next__body"><span class="mono">' + (kind === 'ok' ? 'Tout est en ordre' : kind === 'warn' ? 'Action requise' : 'Prochaine étape') + '</span><h2 id="next-h">' + title + '</h2><p>' + text + '</p></div>' + (action ? '<div class="next__act">' + action + '</div>' : '') + '</section>'; }
+    function card(kind, title, text, action) { return '<section class="next next--' + kind + '" aria-labelledby="next-h"><span class="next__ico" aria-hidden="true">' + (kind === 'ok' ? '✓' : kind === 'warn' ? '!' : '→') + '</span><div class="next__body"><span class="mono">' + (kind === 'ok' ? 'Tout est en ordre' : kind === 'warn' ? 'Action requise' : 'Prochaine étape') + '</span><h2 id="next-h">' + title + '</h2><p>' + text + '</p></div>' + (action ? '<div class="next__act">' + action + '</div>' : '') + '</section>'; }
     if (!o.profile_complete) return card('todo', 'Complétez les informations de ' + esc(fullName(prof)), 'Un prénom et un nom suffisent pour commencer' + NBSP + '; chaque e-mail, numéro ou adresse ajouté aide à retrouver les fiches.', '<a class="btn" href="#dossier">Compléter le dossier</a>');
     if (!o.mandate) return card('todo', u.mandate_revoked_at ? 'Le mandat a été révoqué' : 'Signez le mandat', 'Sans mandat, nous ne pouvons pas écrire aux courtiers en votre nom. Il se signe en trente secondes et reste révocable.', '<a class="btn" href="#dossier">Signer le mandat</a>');
     if (!o.subscription) return card('todo', u.subscription_status === 'past_due' ? 'Mettez à jour votre moyen de paiement' : u.subscription_status === 'canceled' ? 'Votre abonnement est résilié' : 'Activez votre abonnement', u.subscription_status === 'past_due' ? 'Le dernier paiement a échoué. Les demandes reprennent dès que le paiement est régularisé.' : u.subscription_status === 'canceled' ? (u.subscription_ends_at ? 'Les demandes en cours continuent jusqu’au ' + fmtDate(u.subscription_ends_at) + ', puis plus aucune relance ne partira.' : 'Plus aucune demande ne part. Réactivez l’offre pour reprendre la surveillance.') : 'Les demandes partent dès que l’abonnement est actif.', '<a class="btn" href="#billing">Voir l’abonnement</a>');
-    if (!c.total) return card('todo', 'Tout est prêt, les demandes partent', 'Les ' + c.brokers + NBSP + 'courriers de la première vague sont envoyés automatiquement dans la minute. Vous pouvez aussi lancer l’envoi tout de suite.', '<button class="btn" type="button" id="launch">Lancer les demandes</button>');
-    if (c.action_required) return card('warn', plural(c.action_required, 'courtier attend une vérification', 'courtiers attendent une vérification') + ' de votre part', 'Ils demandent un lien de confirmation ou une pièce d’identité partielle, que nous vous avons transmis par e-mail. Suivez l’e-mail, puis cliquez sur «' + NBSP + 'Vérification faite' + NBSP + '» sur la ligne du courtier.', '<button class="btn" type="button" data-filter="action_required">Voir les demandes</button>');
-    if (c.refused) return card('warn', plural(c.refused, 'courtier refuse', 'courtiers refusent') + ' l’effacement', 'Nous préparons une réclamation auprès de l’autorité de contrôle (CNIL) et une nouvelle demande partira au prochain cycle' + (d.next_check_at ? ', le ' + fmtDate(d.next_check_at) : '') + '.', '<button class="btn btn--outline" type="button" data-filter="refused">Voir les refus</button>');
+    if (!c.total) return card('todo', 'Tout est prêt, les demandes partent', 'Les ' + c.brokers + NBSP + 'courriers de la première vague partent automatiquement dans la minute. Vous pouvez aussi lancer l’envoi tout de suite.', readOnly() ? '' : '<button class="btn" type="button" id="launch">Lancer les demandes</button>');
+    if (c.action_required) return card('warn', plural(c.action_required, 'courtier attend', 'courtiers attendent') + ' une vérification de votre part', 'Ils demandent un lien de confirmation ou une pièce d’identité partielle, transmis par e-mail. Suivez l’e-mail, puis cliquez sur «' + NBSP + 'Vérification faite' + NBSP + '» sur la ligne du courtier.', '<button class="btn" type="button" data-filter="action_required">Voir les demandes</button>');
+    if (c.refused) {
+      var nx = d.requests.filter(function (r) { return r.status === 'refused' && r.next_check_at; }).map(function (r) { return r.next_check_at; }).sort()[0];
+      return card('warn', plural(c.refused, 'courtier refuse', 'courtiers refusent') + ' l’effacement', 'Une nouvelle demande partira automatiquement' + (nx ? ' le ' + fmtDate(nx) : '') + '. Vous pouvez aussi déposer une plainte auprès de l’autorité de protection des données' + NBSP + ': le texte est prêt dans le détail de chaque refus.', '<button class="btn btn--outline" type="button" data-filter="refused">Voir les refus</button>');
+    }
     if (c.active && c.done === c.active) return card('ok', 'Tous les courtiers ont confirmé l’effacement', 'Nous revérifions chaque courtier tous les 60' + NBSP + 'à' + NBSP + '90' + NBSP + 'jours et renvoyons une demande si vos données réapparaissent.' + (d.next_check_at ? ' Prochaine vérification le ' + fmtDate(d.next_check_at) + '.' : ''), '');
     return '';
   }
-  function sigNext(d) { var c = d.counters, u = d.user; return JSON.stringify([d.onboarding, c.total, c.action_required, c.refused, c.done, c.active, u.subscription_status, u.subscription_ends_at, u.mandate_revoked_at, d.next_check_at]); }
+  function sigNext(d) { var c = d.counters, u = d.user; return JSON.stringify([d.onboarding, c.total, c.action_required, c.refused, c.done, c.active, u.subscription_status, u.subscription_ends_at, u.mandate_revoked_at, d.next_check_at, readOnly(), d.requests.filter(function (r) { return r.status === 'refused'; }).map(function (r) { return r.next_check_at; }).join()]); }
 
-  function ledger(d) {
-    var c = d.counters, circ = 2 * Math.PI * 42;
-    var ring = '<svg class="ring" viewBox="0 0 96 96" role="img" aria-label="Exposition ' + d.exposure + NNBSP + '%"><circle class="track" cx="48" cy="48" r="42"/><circle class="fill" cx="48" cy="48" r="42" stroke-dasharray="' + circ.toFixed(1) + '" stroke-dashoffset="' + (circ * (1 - d.exposure / 100)).toFixed(1) + '"/><text x="48" y="48">' + d.exposure + NNBSP + '%</text></svg>';
-    return '<div class="ledger__stat"><span class="mono">Envoyées</span><span class="ledger__n num">' + c.sent + '</span><span class="ledger__sub">sur ' + c.brokers + NBSP + 'courtiers</span></div>' +
-      '<div class="ledger__stat"><span class="mono">En cours</span><span class="ledger__n num">' + c.in_progress + '</span><span class="ledger__sub">' + (c.in_progress ? 'réponse attendue' : c.queued ? plural(c.queued, 'envoi à venir', 'envois à venir') : 'aucune en attente') + '</span></div>' +
-      '<div class="ledger__stat' + (c.action_required ? ' ledger__stat--warn' : '') + '"><span class="mono">Action requise</span><span class="ledger__n num">' + c.action_required + '</span><span class="ledger__sub">' + (c.action_required ? 'vérification à faire' : 'rien à faire') + '</span></div>' +
-      '<div class="ledger__stat ledger__stat--ok"><span class="mono">Terminées</span><span class="ledger__n num">' + c.done + '</span><span class="ledger__sub">' + (c.refused ? plural(c.refused, 'refus', 'refus') + ' à contester' : 'effacements confirmés') + '</span></div>' +
-      '<div class="ledger__ring">' + ring + '<div class="ring__txt"><strong>Exposition estimée</strong><span>Part des courtiers qui n’ont pas encore confirmé l’effacement.</span></div></div>';
+  /* Synthèse : anneau des statuts (exposition au centre), tuiles qui filtrent la liste, frise du cycle légal. */
+  var PART = { done: 'effacées', action_required: 'en attente de votre vérification', in_progress: 'en attente de réponse', queued: 'à envoyer', refused: 'refusées' };
+  function donut(d) {
+    var c = d.counters, total = c.active || 0, R = 62, C = 2 * Math.PI * R, off = 0, segs = '';
+    var parts = [['done', c.done], ['action_required', c.action_required], ['in_progress', c.in_progress], ['queued', c.queued + (c.error || 0)], ['refused', c.refused]].filter(function (p) { return p[1] > 0; });
+    var gap = parts.length > 1 ? 3 : 0;
+    if (total) parts.forEach(function (p) {
+      var len = C * p[1] / total, dash = Math.max(0.5, len - gap);
+      segs += '<circle class="donut__seg donut__seg--' + p[0] + '" cx="80" cy="80" r="' + R + '" stroke-dasharray="' + dash.toFixed(2) + ' ' + (C - dash).toFixed(2) + '" stroke-dashoffset="' + (-off).toFixed(2) + '"/>'; off += len;
+    });
+    var label = 'Exposition estimée' + NBSP + ': ' + (total ? d.exposure + NNBSP + '%. ' + parts.map(function (p) { return p[1] + NBSP + PART[p[0]]; }).join(', ') + ', sur ' + total + '.' : 'pas encore de demande.');
+    return '<svg class="donut" viewBox="0 0 160 160" role="img" aria-label="' + esc(label) + '"><circle class="donut__track" cx="80" cy="80" r="' + R + '"/><g transform="rotate(-90 80 80)">' + segs + '</g><text class="donut__n" x="80" y="80">' + (total ? d.exposure + NNBSP + '%' : '—') + '</text><text class="donut__l" x="80" y="104">exposition</text></svg>';
   }
-  function sigLedger(d) { return JSON.stringify([d.counters, d.exposure]); }
+  function scoreText(d) {
+    var c = d.counters, total = c.active || 0, hist = d.exposure_history || [], first = hist.length ? hist[0].exposure : d.exposure, delta = d.exposure - first;
+    var trend = !c.total ? '' : delta < 0 ? '<span class="trend trend--down">−' + Math.abs(delta) + NNBSP + 'pts en 12' + NBSP + 'semaines</span>' : delta > 0 ? '<span class="trend trend--up">+' + delta + NNBSP + 'pts en 12' + NBSP + 'semaines</span>' : '<span class="trend">Stable sur 12' + NBSP + 'semaines</span>';
+    var title = !c.total ? 'Votre dossier est prêt' : c.done === total ? 'Tous les effacements sont confirmés' : !c.done ? 'Demandes en cours chez ' + plural(total, 'courtier', 'courtiers') : plural(c.done, 'effacement confirmé', 'effacements confirmés') + ' sur ' + total;
+    return '<div class="ov__txt"><p class="mono">Exposition estimée</p><h2 class="ov__title" id="ov-h">' + title + '</h2><p class="ov__sub">L’exposition est la part des courtiers qui n’ont pas encore confirmé l’effacement de vos données.</p>' + trend + '</div>';
+  }
+  function tiles(d) {
+    var c = d.counters, open = c.in_progress + c.queued + (c.error || 0);
+    var defs = [
+      ['done', 'Effacées', c.done, c.done ? 'confirmées par écrit' : 'aucune pour l’instant'],
+      ['in_progress', 'En cours', open, d.next_due_at ? 'première échéance le ' + fmtDay(d.next_due_at) : c.queued ? plural(c.queued, 'envoi imminent', 'envois imminents') : 'aucune en attente'],
+      ['action_required', 'Action requise', c.action_required, c.action_required ? 'une vérification vous attend' : 'rien à faire'],
+      ['refused', 'Refusées', c.refused, c.refused ? 'nouvelle demande programmée' : 'aucun refus'],
+    ];
+    return defs.map(function (t) {
+      var inner = '<span class="tile__top"><i class="tile__k tile__k--' + t[0] + '" aria-hidden="true"></i><span class="tile__l">' + t[1] + '</span></span><span class="tile__n num">' + t[2] + '</span><span class="tile__s">' + t[3] + '</span>';
+      return t[2] ? '<button type="button" class="tile tile--' + t[0] + '" data-filter="' + t[0] + '">' + inner + '<span class="vh">' + NBSP + ': afficher ces demandes</span></button>' : '<div class="tile tile--' + t[0] + ' tile--zero">' + inner + '</div>';
+    }).join('');
+  }
+  function cycleHtml(d) {
+    var c = d.counters, u = d.user, reqs = d.requests, sent = reqs.filter(function (r) { return r.sent_at; });
+    var first = sent.map(function (r) { return r.sent_at; }).sort()[0], follow = reqs.filter(function (r) { return r.followup_sent_at; });
+    var pendingFollow = follow.filter(function (r) { return r.status === 'sent' || r.status === 'in_progress'; }).length, toSend = c.queued + (c.error || 0);
+    var steps = [
+      ['Mandat signé', u.mandate_signed_at ? 'le ' + fmtDay(u.mandate_signed_at) : 'à signer', u.mandate_signed_at && !u.mandate_revoked_at ? 'done' : 'current'],
+      ['Demandes envoyées', !c.total ? 'en préparation' : sent.length + ' sur ' + c.active + (first ? SEP + 'dès le ' + fmtDay(first) : ''), !c.total ? 'todo' : toSend ? 'current' : 'done'],
+      ['Réponses des courtiers', c.in_progress ? 'première échéance le ' + fmtDay(d.next_due_at) : sent.length ? 'toutes reçues' : 'un mois pour répondre', c.in_progress ? 'current' : sent.length ? 'done' : 'todo'],
+      ['Relances', follow.length ? plural(follow.length, 'relance envoyée', 'relances envoyées') : 'à l’échéance, si besoin', pendingFollow ? 'current' : follow.length ? 'done' : 'todo'],
+      ['Revérification', d.next_check_at ? 'le ' + fmtDay(d.next_check_at) : 'tous les 60 à 90' + NBSP + 'jours', c.active && c.done === c.active ? 'current' : 'todo'],
+    ];
+    var cur = false;
+    return '<ol class="cycle" aria-label="Étapes du dossier">' + steps.map(function (s) {
+      var aria = s[2] === 'current' && !cur ? ' aria-current="step"' : ''; if (aria) cur = true;
+      return '<li class="cycle__step is-' + s[2] + '"' + aria + '><span class="cycle__dot" aria-hidden="true"></span><span class="cycle__t">' + s[0] + '</span><span class="cycle__d">' + s[1] + '</span><span class="vh">' + (s[2] === 'done' ? ' (terminé)' : s[2] === 'current' ? ' (en cours)' : ' (à venir)') + '</span></li>';
+    }).join('') + '</ol>';
+  }
+  function overview(d) { return '<div class="ov__score">' + donut(d) + scoreText(d) + '</div><div class="ov__tiles">' + tiles(d) + '</div>' + cycleHtml(d); }
+  function sigOverview(d) { return JSON.stringify([d.counters, d.exposure, (d.exposure_history || [])[0], d.next_due_at, d.next_check_at, d.user.mandate_signed_at, d.user.mandate_revoked_at, d.requests.map(function (r) { return (r.sent_at ? 1 : 0) + (r.followup_sent_at ? 2 : 0); }).join(''), d.requests.map(function (r) { return r.sent_at || ''; }).sort()[0]]); }
 
+  /* Liste des courtiers et sites */
+  function filterDefs(d) {
+    var c = d.counters;
+    var f = [['all', 'Tous', c.active], ['action_required', 'Action requise', c.action_required], ['in_progress', 'En cours', c.in_progress + c.queued + (c.error || 0)], ['done', 'Effacées', c.done]];
+    if (c.refused) f.push(['refused', 'Refusées', c.refused]);
+    if (d.sites && d.sites.count) f.push(['sites', 'Sites ajoutés', d.sites.count]);
+    return f;
+  }
+  function filtersHtml(d) { return filterDefs(d).map(function (f) { return '<button type="button" aria-pressed="' + (state.filter === f[0]) + '" data-filter="' + f[0] + '">' + f[1] + '<b>' + f[2] + '</b></button>'; }).join(''); }
+  function toolsHtml() {
+    return '<div class="tools__search"><label class="vh" for="broker-search">Rechercher un courtier, un site ou une catégorie</label><input type="search" id="broker-search" placeholder="Rechercher…" value="' + esc(state.search) + '" autocomplete="off" aria-keyshortcuts="/"><kbd class="tools__kbd" aria-hidden="true">/</kbd></div>' +
+      '<div class="tools__sort"><label for="broker-sort" class="vh">Trier la liste</label><select id="broker-sort">' + [['status', 'Par statut'], ['sensitivity', 'Par sensibilité'], ['name', 'Par nom'], ['date', 'Par date']].map(function (o) { return '<option value="' + o[0] + '"' + (state.sort === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></div>';
+  }
+  function matchesFilter(r) { return state.filter === 'all' || (state.filter === 'sites' ? !!r.custom : state.filter === 'in_progress' ? /^(sent|in_progress|queued|error)$/.test(r.status) : r.status === state.filter); }
+  function visibleRequests(d) {
+    var s = state.search.trim().toLowerCase();
+    var list = d.requests.filter(matchesFilter).filter(function (r) { return !s || (r.broker + ' ' + r.category + ' ' + (r.domain || '')).toLowerCase().indexOf(s) >= 0; });
+    var dateOf = function (r) { return r.completed_at || r.sent_at || r.created_at || ''; };
+    var rank = function (r) { return r.status === 'action_required' ? 0 : r.complaint ? 1 : { error: 2, in_progress: 3, sent: 4, queued: 5, refused: 6, done: 7 }[r.status]; };
+    if (state.sort === 'status') list.sort(function (a, b) { return rank(a) - rank(b) || b.sensitivity - a.sensitivity || a.broker.localeCompare(b.broker, 'fr'); });
+    else if (state.sort === 'sensitivity') list.sort(function (a, b) { return b.sensitivity - a.sensitivity || a.broker.localeCompare(b.broker, 'fr'); });
+    else if (state.sort === 'name') list.sort(function (a, b) { return a.broker.localeCompare(b.broker, 'fr'); });
+    else if (state.sort === 'date') list.sort(function (a, b) { return dateOf(b).localeCompare(dateOf(a)) || a.broker.localeCompare(b.broker, 'fr'); });
+    return list;
+  }
+  function emptyRows(d) {
+    var c = d.counters;
+    if (!d.requests.length) return '<div class="empty empty--state"><span class="mono">Aucune demande pour l’instant</span><p>' + (onboardingDone() ? 'Les ' + c.brokers + NBSP + 'premiers courriers partent automatiquement dans la minute.' : 'Les demandes partent d’elles-mêmes une fois le dossier complet' + NBSP + ': informations, mandat signé et abonnement actif.') + '</p>' + (onboardingDone() ? '' : '<a class="btn btn--outline btn--sm" href="#onboarding">Terminer les étapes</a>') + '</div>';
+    if (state.search.trim()) return '<div class="empty empty--state"><p>Aucun courtier ne correspond à «' + NBSP + esc(state.search.trim()) + NBSP + '».</p><button type="button" class="btn btn--outline btn--sm" id="search-clear">Effacer la recherche</button></div>';
+    if (state.filter === 'action_required') return '<div class="empty empty--state"><span class="mono">Rien à faire</span><p>Aucun courtier n’attend de vérification de votre part.</p></div>';
+    if (state.filter === 'done') return '<div class="empty empty--state"><span class="mono">Pas encore de confirmation</span><p>Les courtiers ont un mois (RGPD) ou 45' + NBSP + 'jours (CCPA) pour répondre' + NBSP + '; nous relançons à l’échéance.</p></div>';
+    if (state.filter === 'in_progress') return '<div class="empty empty--state"><span class="mono">Aucune demande en cours</span><p>' + (c.active && c.done === c.active ? 'Tous les courtiers ont confirmé l’effacement.' : 'Rien en attente de réponse.') + '</p></div>';
+    return '<div class="empty empty--state"><p>Aucune demande dans cette catégorie.</p></div>';
+  }
+  function whenHtml(r) {
+    if (r.status === 'done') return '<span>Effacée le ' + fmtDay(r.completed_at) + '</span><small>' + (r.next_check_at ? 'revérification le ' + fmtDay(r.next_check_at) : basisLabel(r)) + '</small>';
+    if (r.status === 'refused') return '<span>Refus du courtier</span><small>' + (r.next_check_at ? 'nouvelle demande le ' + fmtDay(r.next_check_at) : basisLabel(r)) + '</small>';
+    if (r.status === 'action_required') return '<span>Vérification à faire</span><small>' + (r.sent_at ? 'demande du ' + fmtDay(r.sent_at) : basisLabel(r)) + '</small>';
+    if (r.status === 'error') return '<span>Envoi en attente</span><small>contact en cours de vérification</small>';
+    if (r.sent_at) return '<span>' + (r.due_at ? 'Réponse due le ' + fmtDay(r.due_at) : 'Envoyée le ' + fmtDay(r.sent_at)) + '</span><small>' + (r.followup_sent_at ? 'relancée le ' + fmtDay(r.followup_sent_at) : 'envoyée le ' + fmtDay(r.sent_at)) + '</small>';
+    return '<span>' + (r.custom && r.site && r.site.status === 'searching' ? 'Recherche du contact' : 'Envoi imminent') + '</span><small>' + basisLabel(r) + (r.cycle > 1 ? SEP + 'cycle ' + r.cycle : '') + '</small>';
+  }
+  function rowNote(r) {
+    var ro = readOnly();
+    if (r.status === 'action_required') {
+      var what = r.note && r.note !== 'Le courtier demande une vérification.' ? esc(typo(r.note)).replace(/([^.!?…])$/, '$1.') + ' ' : '';
+      return '<div class="row__note row__note--warn"><p>' + what + 'Suivez les instructions reçues par e-mail (objet «' + NBSP + 'Action requise' + NBSP + '»), puis confirmez ici.</p>' + (ro ? '' : '<button class="btn btn--xs" type="button" data-resolve="' + esc(r.id) + '">Vérification faite<span class="vh"> pour ' + esc(r.broker) + '</span></button>') + '</div>';
+    }
+    if (r.complaint) return '<div class="row__note row__note--danger"><p>' + (r.status === 'refused' ? 'Plainte prête à déposer' + (r.next_check_at ? SEP + 'nouvelle demande le ' + fmtDate(r.next_check_at) : '') : 'Relance restée sans réponse' + NBSP + ': plainte prête à déposer') + '.</p><button class="btn btn--xs btn--outline" type="button" data-open="' + esc(r.id) + '" data-section="complaint" aria-haspopup="dialog">Préparer la plainte<span class="vh"> contre ' + esc(r.broker) + '</span></button></div>';
+    if (r.custom || r.source_url) return siteNote(r);
+    return '';
+  }
+  // Site ajouté par l'abonné : où en est le contact, et lien vers la fiche signalée.
+  function siteNote(r) {
+    var s = r.site || {}, txt = '', contact = s.contact ? esc(s.contact) : '';
+    if (r.custom && (r.status === 'queued' || r.status === 'error')) txt = s.status === 'searching' ? 'Recherche du contact sur le site…' : s.status === 'review' ? 'Notre équipe vérifie le contact avant l’envoi.' : s.status === 'found' ? 'Contact publié par le site' + NBSP + ': ' + contact : s.status === 'presumed' ? 'Envoi à l’adresse présumée ' + contact : '';
+    else if (r.custom && r.status !== 'done') txt = s.status === 'found' ? 'Contact publié par le site' + NBSP + ': ' + contact : s.status === 'presumed' || s.status === 'review' ? 'Adresse présumée' + NBSP + ': ' + contact : '';
+    var link = r.source_url ? '<a class="row__url" href="' + esc(r.source_url) + '" target="_blank" rel="noopener noreferrer">Fiche signalée<span class="vh"> (nouvel onglet)</span></a>' : '';
+    return txt || link ? '<p class="row__note row__note--site">' + (txt ? '<span>' + txt + '</span>' : '') + link + '</p>' : '';
+  }
+  function rowHtml(r) {
+    var meta = dots(r.sensitivity) + '<span>' + esc(r.category) + '</span>' + (r.domain && r.domain !== r.broker ? '<span class="row__dom">' + esc(r.domain) + '</span>' : '');
+    return '<li class="row row--' + esc(r.status) + '" data-row="' + esc(r.id) + '">' + mark(r.broker, r.category) +
+      '<div class="row__who"><button type="button" class="row__open" data-open="' + esc(r.id) + '" aria-haspopup="dialog">' + esc(r.broker) + '<span class="vh">' + NBSP + ': voir le détail</span></button><small>' + meta + '</small></div>' +
+      '<div class="row__status">' + chip(r.status) + '</div><div class="row__when">' + whenHtml(r) + '</div><span class="row__chev" aria-hidden="true"></span>' + rowNote(r) + '</li>';
+  }
+  function rowsHtml(d) {
+    var all = visibleRequests(d), list = all.slice(0, state.page * PAGE);
+    if (!all.length) return emptyRows(d);
+    return '<div class="row row--head" aria-hidden="true"><span></span><span>Courtier</span><span>Statut</span><span>Suivi</span><span></span></div><ol class="rows__list" role="list">' + list.map(rowHtml).join('') + '</ol>' +
+      (all.length > list.length ? '<div class="rows__more"><button type="button" class="btn btn--outline btn--sm" id="rows-more">Afficher plus</button><span class="mono mono--plain">' + list.length + ' sur ' + all.length + '</span></div>' : (all.length > PAGE ? '<div class="rows__more"><span class="mono mono--plain">' + all.length + ' sur ' + all.length + '</span></div>' : ''));
+  }
+  function rowSig(r) { return [r.id, r.status, r.note, r.sent_at, r.due_at, r.completed_at, r.next_check_at, r.followup_sent_at, r.cycle, r.source_url, r.complaint, r.site ? r.site.status + r.site.contact : ''].join('|'); }
+  function sigRows(d) { return d.requests.map(rowSig).join(';') + '#' + [state.filter, state.search, state.sort, state.page, readOnly()].join('|'); }
+
+  /* Activité : groupée par jour ; une rafale d'événements du même type (envois, confirmations…) tient en une ligne. */
+  var FEED_GROUPS = { sent: ['demande d’effacement envoyée', 'demandes d’effacement envoyées'], done: ['effacement confirmé', 'effacements confirmés'], followup: ['relance envoyée', 'relances envoyées'], recheck: ['nouvelle demande', 'nouvelles demandes'], in_progress: ['accusé de réception', 'accusés de réception'] };
+  function dayKey(iso) { var t = new Date(iso); return t.getFullYear() + '-' + t.getMonth() + '-' + t.getDate(); }
+  function dayLabel(iso) {
+    var t = new Date(iso), n = new Date(), diff = Math.round((new Date(n.getFullYear(), n.getMonth(), n.getDate()) - new Date(t.getFullYear(), t.getMonth(), t.getDate())) / 86400000);
+    if (diff === 0) return 'Aujourd’hui';
+    if (diff === 1) return 'Hier';
+    var s = t.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }); return s.charAt(0).toUpperCase() + s.slice(1);
+  }
+  function feedEntries(d) {
+    var names = {}, groups = [], out = [];
+    d.requests.forEach(function (r) { names[r.id] = r.broker; });
+    (d.events || []).forEach(function (e) {
+      var g = groups[groups.length - 1], k = dayKey(e.created_at);
+      if (g && FEED_GROUPS[e.type] && g.type === e.type && g.day === k) g.items.push(e); else groups.push({ type: e.type, day: k, items: [e] });
+    });
+    groups.forEach(function (g) {
+      if (g.items.length < 3) { g.items.forEach(function (e) { out.push({ type: e.type, at: e.created_at, html: esc(typo(e.message)) }); }); return; }
+      var who = [], n = g.items.length, lbl = FEED_GROUPS[g.type];
+      g.items.forEach(function (e) { var nm = names[e.request_id]; if (nm && who.indexOf(nm) < 0) who.push(nm); });
+      var shown = who.slice(0, 3), rest = n - shown.length;
+      out.push({ type: g.type, at: g.items[0].created_at, html: '<b>' + n + NBSP + lbl[1] + '</b>' + (shown.length ? NBSP + ': ' + shown.map(esc).join(', ') + (rest > 0 ? ' et ' + plural(rest, 'autre', 'autres') : '') : '') + '.' });
+    });
+    return out;
+  }
+  function journalHtml(d) {
+    var all = feedEntries(d), list = state.journalAll ? all : all.slice(0, JOURNAL), html = '', day = null;
+    if (!all.length) return '<p class="empty empty--sm">Rien pour l’instant.</p>';
+    list.forEach(function (x) {
+      var k = dayKey(x.at);
+      if (k !== day) { if (day !== null) html += '</ol>'; day = k; html += '<h3 class="feed__day">' + dayLabel(x.at) + '</h3><ol class="feed" role="list">'; }
+      html += '<li class="feed__item t-' + esc(x.type) + '"><time datetime="' + esc(x.at) + '">' + new Date(x.at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) + '</time><p>' + x.html + '</p></li>';
+    });
+    return '<div id="timeline">' + html + '</ol></div>' + (all.length > JOURNAL ? '<div class="sheet__more"><button type="button" class="btn btn--text" id="journal-toggle" aria-expanded="' + state.journalAll + '" aria-controls="timeline">' + (state.journalAll ? 'Réduire' : 'Tout afficher (' + all.length + ')') + '</button></div>' : '');
+  }
+  function sigJournal(d) { return (d.events || []).map(function (e) { return e.id; }).join(',') + '#' + state.journalAll + '#' + dayKey(new Date().toISOString()); }
+
+  /* Ajouter un site (colonne latérale) */
+  function siteCount(d) { return plural(d.sites.count, 'site ajouté', 'sites ajoutés') + ' sur ' + d.sites.max + ' pour ce profil'; }
+  function addSiteHtml(d) {
+    if (!canAddSite(d)) return '';
+    return '<section class="sheet addsite" id="addsite" aria-labelledby="addsite-h"><div class="addsite__head"><span class="addsite__ico" aria-hidden="true">+</span><div><h2 id="addsite-h">Un site manque' + NBSP + '?</h2><p>Collez l’adresse de la page où apparaissent vos informations' + NBSP + ': nous trouvons le contact et la demande part toute seule.</p></div></div>' +
+      '<form id="addsite-form" class="addsite__form" novalidate><div class="f"><label for="addsite-url">Adresse de la page</label><input id="addsite-url" name="url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://exemple.fr/fiche/votre-nom" required></div><button class="btn btn--block" type="submit">Demander l’effacement</button>' + msgEl('msg-addsite-form') + '</form><p class="mono mono--plain addsite__count" id="addsite-count">' + siteCount(d) + '</p></section>';
+  }
+
+  /* Analyse : exposition dans le temps, répartition par catégorie et par sensibilité */
+  var SENS_SHORT = { 3: 'Élevée', 2: 'Moyenne', 1: 'Faible' };
   function barHtml(b, label) {
-    var t = b.total || 0;
-    function seg(k, n) { return n ? '<i class="bar__seg bar__seg--' + k + '" style="flex-basis:' + (n / t * 100).toFixed(2) + '%"></i>' : ''; }
-    var parts = [];
+    var t = b.total || 0, rest = t - b.done - b.action_required - b.refused, parts = [];
+    function seg(k, n) { return n ? '<i class="bar__seg bar__seg--' + k + '" style="width:' + (n / t * 100).toFixed(2) + '%"></i>' : ''; }
     if (b.done) parts.push(plural(b.done, 'effacée', 'effacées'));
-    if (b.in_progress) parts.push(b.in_progress + NBSP + 'en cours');
     if (b.action_required) parts.push(b.action_required + NBSP + 'en attente de vérification');
     if (b.refused) parts.push(plural(b.refused, 'refus', 'refus'));
-    if (b.queued) parts.push(b.queued + NBSP + 'à envoyer');
-    return '<div class="bar" role="img" aria-label="' + esc(label) + NBSP + ': ' + (parts.length ? esc(parts.join(', ')) : 'aucune demande') + ' sur ' + t + '">' + seg('done', b.done) + seg('in_progress', b.in_progress) + seg('action_required', b.action_required) + seg('refused', b.refused) + '</div>';
+    if (rest > 0) parts.push(rest + NBSP + 'en cours');
+    return '<div class="bar" role="img" aria-label="' + esc(label) + NBSP + ': ' + (parts.length ? esc(parts.join(', ')) : 'aucune demande') + ' sur ' + t + '">' + seg('done', b.done) + seg('action_required', b.action_required) + seg('refused', b.refused) + '</div>';
+  }
+  function catsHtml(d) {
+    var cats = d.categories || [], list = state.catsAll ? cats : cats.slice(0, 6);
+    if (!cats.length) return '<p class="empty empty--sm">La répartition apparaîtra après la première vague.</p>';
+    return '<ul class="cats" role="list">' + list.map(function (b) { return '<li class="cat"><div class="cat__head"><span class="cat__name">' + esc(b.category) + '</span><span class="cat__n num"><b>' + b.done + '</b>' + NNBSP + '/' + NNBSP + b.total + '</span></div>' + barHtml(b, b.category) + '</li>'; }).join('') + '</ul>' +
+      (cats.length > 6 ? '<button type="button" class="btn btn--text cats__more" id="cats-toggle" aria-expanded="' + !!state.catsAll + '">' + (state.catsAll ? 'Réduire' : 'Afficher les ' + cats.length + ' catégories') + '</button>' : '');
   }
   function insight(d) {
-    var hist = d.exposure_history || [], cats = d.categories || [], sens = d.sensitivity || [];
-    var first = hist.length ? hist[0].exposure : 100, delta = d.exposure - first;
-    var chart = '<section class="sheet insight__chart" aria-labelledby="exp-h"><div class="sheet__head"><div><h2 id="exp-h">Exposition</h2><span class="mono">12 dernières semaines</span></div><p class="insight__now"><b class="num">' + d.exposure + NNBSP + '%</b><span>' + (d.counters.total ? (delta < 0 ? '−' + Math.abs(delta) + NNBSP + 'pts depuis douze semaines' : 'inchangée depuis douze semaines') : 'avant la première vague') + '</span></p></div>' +
-      '<div class="chart" id="exp-chart"></div>' +
-      (hist.length ? '<table class="vh"><caption>Exposition par semaine</caption><thead><tr><th scope="col">Semaine du</th><th scope="col">Exposition</th></tr></thead><tbody>' + hist.map(function (p) { return '<tr><td>' + fmtDate(p.week_start) + '</td><td>' + p.exposure + NNBSP + '%</td></tr>'; }).join('') + '</tbody></table>' : '') + '</section>';
-    var legend = '<ul class="legend" role="list"><li><i class="legend__k legend__k--done"></i>Effacées</li><li><i class="legend__k legend__k--in_progress"></i>En cours</li><li><i class="legend__k legend__k--action_required"></i>Vérification</li>' + (d.counters.refused ? '<li><i class="legend__k legend__k--refused"></i>Refus</li>' : '') + '</ul>';
-    var catList = cats.length ? '<ul class="cats" role="list">' + cats.map(function (b) { return '<li class="cat"><div class="cat__head"><span class="cat__name">' + esc(b.category) + '</span><span class="cat__n num"><b>' + b.done + '</b>' + NBSP + '/' + NBSP + b.total + '</span></div>' + barHtml(b, b.category) + '</li>'; }).join('') + '</ul>' : '<p class="empty empty--sm">La répartition apparaîtra après la première vague.</p>';
-    var sensList = sens.length && d.counters.total ? '<ul class="sens" role="list">' + sens.map(function (b) { return b.total ? '<li class="cat"><div class="cat__head"><span class="cat__name">' + dots(b.level) + SENS[b.level] + '</span><span class="cat__n num"><b>' + b.done + '</b>' + NBSP + '/' + NBSP + b.total + '</span></div>' + barHtml(b, SENS[b.level]) + '</li>' : ''; }).join('') + '</ul>' : '';
-    var right = '<section class="sheet insight__cats" aria-labelledby="cat-h"><div class="sheet__head"><div><h2 id="cat-h">Par catégorie</h2><span class="mono">effacées / surveillées</span></div>' + legend + '</div><div class="sheet__body sheet__body--tight">' + catList + (sensList ? '<h3 class="mono insight__sub">Par sensibilité</h3>' + sensList : '') + '</div></section>';
-    return chart + right;
+    var hist = d.exposure_history || [], c = d.counters, first = hist.length ? hist[0].exposure : 100, delta = d.exposure - first;
+    var table = hist.length ? '<table class="vh"><caption>Exposition par semaine</caption><thead><tr><th scope="col">Semaine du</th><th scope="col">Exposition</th></tr></thead><tbody>' + hist.map(function (p) { return '<tr><td>' + fmtDate(p.week_start) + '</td><td>' + p.exposure + NNBSP + '%</td></tr>'; }).join('') + '</tbody></table>' : '';
+    var chart = '<section class="sheet chart-card" aria-labelledby="exp-h"><div class="card-head"><div><h2 id="exp-h">Évolution de l’exposition</h2><p class="mono">12 dernières semaines</p></div><p class="chart-card__now"><b class="num">' + (c.total ? d.exposure + NNBSP + '%' : '—') + '</b><span>' + (!c.total ? 'avant la première vague' : delta < 0 ? '−' + Math.abs(delta) + NNBSP + 'pts' : delta > 0 ? '+' + delta + NNBSP + 'pts' : 'stable') + '</span></p></div><div class="chart" id="exp-chart"></div>' + table + '</section>';
+    var legend = '<ul class="legend" role="list"><li><i class="legend__k legend__k--done"></i>Effacées</li><li><i class="legend__k legend__k--action_required"></i>Vérification</li>' + (c.refused ? '<li><i class="legend__k legend__k--refused"></i>Refus</li>' : '') + '<li><i class="legend__k legend__k--rest"></i>En cours</li></ul>';
+    var sens = (d.sensitivity || []).filter(function (b) { return b.total; });
+    var sensHtml = sens.length && c.total ? '<h3 class="mono insight__sub">Par sensibilité</h3><div class="sens-tiles">' + sens.map(function (b) { return '<div class="stile">' + dots(b.level) + '<span class="stile__l">' + SENS_SHORT[b.level] + '</span><span class="stile__n num"><b>' + b.done + '</b>' + NNBSP + '/' + NNBSP + b.total + '</span></div>'; }).join('') + '</div>' : '';
+    var cats = '<section class="sheet cats-card" aria-labelledby="cat-h"><div class="card-head"><div><h2 id="cat-h">Par catégorie</h2><p class="mono">effacées / suivies</p></div>' + legend + '</div><div class="cats-card__body"><div id="dash-cats">' + catsHtml(d) + '</div>' + sensHtml + '</div></section>';
+    return chart + cats;
   }
-  function sigInsight(d) { return JSON.stringify([d.exposure_history, d.categories, d.sensitivity, d.exposure, d.counters.total, d.counters.refused]); }
+  function sigInsight(d) { return JSON.stringify([d.exposure_history, d.categories, d.sensitivity, d.exposure, d.counters.total, d.counters.refused, !!state.catsAll]); }
 
   function drawChart() {
     var host = $('#exp-chart'), d = state.dash; if (!host || !d) return;
     var pts = d.exposure_history || [];
-    if (pts.length < 2) { host.innerHTML = '<p class="empty empty--sm">Historique disponible après la première vague.</p>'; return; }
-    var W = Math.max(260, Math.floor(host.clientWidth || 600)), H = 210, L = 44, R = 60, T = 18, B = 30, n = pts.length;
+    if (pts.length < 2 || !d.counters.total) { host.innerHTML = '<p class="empty empty--sm">L’historique apparaîtra après la première vague.</p>'; return; }
+    var W = Math.max(260, Math.floor(host.clientWidth || 600)), H = 200, L = 40, R = 52, T = 16, B = 28, n = pts.length;
     var x = function (i) { return L + (W - L - R) * i / (n - 1); }, y = function (v) { return T + (H - T - B) * (1 - v / 100); };
     var path = pts.map(function (p, i) { return (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(p.exposure).toFixed(1); }).join(' ');
     var area = path + ' L' + x(n - 1).toFixed(1) + ' ' + y(0).toFixed(1) + ' L' + x(0).toFixed(1) + ' ' + y(0).toFixed(1) + ' Z';
     var grid = [0, 50, 100].map(function (v) { return '<line class="chart__grid" x1="' + L + '" x2="' + (W - R) + '" y1="' + y(v).toFixed(1) + '" y2="' + y(v).toFixed(1) + '"/><text class="chart__lbl" x="' + (L - 10) + '" y="' + (y(v) + 4).toFixed(1) + '" text-anchor="end">' + v + (v ? NNBSP + '%' : '') + '</text>'; }).join('');
-    var xl = [0, Math.round((n - 1) / 3), Math.round(2 * (n - 1) / 3), n - 1].map(function (i) { return '<text class="chart__lbl" x="' + x(i).toFixed(1) + '" y="' + (H - 8) + '" text-anchor="' + (i === 0 ? 'start' : i === n - 1 ? 'end' : 'middle') + '">' + fmtDay(pts[i].week_start) + '</text>'; }).join('');
+    var xl = [0, Math.round((n - 1) / 3), Math.round(2 * (n - 1) / 3), n - 1].map(function (i) { return '<text class="chart__lbl" x="' + x(i).toFixed(1) + '" y="' + (H - 6) + '" text-anchor="' + (i === 0 ? 'start' : i === n - 1 ? 'end' : 'middle') + '">' + fmtDay(pts[i].week_start) + '</text>'; }).join('');
     var last = pts[n - 1], ex = x(n - 1), ey = y(last.exposure);
-    var end = '<circle class="chart__end" cx="' + ex.toFixed(1) + '" cy="' + ey.toFixed(1) + '" r="4.5"/><text class="chart__val" x="' + (ex + 12).toFixed(1) + '" y="' + (ey + 4).toFixed(1) + '">' + last.exposure + NNBSP + '%</text>';
+    var end = '<circle class="chart__end" cx="' + ex.toFixed(1) + '" cy="' + ey.toFixed(1) + '" r="4.5"/><text class="chart__val" x="' + (ex + 10).toFixed(1) + '" y="' + (ey + 4).toFixed(1) + '">' + last.exposure + NNBSP + '%</text>';
     var summary = 'Exposition sur 12 semaines' + NBSP + ': de ' + pts[0].exposure + NNBSP + '% (semaine du ' + fmtDay(pts[0].week_start) + ') à ' + last.exposure + NNBSP + '% aujourd’hui.';
-    host.innerHTML = '<svg class="chart__svg" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" role="img" tabindex="0" aria-label="' + esc(summary) + ' Flèches gauche et droite pour parcourir les semaines."><path class="chart__area" d="' + area + '"/>' + grid + '<path class="chart__line" d="' + path + '"/><line class="chart__cross" y1="' + T + '" y2="' + y(0).toFixed(1) + '" hidden/><circle class="chart__hover" r="4.5" hidden/>' + end + xl + '</svg><div class="chart__tip" role="status" aria-live="polite" hidden></div>';
+    host.innerHTML = '<svg class="chart__svg" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" role="img" tabindex="0" aria-label="' + esc(summary) + ' Flèches gauche et droite pour parcourir les semaines."><defs><linearGradient id="exp-fill" x1="0" y1="0" x2="0" y2="1"><stop class="chart__stop" offset="0"/><stop class="chart__stop chart__stop--end" offset="1"/></linearGradient></defs><path class="chart__area" d="' + area + '"/>' + grid + '<path class="chart__line" d="' + path + '"/><line class="chart__cross" y1="' + T + '" y2="' + y(0).toFixed(1) + '" hidden/><circle class="chart__hover" r="4.5" hidden/>' + end + xl + '</svg><div class="chart__tip" role="status" aria-live="polite" hidden></div>';
     host._pts = pts.map(function (p, i) { return { x: x(i), y: y(p.exposure), v: p.exposure, w: p.week_start }; });
     host._size = { W: W, H: H, L: L, R: R };
     wireChart(host);
@@ -261,7 +443,7 @@
       cross.setAttribute('x1', p.x); cross.setAttribute('x2', p.x); cross.hidden = false;
       dot.setAttribute('cx', p.x); dot.setAttribute('cy', p.y); dot.hidden = false;
       tip.textContent = ''; var b = document.createElement('b'); b.textContent = p.v + NNBSP + '%'; tip.appendChild(b); tip.appendChild(document.createTextNode(' semaine du ' + fmtDay(p.w)));
-      tip.hidden = false; var left = p.x / host._size.W * 100; tip.style.left = left + '%'; tip.classList.toggle('is-right', left > 70);
+      tip.hidden = false; var left = p.x / host._size.W * 100; tip.style.left = left + '%'; tip.classList.toggle('is-right', left > 70); tip.classList.toggle('is-left', left < 18);
     }
     function hide() { idx = -1; cross.hidden = true; dot.hidden = true; tip.hidden = true; }
     svg.addEventListener('pointermove', function (e) { var r = svg.getBoundingClientRect(), px = (e.clientX - r.left) / r.width * host._size.W, best = 0, bd = Infinity; host._pts.forEach(function (p, i) { var dd = Math.abs(p.x - px); if (dd < bd) { bd = dd; best = i; } }); show(best); });
@@ -276,111 +458,129 @@
     });
   }
 
-  function filterDefs(d) {
-    var c = d.counters;
-    var f = [['all', 'Tous', c.active], ['action_required', 'Action requise', c.action_required], ['in_progress', 'En cours', c.in_progress + c.queued], ['done', 'Terminées', c.done]];
-    if (c.refused) f.push(['refused', 'Refusées', c.refused]);
-    if (d.sites && d.sites.count) f.push(['sites', 'Sites ajoutés', d.sites.count]);
-    return f;
-  }
-  function filtersHtml(d) { return filterDefs(d).map(function (f) { return '<button type="button" aria-pressed="' + (state.filter === f[0]) + '" data-filter="' + f[0] + '">' + f[1] + '<b>' + f[2] + '</b></button>'; }).join(''); }
-  function toolsHtml(d) {
-    return '<div class="tools__search"><label class="vh" for="broker-search">Rechercher un courtier ou une catégorie</label><input type="search" id="broker-search" placeholder="Rechercher un courtier, une catégorie…" value="' + esc(state.search) + '" autocomplete="off"></div>' +
-      '<div class="tools__sort"><label for="broker-sort" class="mono">Trier</label><select id="broker-sort">' + [['status', 'par statut'], ['sensitivity', 'par sensibilité'], ['name', 'par nom'], ['date', 'par date']].map(function (o) { return '<option value="' + o[0] + '"' + (state.sort === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></div>' +
-      '<div class="filters" id="dash-filters" role="group" aria-label="Filtrer par statut">' + filtersHtml(d) + '</div>';
-  }
-  function matchesFilter(r) { return state.filter === 'all' || (state.filter === 'sites' ? !!r.custom : state.filter === 'in_progress' ? (r.status === 'sent' || r.status === 'in_progress' || r.status === 'queued') : r.status === state.filter); }
-  function visibleRequests(d) {
-    var s = state.search.trim().toLowerCase();
-    var list = d.requests.filter(matchesFilter).filter(function (r) { return !s || (r.broker + ' ' + r.category + ' ' + (r.domain || '')).toLowerCase().indexOf(s) >= 0; });
-    var dateOf = function (r) { return r.completed_at || r.sent_at || r.created_at || ''; };
-    if (state.sort === 'sensitivity') list.sort(function (a, b) { return b.sensitivity - a.sensitivity || a.broker.localeCompare(b.broker, 'fr'); });
-    else if (state.sort === 'name') list.sort(function (a, b) { return a.broker.localeCompare(b.broker, 'fr'); });
-    else if (state.sort === 'date') list.sort(function (a, b) { return dateOf(b).localeCompare(dateOf(a)) || a.broker.localeCompare(b.broker, 'fr'); });
-    return list;
-  }
-  function emptyRows(d) {
-    var c = d.counters;
-    if (!d.requests.length) {
-      return '<div class="empty empty--state"><span class="mono">Aucune demande pour l’instant</span><p>' + (onboardingDone() ? 'Les ' + c.brokers + NBSP + 'premiers courriers partent automatiquement dans la minute.' : 'Les demandes partent d’elles-mêmes une fois le dossier complet' + NBSP + ': informations, mandat signé et abonnement actif.') + '</p>' + (onboardingDone() ? '' : '<a class="btn btn--outline btn--sm" href="#onboarding">Terminer les étapes</a>') + '</div>';
+  /* ---------- tiroir de détail d'une demande (<dialog> modal) ---------- */
+  var drawer = $('#drawer'), drawerFor = null, drawerSig = null, drawerTrigger = null, complaintText = '';
+  function statusSentence(r) {
+    var ccpa = r.legal_basis === 'ccpa', motive = r.note && !/^(Refus du courtier|réponse reçue de|Mandat révoqué)/i.test(r.note) ? r.note : '';
+    switch (r.status) {
+      case 'queued': return r.custom && r.site && r.site.status === 'searching' ? 'Nous cherchons le contact du site' + NBSP + '; la demande part dès qu’il est connu.' : r.custom && r.site && r.site.status === 'review' ? 'Notre équipe vérifie l’adresse de contact du site avant l’envoi.' : 'La demande est prête' + NBSP + ': elle part dans la minute.';
+      case 'error': return 'L’envoi a échoué plusieurs fois' + NBSP + ': notre équipe vérifie l’adresse du courtier, puis la demande repart.';
+      case 'sent': return 'Le courtier a jusqu’au ' + fmtDate(r.due_at) + ' pour répondre (' + (ccpa ? '45' + NBSP + 'jours, CCPA' : 'un mois, article' + NBSP + '12 du RGPD') + '). Sans réponse, nous le relançons.';
+      case 'in_progress': return r.followup_sent_at ? 'Délai légal dépassé' + NBSP + ': nous avons relancé le courtier le ' + fmtDate(r.followup_sent_at) + (r.complaint ? '. Sans réponse depuis, vous pouvez déposer une plainte.' : '.') : 'Le courtier traite la demande' + (r.due_at ? NBSP + '; réponse attendue avant le ' + fmtDate(r.due_at) : '') + '.';
+      case 'action_required': return 'Le courtier demande une vérification avant d’effacer vos données' + (r.note && r.note !== 'Le courtier demande une vérification.' ? ' (' + esc(typo(r.note)) + ')' : '') + '. Suivez les instructions reçues par e-mail, puis confirmez ici.';
+      case 'done': return 'Effacement confirmé le ' + fmtDate(r.completed_at) + '. ' + (r.next_check_at ? 'Nous revérifierons le ' + fmtDate(r.next_check_at) + ' et renverrons une demande si vos données réapparaissent.' : 'Nous revérifions régulièrement ce courtier.');
+      case 'refused': return 'Le courtier a refusé l’effacement' + (motive ? NBSP + ': «' + NBSP + esc(typo(motive)) + NBSP + '»' : '') + '. ' + (r.next_check_at ? 'Une nouvelle demande partira le ' + fmtDate(r.next_check_at) + '. ' : '') + (r.complaint ? 'Vous pouvez aussi déposer une plainte.' : '');
     }
-    if (state.search.trim()) return '<div class="empty empty--state"><p>Aucun courtier ne correspond à «' + NBSP + esc(state.search.trim()) + NBSP + '».</p><button type="button" class="btn btn--outline btn--sm" id="search-clear">Effacer la recherche</button></div>';
-    if (state.filter === 'action_required') return '<div class="empty empty--state"><span class="mono">Rien à faire</span><p>Aucun courtier n’attend de vérification de votre part.</p></div>';
-    if (state.filter === 'done') return '<div class="empty empty--state"><span class="mono">Pas encore de confirmation</span><p>Les courtiers ont un mois (RGPD) ou 45' + NBSP + 'jours (CCPA) pour répondre' + NBSP + '; nous relançons à l’échéance.</p></div>';
-    if (state.filter === 'in_progress') return '<div class="empty empty--state"><span class="mono">Aucune demande en cours</span><p>' + (c.active && c.done === c.active ? 'Tous les courtiers ont confirmé l’effacement.' : 'Rien en attente de réponse.') + '</p></div>';
-    return '<div class="empty empty--state"><p>Aucune demande dans cette catégorie.</p></div>';
+    return '';
   }
-  function rowHtml(r, d) {
-    var basis = (r.legal_basis === 'ccpa' ? 'CCPA' : 'RGPD art. 17') + (r.cycle > 1 ? SEP + 'cycle ' + r.cycle : '');
-    var when = r.status === 'done' ? '<span>Effacée le ' + fmtDay(r.completed_at) + '</span><small>' + (r.next_check_at ? 'revérif. le ' + fmtDate(r.next_check_at) : basis) + '</small>'
-      : r.status === 'refused' ? '<span>Refusée</span><small>' + (r.sent_at ? 'demande du ' + fmtDay(r.sent_at) : basis) + '</small>'
-      : r.sent_at ? '<span>Envoyée le ' + fmtDay(r.sent_at) + '</span><small>' + (r.due_at ? 'réponse due le ' + fmtDay(r.due_at) : basis) + '</small>'
-      : '<span>Prochain envoi</span><small>' + basis + '</small>';
-    var act = '<button class="btn btn--outline btn--xs" type="button" data-mails="' + esc(r.id) + '" aria-expanded="false" aria-controls="mail-' + esc(r.id) + '">Détails<span class="vh"> ' + esc(r.broker) + '</span></button>';
-    var note = '';
-    if (r.status === 'action_required') {
-      var what = r.note && r.note !== 'Le courtier demande une vérification.' ? esc(typo(r.note)) + ' ' : '';
-      note = '<div class="row__note row__note--warn"><p><strong>Le courtier demande une vérification avant de supprimer vos données.</strong> ' + what + 'Nous vous avons transmis sa demande par e-mail (objet «' + NBSP + 'Action requise' + NBSP + '») ' + NBSP + ': suivez le lien de confirmation ou renvoyez la pièce demandée, puis confirmez ici pour que la demande reprenne son cours.</p><button class="btn btn--xs" type="button" data-resolve="' + esc(r.id) + '">Vérification faite</button></div>';
-    } else if (r.status === 'refused') {
-      note = '<div class="row__note row__note--danger"><p><strong>Le courtier refuse l’effacement.</strong> ' + (r.note ? esc(typo(r.note)) + ' ' : '') + 'Prochaine étape' + NBSP + ': nous préparons une réclamation auprès de l’autorité de contrôle (CNIL) et une nouvelle demande partira ' + (r.next_check_at ? 'le ' + fmtDate(r.next_check_at) : d.next_check_at ? 'au prochain cycle, le ' + fmtDate(d.next_check_at) : 'au prochain cycle de vérification') + '.</p></div>';
-    } else if (r.custom || r.source_url) {
-      note = siteNote(r);
-    } else if (r.note && r.status !== 'done') {
-      note = '<p class="row__note">' + esc(typo(r.note)) + '</p>';
+  function requestSteps(r) {
+    var answered = r.status === 'done' || r.status === 'refused', s = [];
+    s.push(['Demande préparée', fmtDay(r.created_at), 'done']);
+    s.push(['Envoyée au courtier', r.sent_at ? fmtWhen(r.sent_at) : r.status === 'error' ? 'envoi en échec' : r.custom && r.site && r.site.status === 'searching' ? 'dès que le contact est connu' : 'dans la minute', r.sent_at ? 'done' : 'current']);
+    if (r.status === 'action_required') s.push(['Vérification demandée', 'à faire de votre côté', 'current']);
+    s.push(['Relance', r.followup_sent_at ? fmtDay(r.followup_sent_at) : answered ? 'pas nécessaire' : r.due_at ? 'le ' + fmtDay(r.due_at) + ' sans réponse' : 'à l’échéance, si besoin', r.followup_sent_at ? 'done' : answered ? 'skip' : 'todo']);
+    s.push([r.status === 'refused' ? 'Refus du courtier' : 'Effacement confirmé', r.status === 'done' ? fmtDay(r.completed_at) : r.status === 'refused' ? 'refus reçu' : r.due_at ? 'attendu avant le ' + fmtDay(r.due_at) : 'après l’envoi', r.status === 'done' ? 'done' : r.status === 'refused' ? 'bad' : r.sent_at && r.status !== 'action_required' ? 'current' : 'todo']);
+    s.push([r.status === 'refused' ? 'Nouvelle demande' : 'Revérification', r.next_check_at ? 'le ' + fmtDay(r.next_check_at) : r.recheck_days ? 'tous les ' + r.recheck_days + NBSP + 'jours après l’effacement' : '—', 'todo']);
+    return '<ol class="steps">' + s.map(function (x) { return '<li class="steps__i is-' + x[2] + '"><span class="steps__dot" aria-hidden="true"></span><span class="steps__t">' + x[0] + '<span class="vh">' + (x[2] === 'done' ? ' (fait)' : x[2] === 'current' ? ' (en cours)' : x[2] === 'bad' ? ' (refus)' : x[2] === 'skip' ? ' (sans objet)' : ' (à venir)') + '</span></span><span class="steps__d">' + x[1] + '</span></li>'; }).join('') + '</ol>';
+  }
+  var JURIS = { FR: 'France', EU: 'Union européenne', UK: 'Royaume-Uni', US: 'États-Unis', CH: 'Suisse', CA: 'Canada' };
+  function drawerActions(r) {
+    if (readOnly()) return '';
+    var a = '';
+    if (r.status === 'action_required') a += '<button class="btn btn--sm" type="button" data-resolve="' + esc(r.id) + '" data-k="resolve">Vérification faite</button>';
+    if (r.complaint) a += '<button class="btn btn--sm" type="button" data-complaint="' + esc(r.id) + '" data-k="complaint" aria-expanded="false" aria-controls="complaint-box">Préparer la plainte</button>';
+    if (r.status === 'done' || r.status === 'refused') a += '<button class="btn btn--outline btn--sm" type="button" data-relaunch-open="' + esc(r.id) + '" data-k="relaunch" aria-expanded="false" aria-controls="relaunch-form">Mes données sont réapparues</button>';
+    if (!a) return '';
+    return '<div class="dact">' + a + '</div><div id="complaint-box" class="complaint" hidden></div>' +
+      (r.status === 'done' || r.status === 'refused' ? '<form id="relaunch-form" class="relaunch" data-id="' + esc(r.id) + '" novalidate hidden><p>Une nouvelle demande d’effacement part tout de suite. Si vous avez retrouvé la fiche, indiquez son adresse' + NBSP + ': elle sera citée dans le courrier.</p><div class="f"><label for="relaunch-url">Adresse de la fiche (facultatif)</label><input id="relaunch-url" name="url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://' + esc(r.domain || 'exemple.fr') + '/…"></div><button class="btn btn--sm" type="submit" data-k="relaunch-go">Envoyer une nouvelle demande</button>' + msgEl('msg-relaunch-form') + '</form>' : '');
+  }
+  function drawerBody(r, m) {
+    var q2 = m.request;
+    var facts = [['Référence', '<code>' + esc(q2.ref) + '</code><button type="button" class="btn btn--text" data-copy="' + esc(q2.ref) + '" data-k="copy">Copier<span class="vh"> la référence</span></button>'], ['Base légale', r.legal_basis === 'ccpa' ? 'CCPA' : r.legal_basis === 'both' ? 'RGPD (article' + NBSP + '17) et CCPA' : 'RGPD, article' + NBSP + '17'], ['Juridiction', esc(JURIS[r.jurisdiction] || r.jurisdiction || '—')], ['Sensibilité', dots(r.sensitivity) + ' ' + (SENS[r.sensitivity] || '')], ['Cycle', r.cycle > 1 ? 'cycle ' + r.cycle : 'premier envoi']];
+    if (q2.source_url) facts.push(['Fiche signalée', '<a href="' + esc(q2.source_url) + '" target="_blank" rel="noopener noreferrer">' + esc(q2.source_url.replace(/^https?:\/\//, '')) + '<span class="vh"> (nouvel onglet)</span></a>']);
+    if (r.custom && r.site && r.site.contact) facts.push(['Contact', esc(r.site.contact) + (r.site.status === 'found' ? ' (publié par le site)' : ' (adresse présumée)')]);
+    var hist = m.events.length ? '<ol class="hist">' + m.events.map(function (e) { return '<li class="t-' + esc(e.type) + '"><time datetime="' + esc(e.created_at) + '">' + fmtTime(e.created_at) + '</time><span>' + esc(typo(e.message)) + '</span></li>'; }).join('') + '</ol>' : '<p class="dempty">Aucun événement pour l’instant.</p>';
+    var mails = m.mails.length ? m.mails.map(function (x) { return '<details class="letter"><summary><span class="letter__s">' + esc(x.subject) + '</span><span class="letter__m">' + esc(fmtTime(x.created_at)) + SEP + 'à ' + esc(x.to_addr) + (x.mode === 'smtp' ? '' : SEP + 'boîte d’envoi locale') + '</span></summary><div class="mail-body" tabindex="0" role="region" aria-label="Courrier du ' + esc(fmtTime(x.created_at)) + '">' + esc(x.body) + '</div></details>'; }).join('') : '<p class="dempty">Pas encore de courrier envoyé.</p>';
+    return '<div class="dstatus">' + chip(r.status) + '<p>' + statusSentence(r) + '</p></div>' + drawerActions(r) +
+      '<section class="dsec" aria-labelledby="ds-steps"><h3 class="dsec__t" id="ds-steps">Étapes</h3>' + requestSteps(r) + '</section>' +
+      '<section class="dsec" aria-labelledby="ds-facts"><h3 class="dsec__t" id="ds-facts">Informations</h3><dl class="facts">' + facts.map(function (f) { return '<div><dt>' + f[0] + '</dt><dd>' + f[1] + '</dd></div>'; }).join('') + '</dl></section>' +
+      '<section class="dsec" aria-labelledby="ds-hist"><h3 class="dsec__t" id="ds-hist">Historique</h3>' + hist + '</section>' +
+      '<section class="dsec" aria-labelledby="ds-mails"><h3 class="dsec__t" id="ds-mails">Courriers' + (m.mails.length ? ' (' + m.mails.length + ')' : '') + '</h3>' + mails + '</section>';
+  }
+  function drawerFrame(r) {
+    return '<div class="drawer__inner"><header class="drawer__head">' + mark(r.broker, r.category, true) + '<div class="drawer__id"><p class="mono">' + esc(r.category) + '</p><h2 id="drawer-title" tabindex="-1" autofocus>' + esc(r.broker) + '</h2>' + (r.domain ? '<a class="drawer__domain" href="https://' + esc(r.domain) + '" target="_blank" rel="noopener noreferrer">' + esc(r.domain) + '<span class="vh"> (site du courtier, nouvel onglet)</span></a>' : '') + '</div><button type="button" class="drawer__close" data-close data-k="close" aria-label="Fermer le détail"></button></header><div class="drawer__body" id="drawer-body"><p class="dempty"><span class="spinner"></span> Chargement…</p></div></div>';
+  }
+  function openDrawer(id, trigger, section) {
+    var r = rowById(id); if (!r || !drawer) return;
+    drawerFor = id; drawerSig = null; complaintText = ''; drawerTrigger = trigger || null;
+    drawer.innerHTML = drawerFrame(r);
+    drawer.appendChild(toastEl); drawer.appendChild(announceEl);   // un modal rend le reste de la page inerte : les messages suivent le tiroir
+    if (!drawer.open) drawer.showModal();
+    var title = $('#drawer-title', drawer); if (title && document.activeElement !== title) title.focus();
+    loadDrawer(id, section);
+  }
+  function loadDrawer(id, section, keepFocus) {
+    return api('/requests/' + id + '/details').then(function (m) {
+      var body = $('#drawer-body', drawer), r = rowById(id); if (drawerFor !== id || !drawer.open || !body || !r) return;
+      var ae = document.activeElement, k = keepFocus && ae && body.contains(ae) ? ae.getAttribute('data-k') : null, open = $$('details[open]', body).map(function (x) { return $$('details', body).indexOf(x); });
+      body.innerHTML = drawerBody(r, m); drawerSig = rowSig(r);
+      $$('details', body).forEach(function (x, i) { if (open.indexOf(i) >= 0) x.open = true; });
+      if (ae && !document.contains(ae)) { var f = k && $('[data-k="' + k + '"]', body); (f || $('#drawer-title', drawer)).focus(); }
+      if (section === 'complaint') loadComplaint(id, true);
+    }).catch(function (e) { var body = $('#drawer-body', drawer); if (body && drawerFor === id) body.innerHTML = '<p class="notice" role="alert">' + esc(e.message) + '</p>'; });
+  }
+  function closeDrawer() { if (drawer && drawer.open) drawer.close(); }
+  // Pas de rafraîchissement du tiroir pendant une saisie ou la lecture de la plainte : on ne perd ni le texte ni la position.
+  function drawerIdle() { var f = $('#relaunch-form', drawer), b = $('#complaint-box', drawer); return !(f && !f.hidden) && !(b && !b.hidden); }
+  if (drawer) {
+    drawer.addEventListener('close', function () {
+      var id = drawerFor; drawerFor = null; drawerSig = null; complaintText = '';
+      document.body.appendChild(announceEl); document.body.appendChild(toastEl);
+      var t = drawerTrigger; drawerTrigger = null;
+      if (!t || !document.contains(t)) t = id ? $('.row__open[data-open="' + id + '"]') : null;
+      if (t) t.focus({ preventScroll: true }); else view.focus({ preventScroll: true });
+    });
+    drawer.addEventListener('click', function (e) { if (e.target === drawer) closeDrawer(); });   // clic sur le fond
+  }
+  function loadComplaint(id, scroll) {
+    var box = $('#complaint-box', drawer), btn = $('[data-complaint]', drawer); if (!box) return;
+    if (!box.hidden && complaintText) { box.hidden = true; if (btn) btn.setAttribute('aria-expanded', 'false'); return; }
+    box.hidden = false; box.innerHTML = '<p class="dempty"><span class="spinner"></span> Rédaction de la plainte…</p>'; if (btn) { btn.setAttribute('aria-expanded', 'true'); lock(btn, true); }
+    api('/requests/' + id + '/complaint').then(function (c) {
+      if (drawerFor !== id) return;
+      complaintText = c.subject + '\n\n' + c.text;
+      var of = c.authority.name.replace(/^le /, 'du ').replace(/^les /, 'des ').replace(/^(?!du |des )/, 'de ');   // « de la CNIL », « du Préposé… »
+      box.innerHTML = '<h3 class="dsec__t">Plainte auprès ' + esc(of) + '</h3><p>Rédigée en votre nom, à partir de votre dossier. Copiez-la dans le formulaire de plainte ' + esc(of) + ' et joignez la copie de la demande (section Courriers).</p><div class="mail-body" tabindex="0" role="region" aria-label="Texte de la plainte">' + esc(complaintText) + '</div><div class="btn-row"><button class="btn btn--sm" type="button" id="complaint-copy" data-k="cp-copy">Copier le texte</button><a class="btn btn--outline btn--sm" href="' + esc(c.authority.url) + '" target="_blank" rel="noopener noreferrer">Déposer la plainte (' + esc(c.authority.short) + ')<span class="vh">, site officiel, nouvel onglet</span></a></div>';
+      if (scroll) box.scrollIntoView({ block: 'nearest', behavior: reduced() ? 'auto' : 'smooth' });
+      announce('Texte de la plainte prêt.');
+    }).catch(function (e) { box.innerHTML = '<p class="notice" role="alert">' + esc(e.message) + '</p>'; }).finally(function () { if (btn) lock(btn, false); });
+  }
+  function copyText(text, done) {
+    function ok() { toast(done); }
+    function fallback() {
+      var ta = document.createElement('textarea'); ta.value = text; ta.setAttribute('readonly', ''); ta.className = 'vh';
+      (drawer && drawer.open ? drawer : document.body).appendChild(ta); ta.select();
+      try { if (document.execCommand('copy')) ok(); else throw new Error(); } catch (e) { toast('Copie impossible' + NBSP + ': sélectionnez le texte et copiez-le.', true); }
+      ta.remove();
     }
-    return '<li class="row row--' + esc(r.status) + '" data-row="' + esc(r.id) + '">' + dots(r.sensitivity) + '<div class="row__who"><strong>' + esc(r.broker) + '</strong><small>' + esc(r.category) + '</small></div><div class="row__status">' + chip(r.status) + '</div><div class="row__when">' + when + '</div><div class="row__act">' + act + '</div>' + note + '</li>';
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(ok, fallback); else fallback();
   }
-  // Site ajouté par l'abonné : où en est le contact, et lien vers la fiche signalée.
-  function siteNote(r) {
-    var s = r.site || {}, txt = '', contact = s.contact ? esc(s.contact) : '';
-    if (r.custom && r.status === 'queued') txt = s.status === 'searching' ? 'Recherche du contact sur le site…' : s.status === 'review' ? 'Notre équipe vérifie le contact du site avant l’envoi.' : s.status === 'found' ? 'Contact publié par le site' + NBSP + ': ' + contact + '. Envoi imminent.' : s.status === 'presumed' ? 'Envoi à l’adresse présumée ' + contact + '.' : 'Envoi imminent.';
-    else if (r.custom && r.status !== 'done') txt = s.status === 'found' ? 'Contact publié par le site' + NBSP + ': ' + contact + '.' : s.status === 'presumed' || s.status === 'review' ? 'Adresse présumée' + NBSP + ': ' + contact + ' (aucune adresse publiée sur le site).' : '';
-    var link = r.source_url ? '<a class="row__url" href="' + esc(r.source_url) + '" target="_blank" rel="noopener noreferrer">Fiche signalée<span class="vh"> (nouvel onglet)</span></a>' : '';
-    return txt || link ? '<p class="row__note row__note--site">' + (txt ? '<span>' + txt + '</span>' : '') + link + '</p>' : '';
-  }
-  function rowsHtml(d) {
-    var all = visibleRequests(d), list = all.slice(0, state.page * PAGE);
-    if (!all.length) return emptyRows(d);
-    return '<div class="row row--head" aria-hidden="true"><span>Sens.</span><span>Courtier</span><span>Statut</span><span>Suivi</span><span></span></div><ol class="rows__list" role="list">' + list.map(function (r) { return rowHtml(r, d); }).join('') + '</ol>' +
-      (all.length > list.length ? '<div class="rows__more"><button type="button" class="btn btn--outline btn--sm" id="rows-more">Afficher plus</button><span class="mono mono--plain">' + list.length + ' sur ' + all.length + '</span></div>' : (all.length > PAGE ? '<div class="rows__more"><span class="mono mono--plain">' + all.length + ' sur ' + all.length + '</span></div>' : ''));
-  }
-  function sigRows(d) { return d.requests.map(function (r) { return [r.id, r.status, r.note, r.sent_at, r.due_at, r.completed_at, r.next_check_at, r.cycle, r.source_url, r.site ? r.site.status + r.site.contact : ''].join('|'); }).join(';') + '#' + [state.filter, state.search, state.sort, state.page, d.next_check_at].join('|'); }
 
-  function journalHtml(d) {
-    var evs = d.events || [], list = state.journalAll ? evs : evs.slice(0, JOURNAL);
-    if (!evs.length) return '<p class="empty">Rien pour l’instant.</p>';
-    return '<ol class="timeline" id="timeline">' + list.map(function (e) { return '<li class="t-' + esc(e.type) + '"><time datetime="' + esc(e.created_at) + '">' + fmtTime(e.created_at) + '</time><span>' + esc(typo(e.message)) + '</span></li>'; }).join('') + '</ol>' +
-      (evs.length > JOURNAL ? '<div class="sheet__more"><button type="button" class="btn btn--text" id="journal-toggle" aria-expanded="' + state.journalAll + '" aria-controls="timeline">' + (state.journalAll ? 'Réduire' : 'Tout afficher (' + evs.length + ')') + '</button></div>' : '');
-  }
-  function sigJournal(d) { return (d.events || []).map(function (e) { return e.id; }).join(',') + '#' + state.journalAll; }
-  function deadlinesHtml(d) {
-    var c = d.counters, rows = '';
-    if (d.next_due_at) rows += '<div class="deadline"><b>' + fmtDate(d.next_due_at) + '</b><span>prochaine réponse due</span></div>';
-    if (d.next_check_at) rows += '<div class="deadline"><b>' + fmtDate(d.next_check_at) + '</b><span>prochaine vérification</span></div>';
-    if (c.queued) rows += '<div class="deadline"><b>' + c.queued + '</b><span>' + (c.queued > 1 ? 'demandes à envoyer' : 'demande à envoyer') + '</span></div>';
-    return rows ? '<div class="deadlines">' + rows + '</div>' : '<p class="empty empty--sm">Aucune échéance.</p>';
-  }
-  function sigDeadlines(d) { return JSON.stringify([d.next_due_at, d.next_check_at, d.counters.queued]); }
-
-  function siteCount(d) { return plural(d.sites.count, 'site ajouté', 'sites ajoutés') + ' sur ' + d.sites.max + ' pour ce profil'; }
-  function addSiteHtml(d) {
-    if (!d.sites || !d.onboarding.mandate || !d.onboarding.subscription) return '';
-    return '<section class="sheet addsite" aria-labelledby="addsite-h"><div class="addsite__intro"><h2 id="addsite-h">Un site manque' + NBSP + '?</h2><p>Collez l’adresse d’une page où apparaissent vos informations' + NBSP + ': nous cherchons le contact du site et la demande d’effacement part automatiquement.</p><span class="mono addsite__count" id="addsite-count">' + siteCount(d) + '</span></div>' +
-      '<form id="addsite-form" class="addsite__form" novalidate><div class="f"><label for="addsite-url">Adresse du site ou de la fiche</label><input id="addsite-url" name="url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://exemple.fr/fiche/votre-nom" required></div><button class="btn" type="submit">Demander l’effacement</button>' + msgEl('msg-addsite-form') + '</form></section>';
-  }
   function skeleton() {
-    return '<div class="dash dash--loading" aria-busy="true"><h1 class="vh">Tableau de bord</h1><p class="vh">Chargement du tableau de bord…</p><div class="skel skel--eyebrow"></div><div class="skel skel--h1"></div><div class="skel skel--lead"></div><div class="sheet skel-sheet"><div class="skel skel--n"></div><div class="skel skel--n"></div><div class="skel skel--n"></div><div class="skel skel--n"></div></div><div class="dash-grid"><div class="sheet skel-sheet skel-sheet--tall"><div class="skel skel--row"></div><div class="skel skel--row"></div><div class="skel skel--row"></div><div class="skel skel--row"></div></div><div class="sheet skel-sheet"><div class="skel skel--row"></div><div class="skel skel--row"></div></div></div></div>';
+    return '<div class="dash dash--loading" aria-busy="true"><h1 class="vh">Tableau de bord</h1><p class="vh">Chargement du tableau de bord…</p><div class="skel skel--eyebrow"></div><div class="skel skel--h1"></div><div class="skel skel--lead"></div>' +
+      '<div class="sheet skel-ov"><div class="skel skel--donut"></div><div class="skel-ov__tiles"><div class="skel skel--tile"></div><div class="skel skel--tile"></div><div class="skel skel--tile"></div><div class="skel skel--tile"></div></div></div>' +
+      '<div class="dash-main"><div class="sheet skel-list"><div class="skel skel--row"></div><div class="skel skel--row"></div><div class="skel skel--row"></div><div class="skel skel--row"></div><div class="skel skel--row"></div></div><div class="sheet skel-list"><div class="skel skel--row"></div><div class="skel skel--row"></div></div></div></div>';
   }
   function dashShell(d) {
-    sigs = { 'dash-head': sigHead(d), 'dash-next': sigNext(d), 'dash-ledger': sigLedger(d), 'dash-insight': sigInsight(d), 'dash-filters': JSON.stringify(filterDefs(d)), rows: sigRows(d), 'dash-journal': sigJournal(d), 'dash-deadlines': sigDeadlines(d) };
+    sigs = { 'dash-head': sigHead(d), 'dash-next': sigNext(d), 'dash-overview': sigOverview(d), 'dash-insight': sigInsight(d), 'dash-filters': JSON.stringify(filterDefs(d)), rows: sigRows(d), 'dash-journal': sigJournal(d) };
     return '<div class="dash" id="dash" data-profile="' + esc(d.profile_id) + '">' +
       '<header class="dash-head" id="dash-head">' + dashHead(d) + '</header>' +
       '<div id="dash-next">' + nextStep(d) + '</div>' +
-      '<section class="sheet ledger" id="dash-ledger" aria-label="Synthèse">' + ledger(d) + '</section>' +
-      '<div class="insight" id="dash-insight">' + insight(d) + '</div>' + addSiteHtml(d) +
-      '<div class="dash-grid"><section class="sheet" aria-labelledby="brokers-h"><div class="sheet__head"><h2 id="brokers-h">Courtiers</h2><span class="mono">' + d.counters.brokers + NBSP + 'surveillés</span></div><div class="tools" id="dash-tools">' + toolsHtml(d) + '</div><div class="rows" id="rows">' + rowsHtml(d) + '</div></section>' +
-      '<aside class="stack"><section class="sheet" aria-labelledby="journal-h"><div class="sheet__head"><h2 id="journal-h">Journal</h2><a class="btn btn--outline btn--xs" href="/api/export" target="_blank" rel="noopener">Exporter<span class="vh"> le dossier (JSON, nouvel onglet)</span></a></div><div id="dash-journal">' + journalHtml(d) + '</div></section>' +
-      '<section class="sheet" aria-labelledby="deadlines-h"><div class="sheet__head"><h2 id="deadlines-h">Échéances</h2></div><div id="dash-deadlines">' + deadlinesHtml(d) + '</div></section></aside></div></div>';
+      '<section class="sheet ov" id="dash-overview" aria-labelledby="ov-h">' + overview(d) + '</section>' +
+      '<div class="dash-main"><section class="sheet list" aria-labelledby="brokers-h"><div class="list__head"><div class="list__title"><h2 id="brokers-h">Courtiers et sites</h2><p class="mono" id="brokers-count">' + plural(d.counters.active, 'suivi', 'suivis') + '</p></div><div class="tools" id="dash-tools">' + toolsHtml() + '</div></div>' +
+      '<div class="filters" id="dash-filters" role="group" aria-label="Filtrer par statut">' + filtersHtml(d) + '</div><div class="rows" id="rows">' + rowsHtml(d) + '</div></section>' +
+      '<div class="dash-side">' + addSiteHtml(d) + '<section class="sheet activity" aria-labelledby="journal-h"><div class="card-head"><h2 id="journal-h">Activité</h2>' + (readOnly() ? '' : '<a class="btn btn--text" href="/api/export" target="_blank" rel="noopener">Exporter<span class="vh"> le dossier (JSON, nouvel onglet)</span></a>') + '</div><div id="dash-journal">' + journalHtml(d) + '</div></section></div></div>' +
+      '<div class="dash-analysis" id="dash-insight">' + insight(d) + '</div></div>';
   }
   views.dashboard = function () { return state.dash ? dashShell(state.dash) : skeleton(); };
 
@@ -390,7 +590,6 @@
     if (sigs[id] === sig) return false;
     var ae = document.activeElement;
     if (ae && ae !== document.body && el.contains(ae)) return false;
-    if (id === 'rows' && $('.mail', el)) return false;
     sigs[id] = sig; el.innerHTML = html; return true;
   }
   function paintDash(focusSel) {
@@ -401,18 +600,19 @@
       if (focusSel) { var f = $(focusSel); if (f) f.focus({ preventScroll: true }); }
       return;
     }
-    var before = sigs['dash-ledger'];
+    var before = sigs['dash-overview'];
     patch('dash-head', dashHead(d), sigHead(d));
     patch('dash-next', nextStep(d), sigNext(d));
-    patch('dash-ledger', ledger(d), sigLedger(d));
+    patch('dash-overview', overview(d), sigOverview(d));
     if (patch('dash-insight', insight(d), sigInsight(d))) drawChart();
     patch('dash-filters', filtersHtml(d), JSON.stringify(filterDefs(d)));
     $$('#dash-filters [data-filter]').forEach(function (b) { var def = filterDefs(d).filter(function (f) { return f[0] === b.getAttribute('data-filter'); })[0], n = $('b', b); if (def && n && n.textContent !== String(def[2])) n.textContent = def[2]; });
     patch('rows', rowsHtml(d), sigRows(d));
     patch('dash-journal', journalHtml(d), sigJournal(d));
-    patch('dash-deadlines', deadlinesHtml(d), sigDeadlines(d));
     var cnt = $('#addsite-count'); if (cnt && d.sites && cnt.textContent !== siteCount(d)) cnt.textContent = siteCount(d);
-    if (before && before !== sigs['dash-ledger']) {
+    var bc = $('#brokers-count'), bct = plural(d.counters.active, 'suivi', 'suivis'); if (bc && bc.textContent !== bct) bc.textContent = bct;
+    if (drawer && drawer.open && drawerFor && drawerIdle()) { var r = rowById(drawerFor); if (r && drawerSig && rowSig(r) !== drawerSig) loadDrawer(drawerFor, null, true); }
+    if (before && before !== sigs['dash-overview']) {
       var c = d.counters, parts = [];
       if (c.done) parts.push(plural(c.done, 'effacement confirmé', 'effacements confirmés'));
       if (c.action_required) parts.push(plural(c.action_required, 'vérification à faire', 'vérifications à faire'));
@@ -491,7 +691,7 @@
   /* ---------- rendu & routage ---------- */
   function render() {
     var p = params(), route = p.route || (state.user ? 'dashboard' : 'login');
-    clearInterval(pollTimer);
+    clearInterval(pollTimer); closeDrawer();
     if (route === 'billing-success') { toast('Paiement confirmé. Les demandes partent automatiquement.'); location.hash = 'dashboard'; return; }
     if (!state.user && !/^(login|signup)$/.test(route)) { location.hash = 'login' + (location.hash.indexOf('?') > 0 ? location.hash.slice(location.hash.indexOf('?')) : ''); return; }
     if (state.user && /^(login|signup)$/.test(route)) { location.hash = home(); return; }
@@ -506,15 +706,35 @@
     var h = $('h1', view); if (h) announce(h.textContent);
   }
   function after(route, q) {
-    if (route === 'dashboard') { drawChart(); loadDash(); pollTimer = setInterval(function () { if (!document.hidden) loadDash(); }, 6000); }
+    if (route === 'dashboard') { drawChart(); loadDash(null, true); pollTimer = setInterval(function () { if (!document.hidden && Date.now() >= retryAt) loadDash(); }, 6000); }
     if (route === 'onboarding' || route === 'dossier') loadMandateText();
     if (route === 'report') loadReport();
     if (plugins[route]) plugins[route](q || {});
   }
-  function loadDash(focusSel) {
-    var pid = state.profileId ? '?profile_id=' + encodeURIComponent(state.profileId) : '';
-    return api('/dashboard' + pid).then(function (d) { state.dash = d; state.user = d.user; state.profiles = d.profiles; state.profileId = d.profile_id; paintDash(focusSel); }).catch(function (e) { if (e.status === 401) { resetSession(); go('login'); return; } toast(e.message, true); });
+  /* Requête du tableau de bord : une seule à la fois (sauf demande explicite), la plus récente l'emporte. En cas d'échec,
+     nouvel essai espacé (12 s, 24 s… 1 min au plus) et indicateur « hors ligne », au lieu d'une erreur toutes les 6 s. */
+  var dashSeq = 0, dashBusy = false, fails = 0, retryAt = 0;
+  function loadDash(focusSel, force) {
+    if (dashBusy && !force) return Promise.resolve();
+    var seq = ++dashSeq, pid = state.profileId ? '?profile_id=' + encodeURIComponent(state.profileId) : '';
+    dashBusy = true;
+    return api('/dashboard' + pid).then(function (d) {
+      if (seq !== dashSeq) return;
+      if (fails) announce('Connexion rétablie.');
+      fails = 0; retryAt = 0; setLive('ok', 'En direct');
+      var err = $('#dash-error'); if (err) err.remove();
+      state.dash = d; state.user = d.user; state.profiles = d.profiles; state.profileId = d.profile_id; paintDash(focusSel);
+    }).catch(function (e) {
+      if (seq !== dashSeq) return;
+      if (e.status === 401) { resetSession(); go('login'); return; }
+      fails += 1; retryAt = Date.now() + Math.min(60000, 6000 * Math.pow(2, fails));
+      if (e.status) { setLive('off', 'Erreur du serveur'); if (fails === 1) toast(e.message, true); }
+      else { setLive('off', 'Hors ligne'); if (fails === 1) announce('Connexion perdue' + NBSP + ': nouvel essai automatique.'); }
+      var sk = $('.dash--loading'); if (sk && !$('#dash-error')) sk.insertAdjacentHTML('afterbegin', '<p class="notice" id="dash-error" role="alert">Le tableau de bord ne répond pas pour l’instant. Nouvel essai automatique dans quelques secondes.</p>');
+    }).finally(function () { if (seq === dashSeq) dashBusy = false; });
   }
+  window.addEventListener('online', function () { if (state.user && params().route === 'dashboard') { retryAt = 0; loadDash(null, true); } });
+  document.addEventListener('visibilitychange', function () { if (!document.hidden && state.user && params().route === 'dashboard' && Date.now() >= retryAt) loadDash(); });
   function loadMandateText() {
     var box = $('#mandate-text'); if (!box) return;
     api('/mandate').then(function (m) { box.textContent = m.text || ''; }).catch(function (e) { box.textContent = e.message; });
@@ -580,10 +800,18 @@
       api('/sites', { body: { url: sv, profile_id: state.profileId } }).then(function (r) {
         var b = r.broker.name;
         var text = r.status === 'already' ? b + ' fait déjà partie de vos demandes' + NBSP + ': l’adresse de la fiche a été ajoutée au dossier.' : r.status === 'relaunched' ? 'Fiche signalée chez ' + b + NBSP + ': une nouvelle demande d’effacement part.' : r.registry ? b + ' ajouté à votre dossier' + NBSP + ': la demande part.' : 'Site ajouté' + NBSP + ': nous cherchons le contact de ' + b + ', la demande part dès qu’il est connu.';
-        su.value = ''; showMsg(f, text); toast(text);
+        su.value = ''; showMsg(f, text);
         state.filter = 'all'; state.search = ''; state.page = 1; var si = $('#broker-search'); if (si) si.value = '';
-        return loadDash();
+        return loadDash(null, true);
       }).catch(function (err) { showMsg(f, err.message, true, null, su); }).finally(function () { busy(f, false); });
+    } else if (f.id === 'relaunch-form') {
+      var ru = $('#relaunch-url', f), rid = f.getAttribute('data-id'), rb = (rowById(rid) || {}).broker || 'ce courtier';
+      busy(f, true); showMsg(f, '');
+      api('/requests/' + rid + '/relaunch', { body: { url: ru.value.trim() } }).then(function (r) {
+        toast('Nouvelle demande enregistrée pour ' + rb + NBSP + ': elle part dans la minute.');
+        closeDrawer();
+        return loadDash(null, true).then(function () { var nb = $('.row__open[data-open="' + r.request_id + '"]'); if (nb) nb.focus(); });
+      }).catch(function (err) { showMsg(f, err.message, true, null, ru); }).finally(function () { busy(f, false); });
     } else if (f.id === 'pwd-form') {
       var pw = formData(f); busy(f, true); showMsg(f, '');
       api('/auth/password', { body: pw }).then(function () { toast('Mot de passe changé.'); f.reset(); showMsg(f, ''); }).catch(function (err) { showMsg(f, err.message, true, null, $('#f-current', f)); }).finally(function () { busy(f, false); });
@@ -597,16 +825,11 @@
 
   function launch() { return api('/requests/launch', { body: {} }).then(function (r) { if (r.created) toast(r.created + NBSP + 'demandes préparées. Première vague en cours d’envoi.'); go('dashboard'); setTimeout(loadDash, 1500); setTimeout(loadDash, 4000); }).catch(function (e) { toast(e.message, true); var b = $('#launch'); if (b) lock(b, false); }); }
 
-  function closeMail(focusBack) {
-    var open = $('.mail', view); if (!open) return false;
-    var b = $('[data-mails="' + open.getAttribute('data-for') + '"]', view);
-    open.remove(); if (b) { b.setAttribute('aria-expanded', 'false'); b.innerHTML = b._label || 'Détails'; if (focusBack) b.focus(); }
-    return true;
-  }
   document.addEventListener('keydown', function (e) {
     var t = e.target;
     if (e.key === 'Enter' && t.matches && t.matches('.tags__add input')) { e.preventDefault(); addTag(t.closest('.f--list')); return; }
-    if (e.key === 'Escape') { if (closeMail(true)) return; var armed = $$('[data-confirm]'); if (armed.length) { armed.forEach(disarm); return; } }
+    if (e.key === 'Escape') { var armed = $$('[data-confirm]'); if (armed.length) { armed.forEach(disarm); return; } }
+    if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey && params().route === 'dashboard' && !(drawer && drawer.open) && !/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) && !t.isContentEditable) { var bs = $('#broker-search'); if (bs) { e.preventDefault(); bs.focus(); bs.select(); } }
   });
   document.addEventListener('click', function (e) {
     var t = e.target.closest('button, a'); if (!t) return;
@@ -619,7 +842,15 @@
       e.preventDefault(); state.filter = t.getAttribute('data-filter'); state.page = 1;
       if (state.dash) { renderRows(); var n = visibleRequests(state.dash).length; announce(plural(n, 'demande affichée', 'demandes affichées') + '.'); if (!t.closest('#dash-filters')) { var fb = $('#dash-filters [data-filter="' + state.filter + '"]'); if (fb) { fb.scrollIntoView({ behavior: reduced() ? 'auto' : 'smooth', block: 'start' }); fb.focus({ preventScroll: true }); } } }
     }
-    else if (t.hasAttribute('data-profile')) { var pid = t.getAttribute('data-profile'); if (pid === state.profileId) return; state.profileId = pid; state.page = 1; state.search = ''; state.filter = 'all'; loadDash('.ptab[data-profile="' + pid + '"]'); }
+    else if (t.hasAttribute('data-profile')) { var pid = t.getAttribute('data-profile'); if (pid === state.profileId) return; state.profileId = pid; state.page = 1; state.search = ''; state.filter = 'all'; loadDash('.ptab[data-profile="' + pid + '"]', true); }
+    else if (t.hasAttribute('data-open')) { e.preventDefault(); openDrawer(t.getAttribute('data-open'), t, t.getAttribute('data-section')); }
+    else if (t.hasAttribute('data-close')) { closeDrawer(); }
+    else if (t.id === 'jump-addsite') { var as = $('#addsite'), ai = $('#addsite-url'); if (as) { as.scrollIntoView({ behavior: reduced() ? 'auto' : 'smooth', block: 'center' }); if (ai) setTimeout(function () { ai.focus({ preventScroll: true }); }, reduced() ? 0 : 350); } }
+    else if (t.hasAttribute('data-complaint')) { loadComplaint(t.getAttribute('data-complaint')); }
+    else if (t.id === 'complaint-copy') { copyText(complaintText, 'Texte de la plainte copié.'); }
+    else if (t.hasAttribute('data-copy')) { copyText(t.getAttribute('data-copy'), 'Référence copiée.'); }
+    else if (t.hasAttribute('data-relaunch-open')) { var rf = $('#relaunch-form', drawer); if (rf) { rf.hidden = !rf.hidden; t.setAttribute('aria-expanded', String(!rf.hidden)); if (!rf.hidden) $('#relaunch-url', rf).focus(); } }
+    else if (t.id === 'cats-toggle') { state.catsAll = !state.catsAll; var ch = $('#dash-cats'); if (ch && state.dash) { ch.innerHTML = catsHtml(state.dash); sigs['dash-insight'] = sigInsight(state.dash); var tb = $('#cats-toggle'); if (tb) tb.focus(); } }
     else if (t.id === 'rows-more') { var prev = $$('#rows .row:not(.row--head)').length; state.page += 1; renderRows(); var rows = $$('#rows .row:not(.row--head)'), first = rows[prev]; if (first) { first.setAttribute('tabindex', '-1'); first.focus({ preventScroll: true }); } announce(plural(rows.length - prev, 'ligne ajoutée', 'lignes ajoutées') + '.'); }
     else if (t.id === 'search-clear') { state.search = ''; state.page = 1; var si = $('#broker-search'); if (si) si.value = ''; renderRows(); if (si) si.focus(); }
     else if (t.id === 'journal-toggle') { state.journalAll = !state.journalAll; var jh = $('#dash-journal'); if (jh) { sigs['dash-journal'] = sigJournal(state.dash); jh.innerHTML = journalHtml(state.dash); var jb = $('#journal-toggle'); if (jb) jb.focus(); } }
@@ -633,19 +864,13 @@
     else if (t.id === 'cancel-sub') { if (!arm(t, 'Confirmer la résiliation')) return; api('/billing/cancel', { method: 'POST' }).then(loadMe).then(function () { state.dash = null; toast('Abonnement résilié.'); render(); }).catch(function (err) { toast(err.message, true); }); }
     else if (t.id === 'revoke') { if (!arm(t, 'Confirmer la révocation')) return; api('/mandate', { method: 'DELETE' }).then(loadMe).then(function () { state.dash = null; toast('Mandat révoqué.'); render(); }).catch(function (err) { toast(err.message, true); }); }
     else if (t.id === 'launch') { lock(t, true); launch(); }
-    else if (t.hasAttribute('data-resolve')) { lock(t, true); api('/requests/' + t.getAttribute('data-resolve') + '/resolve', { method: 'POST' }).then(function () { toast('Merci. La demande reprend son cours.'); var row = t.closest('.row'); if (row) { var nb = $('[data-mails]', row); if (nb) nb.focus(); else view.focus(); } loadDash(); }).catch(function (err) { toast(err.message, true); lock(t, false); }); }
-    else if (t.hasAttribute('data-mails')) {
-      var row = t.closest('.row'), id = t.getAttribute('data-mails');
-      if ($('.mail', row)) { closeMail(false); return; }
-      closeMail(false); lock(t, true);
-      api('/requests/' + id + '/details').then(function (m) {
-        var box = document.createElement('div'); box.className = 'mail'; box.id = 'mail-' + id; box.setAttribute('data-for', id); box.setAttribute('role', 'region'); box.setAttribute('aria-label', 'Détails' + NBSP + '— ' + $('.row__who strong', row).textContent);
-        var q2 = m.request, head = '<p class="mono mono--plain mail__ref">Réf. ' + esc(q2.ref) + (q2.cycle > 1 ? SEP + 'cycle ' + q2.cycle : '') + (q2.source_url ? SEP + '<a href="' + esc(q2.source_url) + '" target="_blank" rel="noopener noreferrer">fiche signalée<span class="vh"> (nouvel onglet)</span></a>' : '') + '</p>';
-        var hist = m.events.length ? '<ol class="hist">' + m.events.map(function (e) { return '<li class="t-' + esc(e.type) + '"><time datetime="' + esc(e.created_at) + '">' + fmtTime(e.created_at) + '</time><span>' + esc(typo(e.message)) + '</span></li>'; }).join('') + '</ol>' : '<p class="empty empty--sm">Aucun événement.</p>';
-        var mails = m.mails.length ? m.mails.map(function (x) { return '<div class="mail__item"><p class="mono mono--plain">' + esc(fmtTime(x.created_at)) + SEP + 'à ' + esc(x.to_addr) + SEP + esc(x.mode === 'smtp' ? 'envoyé' : 'boîte d’envoi locale') + '</p><div class="mail-body" tabindex="0" role="region" aria-label="Courrier du ' + esc(fmtTime(x.created_at)) + '">' + esc(x.subject + '\n\n' + x.body) + '</div></div>'; }).join('') : '<p class="empty empty--sm">Pas encore de courrier envoyé.</p>';
-        box.innerHTML = head + '<div class="mail__cols"><div><h3 class="mono">Historique</h3>' + hist + '</div><div><h3 class="mono">Courriers</h3>' + mails + '</div></div>';
-        row.appendChild(box); t.setAttribute('aria-expanded', 'true'); t._label = t.innerHTML; t.textContent = 'Fermer';
-      }).catch(function (err) { toast(err.message, true); }).finally(function () { lock(t, false); });
+    else if (t.hasAttribute('data-resolve')) {
+      var rid2 = t.getAttribute('data-resolve'), inDrawer = !!(drawer && drawer.contains(t)); lock(t, true);
+      api('/requests/' + rid2 + '/resolve', { method: 'POST' }).then(function () {
+        toast('Merci. La demande reprend son cours.');
+        if (!inDrawer) { var row = t.closest('.row'), nb = row && $('.row__open', row); if (nb) nb.focus(); }
+        return loadDash(null, true).then(function () { if (inDrawer && drawerFor === rid2) loadDrawer(rid2); });
+      }).catch(function (err) { toast(err.message, true); lock(t, false); });
     }
     else if (t.hasAttribute('data-remove')) { if (!arm(t, 'Confirmer le retrait')) return; api('/profiles/' + t.getAttribute('data-remove'), { method: 'DELETE' }).then(loadMe).then(function () { state.dash = null; state.profileId = null; toast('Profil retiré.'); render(); }).catch(function (err) { toast(err.message, true); }); }
     else if (t.getAttribute('href') && /^#profile-/.test(t.getAttribute('href'))) { e.preventDefault(); var el = $(t.getAttribute('href')); if (el) { el.scrollIntoView({ behavior: reduced() ? 'auto' : 'smooth', block: 'start' }); var inp = $('input', el); if (inp) setTimeout(function () { inp.focus({ preventScroll: true }); }, reduced() ? 0 : 400); } }
