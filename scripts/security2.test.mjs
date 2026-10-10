@@ -1,7 +1,7 @@
 // Tests de sécurité, seconde série (audit) : découverte des sites ajoutés (expressions à coût quadratique, durée totale
-// d’une lecture, adresses IPv6 qui encapsulent une IPv4 privée) et limitation de débit (casse et barre finale du chemin,
-// rotation d’adresses IPv6).
-// Les groupes réseau démarrent leurs propres serveurs sur des ports libres, avec une base et une boîte d'envoi temporaires.
+// d’une lecture, adresses IPv6 qui encapsulent une IPv4 privée), limitation de débit (casse et barre finale du chemin,
+// rotation d’adresses IPv6) et courtiers personnalisés (deux sites différents ne partagent jamais le même contact).
+// Les groupes réseau démarrent leurs propres serveurs sur des ports libres, avec une base et une boîte d’envoi temporaires.
 import { spawn } from 'node:child_process';
 import http from 'node:http';
 import fs from 'node:fs';
@@ -44,6 +44,16 @@ async function call(s, method, p, body, { cookie = '', headers = {} } = {}) {
   let data = {}; try { data = JSON.parse(text); } catch { data = { _text: text }; }
   const sc = r.headers.get('set-cookie') || '';
   return { status: r.status, data, cookie: sc ? sc.split(';')[0] : '' };
+}
+// Abonné prêt à envoyer des demandes : profil complet, mandat signé, abonnement (simulé) actif.
+async function member(s, email, first, last) {
+  const r = await call(s, 'POST', '/auth/signup', { email, password: 'Corde-a-linge-78!', plan: 'individuel' });
+  assert.equal(r.status, 201, `inscription ${email} : ${JSON.stringify(r.data)}`);
+  const c = r.cookie, me = await call(s, 'GET', '/me', undefined, { cookie: c });
+  await call(s, 'PUT', `/profiles/${me.data.profiles[0].id}`, { first_name: first, last_name: last, emails: [email], phones: ['+33 6 12 34 56 78'] }, { cookie: c });
+  await call(s, 'POST', '/mandate', { full_name: `${first} ${last}`, accepted: true }, { cookie: c });
+  assert.equal((await call(s, 'POST', '/billing/checkout', { plan: 'individuel' }, { cookie: c })).status, 200, `abonnement ${email}`);
+  return c;
 }
 
 try {
@@ -123,6 +133,27 @@ try {
   assert.equal((await call(P, 'POST', '/contact', msg(13), from('2001:db8:abcd:13::1'))).status, 200, 'autre /64');
   for (let i = 1; i <= 10; i++) assert.equal((await call(P, 'POST', '/contact', msg(i), from(`203.0.113.${i}`))).status, 200, `IPv4 distincte ${i}`);
   step('limitation de débit : la rotation d’adresses dans un même /64 IPv6 ne contourne pas le plafond');
+
+  /* ---------- 6. Sites ajoutés : un site ne reprend jamais le courtier (et le contact) d'un autre site ---------- */
+  // « fiches-annuaire.fr » et « fiches.annuaire.fr » donnaient le même slug : la demande de la victime, avec son identité
+  // (nom, adresses e-mail, téléphones, adresses postales), partait au contact du site enregistré en premier par un autre abonné.
+  const eve = await member(A, 'eve@test.fr', 'Eve', 'Malice');
+  let r = await call(A, 'POST', '/sites', { url: 'https://fiches-annuaire.fr/' }, { cookie: eve });
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  const eveBroker = r.data.broker.id;
+  const marie = await member(A, 'marie@test.fr', 'Marie', 'Durand');
+  r = await call(A, 'POST', '/sites', { url: 'https://fiches.annuaire.fr/marie-durand' }, { cookie: marie });
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  assert.equal(r.data.broker.domain, 'fiches.annuaire.fr', 'courtier du site collé'); assert.notEqual(r.data.broker.id, eveBroker, 'courtier distinct');
+  const reqId = r.data.request_id;
+  let mails = [];
+  for (let i = 0; i < 40 && !mails.length; i++) { await wait(100); mails = (await call(A, 'GET', `/requests/${reqId}/mails`, undefined, { cookie: marie })).data.mails || []; }
+  assert.equal(mails.length, 1, 'demande envoyée'); assert.equal(mails[0].to_addr, 'privacy@annuaire.fr', 'jamais au contact de fiches-annuaire.fr');
+  r = await call(A, 'POST', '/sites', { url: 'fiches-annuaire.fr/autre-page' }, { cookie: eve });
+  assert.equal(r.data.status, 'already'); assert.equal(r.data.broker.id, eveBroker, 'même site, même courtier');
+  r = await call(A, 'POST', '/sites', { url: 'https://www.fiches.annuaire.fr/x' }, { cookie: marie });
+  assert.equal(r.data.status, 'already', 'pas de doublon pour le site de Marie');
+  step('sites ajoutés : deux noms d’hôte au même slug restent deux courtiers, chacun avec son contact');
 
   for (const s of servers) assert.ok(!/TypeError|RangeError|→ 500/.test(s.err), `erreurs serveur :\n${s.err}`);
   console.log(`✔ Sécurité (seconde série) validée (${passed} groupes de vérifications).`);
