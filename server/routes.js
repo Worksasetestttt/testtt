@@ -13,7 +13,7 @@ import { sendMail, mailMode } from './mailer.js';
 import { welcomeMail, mandateText, complaintDraft, MANDATE_VERSION } from './templates.js';
 import { PLANS, BILLING_PERIODS, billingMode, startCheckout, cancelSubscription, verifyStripeSignature, handleStripeEvent } from './billing.js';
 import { launchProfile, applyOutcome, tick, ref, DEMO } from './scheduler.js';
-import { EMAIL, publicUser, parseProfile, wrap, isId, str, strList, oneOf } from './util.js';
+import { EMAIL, publicUser, parseProfile, wrap, isId, str, strList, oneOf, HttpError } from './util.js';
 import { buildDashboard, exportData, complaintReady } from './dashboard.js';
 import { addSite, relaunchRequest } from './sites.js';
 import { admin, auditAs, currentAnnouncement, toCsv, classifyReply } from './admin.js';
@@ -263,7 +263,10 @@ api.post('/billing/checkout', requireAuth, rateLimit({ max: 10 }), wrap(async (r
   if (req.body.billing != null && req.body.billing !== '' && !BILLING_PERIODS.includes(req.body.billing)) return bad(res, 'L’offre annuelle n’est plus proposée : l’abonnement est mensuel et sans engagement.');
   const billing = 'monthly';
   try { res.json(await startCheckout(fresh(req), plan, billing)); }
-  catch (e) { console.error(`[billing] checkout impossible (${req.id}) :`, e.message); bad(res, 'Le paiement n’a pas pu être initialisé. Réessayez dans quelques instants.', 502); }
+  catch (e) {
+    if (e instanceof HttpError) return bad(res, e.message, e.status);   // refus explicite (offre trop petite, abonnement déjà actif)
+    console.error(`[billing] checkout impossible (${req.id}) :`, e.message); bad(res, 'Le paiement n’a pas pu être initialisé. Réessayez dans quelques instants.', 502);
+  }
 }));
 api.post('/billing/cancel', requireAuth, rateLimit({ max: 10 }), wrap(async (req, res) => {
   try { res.json(await cancelSubscription(fresh(req))); }

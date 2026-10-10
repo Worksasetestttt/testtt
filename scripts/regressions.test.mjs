@@ -193,6 +193,28 @@ try {
   }
   step('Stripe : la fin d’un ancien abonnement (updated, deleted, facture) ne résilie plus le nouvel abonnement');
 
+  /* ---------- 5. Changement d'offre : limite de personnes et abonnement Stripe en cours ---------- */
+  // Passer de Famille à Individuel avec trois profils était accepté : les proches restaient protégés sans être payés.
+  // En mode Stripe, « Passer à Famille » sur un abonnement actif renvoyait un 502 générique (« Réessayez… »).
+  const ST = await start('stripe', { STRIPE_SECRET_KEY: 'sk_test_regression_dummy' });
+  {
+    const F = await member(S, { plan: 'famille' });
+    const p2 = (await S.call('POST', '/profiles', { first_name: 'Paul', last_name: 'Moreau' }, F.cookie)).data.profile;
+    const p3 = (await S.call('POST', '/profiles', { first_name: 'Zoé', last_name: 'Moreau' }, F.cookie)).data.profile;
+    let r = await S.call('POST', '/billing/checkout', { plan: 'individuel' }, F.cookie);
+    assert.equal(r.status, 409, JSON.stringify(r.data)); assert.match(r.data.error, /3 personnes/); assert.match(r.data.error, /Individuel/);
+    assert.equal((await S.call('GET', '/me', undefined, F.cookie)).data.user.plan, 'famille', 'offre inchangée');
+    await S.call('DELETE', `/profiles/${p2.id}`, undefined, F.cookie); await S.call('DELETE', `/profiles/${p3.id}`, undefined, F.cookie);
+    r = await S.call('POST', '/billing/checkout', { plan: 'individuel' }, F.cookie);
+    assert.equal(r.status, 200); assert.equal((await S.call('GET', '/me', undefined, F.cookie)).data.user.plan, 'individuel');
+    // Stripe : abonnement actif, changement d'offre → message explicite (aucun appel à Stripe).
+    const P = (await ST.call('POST', '/auth/signup', { email: 'stripe-actif@exemple.fr', password: STRONG, plan: 'individuel' }));
+    ST.sql().prepare(`UPDATE users SET subscription_status = 'active', billing_mode = 'stripe', plan = 'individuel', stripe_customer_id = 'cus_x', stripe_subscription_id = 'sub_x' WHERE email = 'stripe-actif@exemple.fr'`).run();
+    r = await ST.call('POST', '/billing/checkout', { plan: 'famille' }, P.cookie);
+    assert.equal(r.status, 409, JSON.stringify(r.data)); assert.match(r.data.error, /déjà actif/);
+  }
+  step('changement d’offre : Individuel refusé tant que le dossier compte plus d’une personne ; Stripe actif → message explicite (409)');
+
   console.log(`✔ Régressions validées (${passed} groupes de vérifications).`);
 } catch (e) {
   console.error('✘ Échec :', e.message);
