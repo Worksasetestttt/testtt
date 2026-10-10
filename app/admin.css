@@ -234,6 +234,10 @@ textarea.adm-textarea:focus { outline: none; border-color: var(--accent); box-sh
   .adm-kv-grid { grid-template-columns: max-content 1fr; }
 }
 @media (max-width: 767px) {
+  .adm-back { display: inline-flex; align-items: center; min-height: 44px; }
+  /* Liens courts dans le texte d’une fiche (références, nombre de courriers) : zone de contact étendue sans changer la mise en page. */
+  .adm dd > a, .adm td[data-label] > a { position: relative; }
+  .adm dd > a::after, .adm td[data-label] > a::after { content: ""; position: absolute; inset: -12px -6px; }
   .adm__main { gap: 18px; }
   .adm__tab, .filters a, .pager__btn { min-height: 44px; }
   .adm-select, .adm-input { height: 44px; }
