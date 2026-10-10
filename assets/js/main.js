@@ -16,7 +16,7 @@
     catch (e) { return function (n) { return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, NNBSP); }; }
   })();
   var easeOut = function (t) { return t >= 1 ? 1 : 1 - Math.pow(2, -10 * t); };
-  var PLANS = { individuel: { name: 'Individuel', monthly: '12,99', annual: '6,99' }, famille: { name: 'Famille', monthly: '24,99', annual: '13,99' } };
+  var PLANS = { individuel: { name: 'Individuel', monthly: '5' }, famille: { name: 'Famille', monthly: '9,99' } }; // formule unique, mensuelle
   var chosenPlan = 'individuel';
 
   /* ---------- Observateur générique (fallback : tout visible) ---------- */
@@ -411,52 +411,6 @@
     }, { threshold: 0.4 });
   }
 
-  /* ---------- Toggle tarifs ---------- */
-  var billing = $('#billing');
-  if (billing) {
-    var opts = $$('.toggle__opt', billing), badge = $('#badge-save');
-    var current = 'annual';
-    /* Mémoire de visite seulement (sessionStorage) : un visiteur qui revient retrouve l'annuel par défaut */
-    try { var saved = sessionStorage.getItem('oubli-billing'); if (saved === 'monthly' || saved === 'annual') current = saved; } catch (e) { /* stockage indisponible */ }
-    function render(period, animate) {
-      billing.setAttribute('data-period', period);
-      opts.forEach(function (o) {
-        var on = o.getAttribute('data-period') === period;
-        o.setAttribute('aria-checked', on ? 'true' : 'false');
-        o.setAttribute('tabindex', on ? '0' : '-1');
-      });
-      $$('.price').forEach(function (p) {
-        var num = $('[data-price]', p), was = $('[data-was]', p), note = $('[data-note]', p);
-        var val = p.getAttribute(period === 'annual' ? 'data-annual' : 'data-monthly') + NBSP + '€';
-        var noteTxt = note.getAttribute(period === 'annual' ? 'data-annual-note' : 'data-monthly-note');
-        was.classList.toggle('is-hidden', period !== 'annual');
-        if (!animate || reduced) { num.textContent = val; note.innerHTML = noteTxt; return; }
-        num.classList.add('is-out');
-        setTimeout(function () {
-          num.textContent = val; note.innerHTML = noteTxt;
-          num.classList.remove('is-out'); num.classList.add('is-in-from');
-          void num.getBoundingClientRect();
-          num.classList.remove('is-in-from'); num.classList.add('is-in');
-          setTimeout(function () { num.classList.remove('is-in'); }, 240);
-        }, 220);
-      });
-      if (animate && period === 'annual' && badge && !reduced) { badge.classList.remove('is-pulse'); void badge.getBoundingClientRect(); badge.classList.add('is-pulse'); }
-      try { sessionStorage.setItem('oubli-billing', period); } catch (e) { /* ignore */ }
-      syncSignup();
-    }
-    render(current, false);
-    opts.forEach(function (o) {
-      o.addEventListener('click', function () { var p = o.getAttribute('data-period'); if (p !== billing.getAttribute('data-period')) render(p, true); });
-      o.addEventListener('keydown', function (e) {
-        if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].indexOf(e.key) < 0) return;
-        e.preventDefault();
-        var p = billing.getAttribute('data-period') === 'annual' ? 'monthly' : 'annual';
-        render(p, true);
-        var target = opts.filter(function (x) { return x.getAttribute('data-period') === p; })[0]; if (target) target.focus();
-      });
-    });
-  }
-
   /* ---------- FAQ ---------- */
   var items = $$('.faq__item');
   if (items.length) {
@@ -498,14 +452,12 @@
   var finalMark = $('.final__mark');
   if (finalMark) observe([$('#cta-final')], function () { finalMark.classList.add('is-drawn'); }, { threshold: 0.4 });
 
-  /* ---------- Formulaire « Commencer » : l'offre choisie suit les cartes et la périodicité ---------- */
+  /* ---------- Formulaire « Commencer » : l'offre choisie suit les cartes ---------- */
   function syncSignup() {
     var p = PLANS[chosenPlan]; if (!p) return;
-    var period = billing ? billing.getAttribute('data-period') || 'annual' : 'annual';
-    var price = p[period === 'annual' ? 'annual' : 'monthly'] + NBSP + '€/mois';
-    var n = $('#signup-plan-name'), per = $('#signup-plan-period'), pp = $('#signup-plan-price'), bp = $('#signup-price');
+    var price = p.monthly + NBSP + '€/mois';
+    var n = $('#signup-plan-name'), pp = $('#signup-plan-price'), bp = $('#signup-price');
     if (n) n.textContent = p.name;
-    if (per) per.textContent = period === 'annual' ? 'annuel' : 'mensuel';
     if (pp) pp.textContent = price;
     if (bp) bp.textContent = price;
   }
@@ -527,8 +479,7 @@
       sInput.removeAttribute('aria-invalid');
       sMsg.classList.remove('is-error'); sMsg.textContent = 'Ouverture du dossier…';
       sBtn.disabled = true;
-      var period = billing ? billing.getAttribute('data-period') || 'annual' : 'annual';
-      var appUrl = '/app/#signup?email=' + encodeURIComponent(v) + '&plan=' + encodeURIComponent(chosenPlan) + '&billing=' + encodeURIComponent(period);
+      var appUrl = '/app/#signup?email=' + encodeURIComponent(v) + '&plan=' + encodeURIComponent(chosenPlan);
       /* Avec le serveur : ouverture du dossier dans l'application. Page servie seule (aperçu statique) : confirmation simulée. */
       var simulate = function () {
         sBtn.disabled = false;

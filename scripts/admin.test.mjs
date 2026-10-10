@@ -57,7 +57,8 @@ try {
   let r = await call('GET', '/me', undefined, AC);
   r = await call('PUT', `/profiles/${r.data.profiles[0].id}`, { first_name: 'Alice', last_name: 'Martin', emails: ['alice@exemple.fr'] }, AC); assert.equal(r.status, 200);
   r = await call('POST', '/mandate', { full_name: 'Alice Martin', accepted: true }, AC); assert.equal(r.status, 200);
-  r = await call('POST', '/billing/checkout', { plan: 'famille', billing: 'annual' }, AC); assert.equal(r.data.mode, 'simulated');
+  r = await call('POST', '/billing/checkout', { plan: 'famille', billing: 'annual' }, AC); assert.equal(r.status, 400, 'formule unique : plus d’offre annuelle');
+  r = await call('POST', '/billing/checkout', { plan: 'famille' }, AC); assert.equal(r.data.mode, 'simulated');
   r = await call('POST', '/requests/launch', {}, AC); assert.ok(r.data.created >= 50, JSON.stringify(r.data));
   await call('POST', '/contact', { email: 'prospect@exemple.fr', subject: 'Question', message: '=HYPERLINK("http://x") couvrez-vous la Belgique ?' });
   await call('POST', '/newsletter', { email: 'lettre@exemple.fr' });
@@ -84,7 +85,7 @@ try {
   assert.equal(typeof s.users, 'number'); assert.equal(s.users, 3); assert.equal(s.active, 1); assert.equal(typeof s.mails, 'number');
   assert.ok(Array.isArray(s.requests) && s.requests.every((x) => typeof x.status === 'string' && typeof x.n === 'number'));
   assert.ok(Array.isArray(s.action_required));
-  assert.equal(s.mrr_cents, Math.round(16788 / 12), 'MRR : Famille annuel ramené au mois');
+  assert.equal(s.mrr_cents, 999, 'MRR : un abonnement Famille à 9,99 €');
   assert.equal(s.signups_by_day.length, 14); assert.equal(s.mails_by_day.length, 14);
   assert.equal(s.signups_by_day.at(-1).n, 3, 'trois inscriptions aujourd’hui');
   assert.ok(s.brokers.total >= 50 && s.brokers.verified === 0);

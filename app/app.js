@@ -5,7 +5,7 @@
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
   var view = $('#view'), nav = $('#nav'), topUser = $('#top-user'), toastEl = $('#toast'), announceEl = $('#announce');
-  var state = { user: null, impersonation: null, profiles: [], config: null, dash: null, profileId: null, billing: 'annual', filter: 'all', search: '', sort: 'status', page: 1, journalAll: false };
+  var state = { user: null, impersonation: null, profiles: [], config: null, dash: null, profileId: null, filter: 'all', search: '', sort: 'status', page: 1, journalAll: false };
   var PAGE = 25, JOURNAL = 8;
   var pollTimer = null, sigs = {}, searchTimer = null, resizeTimer = null, barKey = null, noticeKey = null;
   var MARK = '<svg viewBox="0 0 32 32" width="44" height="44" fill="none" aria-hidden="true"><circle cx="16" cy="16" r="10.5" stroke="currentColor" stroke-width="3.2"/><path d="M3.5 17.8 L28.5 14.2" stroke="#C8471F" stroke-width="3.2" stroke-linecap="round"/></svg>';
@@ -16,7 +16,7 @@
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   /* Typographie française pour les textes venant du serveur : apostrophe typographique, insécable avant : ; ? ! » */
   function typo(s) { return String(s == null ? '' : s).replace(/'/g, '’').replace(/ ([:;?!»])/g, NBSP + '$1').replace(/« /g, '«' + NBSP); }
-  function money(cents) { return (cents / 100).toFixed(2).replace('.', ',') + NNBSP + '€'; }
+  function money(cents) { return (cents % 100 ? (cents / 100).toFixed(2).replace('.', ',') : String(cents / 100)) + NNBSP + '€'; }   // « 5 € », « 9,99 € »
   function fmtDate(iso, opts) { if (!iso) return '—'; return new Date(iso).toLocaleDateString('fr-FR', opts || { day: 'numeric', month: 'short', year: 'numeric' }); }
   function fmtDay(iso) { return fmtDate(iso, { day: 'numeric', month: 'short' }); }
   function fmtTime(iso) { return new Date(iso).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }); }
@@ -105,11 +105,11 @@
       '<p class="switch">Pas encore de dossier' + NBSP + '? <a href="#signup">Créer un compte</a></p></section>';
   };
   views.signup = function (q) {
-    var plan = state.config && state.config.plans[q.plan] ? q.plan : 'individuel', billing = q.billing === 'monthly' ? 'monthly' : 'annual';
+    var plan = state.config && state.config.plans[q.plan] ? q.plan : 'individuel';
     var p = state.config ? state.config.plans[plan] : null;
     return '<section class="auth"><div class="auth__mark">' + MARK + '</div><h1>Ouvrons votre <em>dossier</em>.</h1><p class="lead">Deux minutes pour créer le compte. Les demandes partent dès que le mandat est signé.</p>' +
-      '<form id="signup-form" class="sheet" novalidate><div class="sheet__body"><input type="hidden" name="plan" value="' + esc(plan) + '"><input type="hidden" name="billing" value="' + esc(billing) + '">' +
-      (p ? '<div class="offer"><span><span class="mono">Offre</span><br><strong>' + esc(p.name) + '</strong>' + SEP + (billing === 'annual' ? 'annuel' : 'mensuel') + '</span><span><strong>' + money(billing === 'annual' ? Math.round(p.annual / 12) : p.monthly) + '</strong><small class="mono--plain mono">/mois</small></span></div>' : '') +
+      '<form id="signup-form" class="sheet" novalidate><div class="sheet__body"><input type="hidden" name="plan" value="' + esc(plan) + '">' +
+      (p ? '<div class="offer"><span><span class="mono">Offre</span><br><strong>' + esc(p.name) + '</strong>' + SEP + 'sans engagement</span><span><strong>' + money(p.monthly) + '</strong><small class="mono--plain mono">/mois</small></span></div>' : '') +
       '<div class="fields">' + field('email', 'Adresse e-mail', q.email || '', { extra: 'type="email" autocomplete="email" required' }) + field('password', 'Mot de passe', '', { extra: 'type="password" autocomplete="new-password" minlength="10" required' }, 'Au moins 10' + NBSP + 'caractères.') +
       '</div>' + msgEl('msg-signup-form', 'margin-top:16px') + '<button class="btn btn--block" type="submit">Créer mon compte <span class="btn__arrow" aria-hidden="true">→</span></button></div></form>' +
       '<p class="switch">Déjà un compte' + NBSP + '? <a href="#login">Se connecter</a></p></section>';
@@ -152,19 +152,18 @@
       msgEl('msg-mandate-form', 'margin-top:14px') + '</form></div></div>';
   }
 
+  /* Offres : formule unique, mensuelle et sans engagement. */
   function plansBlock() {
-    var plans = state.config.plans, b = state.billing, u = state.user;
+    var plans = state.config.plans, u = state.user;
     var subscribed = !!(u && u.subscription_status === 'active'), featured = u && u.plan && plans[u.plan] ? u.plan : 'individuel';
-    var seg = '<div class="toolbar"><div class="btn-row"><div class="seg" role="radiogroup" aria-label="Périodicité"><button type="button" role="radio" aria-checked="' + (b === 'monthly') + '" tabindex="' + (b === 'monthly' ? 0 : -1) + '" data-billing="monthly">Mensuel</button><button type="button" role="radio" aria-checked="' + (b === 'annual') + '" tabindex="' + (b === 'annual' ? 0 : -1) + '" data-billing="annual">Annuel</button></div><span class="badge">jusqu’à −46' + NNBSP + '%</span></div>' + (state.config.billing === 'simulated' ? '<span class="mono">Paiement simulé' + SEP + 'aucune clé Stripe</span>' : '') + '</div>';
     var cards = Object.keys(plans).map(function (k) {
       var p = plans[k], cur = subscribed && u.plan === k;
-      var perMonth = b === 'annual' ? Math.round(p.annual / 12) : p.monthly;
       return '<div class="sheet plan' + (k === featured ? ' plan--featured' : '') + (cur ? ' is-current' : '') + '"><div class="plan__head"><h3>' + esc(p.name) + '</h3><span class="mono">' + (p.members > 1 ? 'Jusqu’à ' + p.members + NBSP + 'personnes' : 'Une personne') + '</span></div>' +
-        '<div class="plan__price"><b>' + money(perMonth) + '</b><small>/mois</small></div><p class="plan__note">' + (b === 'annual' ? 'soit ' + money(p.annual) + ' facturés une fois par an' : 'sans engagement, ' + money(p.monthly) + ' par mois') + '</p>' +
-        '<ul><li>Demandes auprès de ' + (state.config.brokers || '') + NBSP + 'courtiers et annuaires</li><li>Relances automatiques à l’échéance légale</li><li>Nouvelle vérification tous les 60' + NBSP + 'à' + NBSP + '90' + NBSP + 'jours</li><li>Journal horodaté, preuves exportables</li>' + (p.members > 1 ? '<li>Un dossier par personne, une seule facture</li>' : '') + '</ul>' +
-        (cur ? '<p class="notice notice--ok">Votre offre actuelle, ' + (u.billing === 'annual' ? 'annuelle' : 'mensuelle') + '.</p>' : '<button class="btn btn--block' + (subscribed || k !== featured ? ' btn--outline' : '') + '" type="button" data-checkout="' + k + '">' + (subscribed ? 'Passer à ' + esc(p.name) : 'Choisir ' + esc(p.name)) + '</button>') + '</div>';
+        '<div class="plan__price"><b>' + money(p.monthly) + '</b><small>/mois</small></div><p class="plan__note">' + (p.members > 1 ? 'Moins de 2' + NNBSP + '€ par personne pour cinq proches' : 'Sans engagement, résiliable en un clic') + '</p>' +
+        '<ul><li>Demandes auprès de ' + (state.config.brokers || '') + NBSP + 'courtiers et annuaires</li><li>Vos propres sites ajoutés en collant leur adresse</li><li>Relances automatiques à l’échéance légale</li><li>Nouvelle vérification tous les 60' + NBSP + 'à' + NBSP + '90' + NBSP + 'jours</li><li>Rapport mensuel par e-mail</li><li>Journal horodaté, preuves exportables</li>' + (p.members > 1 ? '<li>Un dossier par personne, une seule facture</li>' : '') + '</ul>' +
+        (cur ? '<p class="notice notice--ok">Votre offre actuelle' + (u.billing === 'annual' ? ' (ancienne formule annuelle)' : '') + '.</p>' : '<button class="btn btn--block' + (subscribed || k !== featured ? ' btn--outline' : '') + '" type="button" data-checkout="' + k + '">' + (subscribed ? 'Passer à ' + esc(p.name) : 'Choisir ' + esc(p.name)) + '</button>') + '</div>';
     }).join('');
-    return '<div class="plans-block">' + seg + '<div class="plans">' + cards + '</div><p class="mono" style="margin-top:18px">Prix TTC' + SEP + 'Satisfait ou remboursé 30' + NBSP + 'jours' + SEP + 'Résiliation en un clic</p></div>';
+    return '<div class="plans-block">' + (state.config.billing === 'simulated' ? '<div class="toolbar"><span class="mono">Paiement simulé' + SEP + 'aucune clé Stripe</span></div>' : '') + '<div class="plans">' + cards + '</div><p class="mono" style="margin-top:18px">Prix TTC' + SEP + 'Sans engagement' + SEP + 'Satisfait ou remboursé 30' + NBSP + 'jours' + SEP + 'Résiliation en un clic</p></div>';
   }
 
   /* ---------- tableau de bord ---------- */
@@ -420,7 +419,7 @@
 
   views.billing = function () {
     var u = state.user;
-    var status = '<section class="sheet" aria-labelledby="sub-h"><div class="sheet__head"><h2 id="sub-h">Votre abonnement</h2>' + chip(u.subscription_status, subLabel(u.subscription_status)) + '</div><div class="sheet__body"><dl class="kv"><dt>Offre</dt><dd>' + (u.plan && state.config.plans[u.plan] ? esc(state.config.plans[u.plan].name) + SEP + (u.billing === 'annual' ? 'annuel' : 'mensuel') : '—') + '</dd><dt>Paiement</dt><dd>' + (u.billing_mode === 'stripe' ? 'Carte via Stripe' : u.billing_mode === 'simulated' ? 'Simulé (environnement de test)' : '—') + '</dd>' + (u.subscription_ends_at ? '<dt>Fin d’accès</dt><dd>' + fmtDate(u.subscription_ends_at) + '</dd>' : '') + '</dl></div>' + (u.subscription_status === 'active' ? '<div class="sheet__foot"><button class="btn btn--danger btn--sm" type="button" id="cancel-sub">Résilier l’abonnement</button><span class="mono">Satisfait ou remboursé 30' + NBSP + 'jours</span></div>' : '') + '</section>';
+    var status = '<section class="sheet" aria-labelledby="sub-h"><div class="sheet__head"><h2 id="sub-h">Votre abonnement</h2>' + chip(u.subscription_status, subLabel(u.subscription_status)) + '</div><div class="sheet__body"><dl class="kv"><dt>Offre</dt><dd>' + (u.plan && state.config.plans[u.plan] ? esc(state.config.plans[u.plan].name) + SEP + (u.billing === 'annual' ? 'annuel (ancienne formule)' : 'mensuel') : '—') + '</dd><dt>Paiement</dt><dd>' + (u.billing_mode === 'stripe' ? 'Carte via Stripe' : u.billing_mode === 'simulated' ? 'Simulé (environnement de test)' : '—') + '</dd>' + (u.subscription_ends_at ? '<dt>Fin d’accès</dt><dd>' + fmtDate(u.subscription_ends_at) + '</dd>' : '') + '</dl></div>' + (u.subscription_status === 'active' ? '<div class="sheet__foot"><button class="btn btn--danger btn--sm" type="button" id="cancel-sub">Résilier l’abonnement</button><span class="mono">Satisfait ou remboursé 30' + NBSP + 'jours</span></div>' : '') + '</section>';
     return '<div class="page-head"><div><span class="mono">Abonnement</span><h1>Un prix clair. Une <em>seule</em> mission.</h1></div></div><div class="stack">' + status + plansBlock() + '</div>';
   };
 
@@ -548,7 +547,6 @@
     var t = e.target;
     if (e.key === 'Enter' && t.matches && t.matches('.tags__add input')) { e.preventDefault(); addTag(t.closest('.f--list')); return; }
     if (e.key === 'Escape') { if (closeMail(true)) return; var armed = $$('[data-confirm]'); if (armed.length) { armed.forEach(disarm); return; } }
-    if (t.matches && t.matches('.seg [role="radio"]') && /^Arrow(Left|Right|Up|Down)$/.test(e.key)) { e.preventDefault(); var all = $$('[role="radio"]', t.closest('.seg')), i = all.indexOf(t); all[(i + (/(Right|Down)/.test(e.key) ? 1 : all.length - 1)) % all.length].click(); }
   });
   document.addEventListener('click', function (e) {
     var t = e.target.closest('button, a'); if (!t) return;
@@ -564,10 +562,9 @@
     else if (t.id === 'rows-more') { var prev = $$('#rows .row:not(.row--head)').length; state.page += 1; renderRows(); var rows = $$('#rows .row:not(.row--head)'), first = rows[prev]; if (first) { first.setAttribute('tabindex', '-1'); first.focus({ preventScroll: true }); } announce(plural(rows.length - prev, 'ligne ajoutée', 'lignes ajoutées') + '.'); }
     else if (t.id === 'search-clear') { state.search = ''; state.page = 1; var si = $('#broker-search'); if (si) si.value = ''; renderRows(); if (si) si.focus(); }
     else if (t.id === 'journal-toggle') { state.journalAll = !state.journalAll; var jh = $('#dash-journal'); if (jh) { sigs['dash-journal'] = sigJournal(state.dash); jh.innerHTML = journalHtml(state.dash); var jb = $('#journal-toggle'); if (jb) jb.focus(); } }
-    else if (t.hasAttribute('data-billing')) { state.billing = t.getAttribute('data-billing'); var host = t.closest('.plans-block'); if (!host) { render(); return; } var y = window.scrollY; host.outerHTML = plansBlock(); window.scrollTo(0, y); var rb = $('[data-billing="' + state.billing + '"]'); if (rb) rb.focus({ preventScroll: true }); }
     else if (t.hasAttribute('data-checkout')) {
       lock(t, true);
-      api('/billing/checkout', { body: { plan: t.getAttribute('data-checkout'), billing: state.billing } }).then(function (r) {
+      api('/billing/checkout', { body: { plan: t.getAttribute('data-checkout'), billing: 'monthly' } }).then(function (r) {
         if (r.mode === 'stripe') { location.href = r.url; return; }
         return loadMe().then(function () { state.dash = null; toast('Abonnement activé.'); if (onboardingDone()) return launch(); render(); });
       }).catch(function (err) { toast(err.message, true); lock(t, false); });
@@ -602,9 +599,8 @@
   window.Oubli = { chrome: setChrome, registerView: registerView, api: api, esc: esc, toast: toast, fmtDate: fmtDate, fmtTime: fmtTime, money: money, chip: chip, dots: dots, statusLabel: statusLabel, subLabel: subLabel, field: field, go: go, render: render, params: params, state: state, NBSP: NBSP, NNBSP: NNBSP, announce: announce, typo: typo, fmtDay: fmtDay, plural: plural };
 
   /* ---------- démarrage ---------- */
-  Promise.all([api('/config').catch(function () { return { plans: { individuel: { name: 'Individuel', members: 1, monthly: 1299, annual: 8388 }, famille: { name: 'Famille', members: 5, monthly: 2499, annual: 16788 } }, billing: 'simulated', brokers: 50, mandate_version: '' }; }), loadMe()]).then(function (r) {
+  Promise.all([api('/config').catch(function () { return { plans: { individuel: { name: 'Individuel', members: 1, monthly: 500 }, famille: { name: 'Famille', members: 5, monthly: 999 } }, billing: 'simulated', brokers: 50, mandate_version: '' }; }), loadMe()]).then(function (r) {
     state.config = r[0];
-    var q = params().q; if (q.billing === 'monthly') state.billing = 'monthly';
     render();
   });
 })();

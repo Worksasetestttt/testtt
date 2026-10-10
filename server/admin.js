@@ -129,7 +129,7 @@ admin.get('/stats', (_req, res) => {
   const days = Array.from({ length: 14 }, (_, i) => new Date(start.getTime() + i * 86400000).toISOString().slice(0, 10));
   const byDay = (rows) => { const m = new Map(rows.map((r) => [r.day, r.n])); return days.map((day) => ({ day, n: m.get(day) || 0 })); };
   let mrr = 0;
-  for (const u of q.all(`SELECT plan, billing FROM users WHERE deleted_at IS NULL AND subscription_status = 'active'`)) { const p = PLANS[u.plan]; if (p) mrr += u.billing === 'annual' ? p.annual / 12 : p.monthly; }
+  for (const u of q.all(`SELECT plan, billing FROM users WHERE deleted_at IS NULL AND subscription_status = 'active'`)) { const p = PLANS[u.plan]; if (p) mrr += p.monthly; }  // formule unique : le prix mensuel en vigueur
   const requests = q.all('SELECT status, COUNT(*) AS n FROM requests GROUP BY status');
   const sentTotal = q.get('SELECT COUNT(*) AS c FROM requests WHERE sent_at IS NOT NULL').c;
   const doneTotal = q.get(`SELECT COUNT(*) AS c FROM requests WHERE status = 'done'`).c;

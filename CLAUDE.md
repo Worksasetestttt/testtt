@@ -37,7 +37,7 @@ Sans `.env`, le serveur tourne en mode développement : abonnement simulé, cour
 | `server/auth.js` | scrypt, sessions en base, cookie signé HMAC, limitation de débit, `requireAdmin`. |
 | `server/db.js` | Schéma SQLite, index, seed des courtiers depuis `server/brokers.json`. |
 | `server/scheduler.js` | Envoi, relances à 30 j (RGPD) ou 45 j (CCPA), nouveau cycle après 60 à 90 j, simulation en démo. |
-| `server/billing.js` | Stripe Checkout en REST (sans SDK), webhooks signés, abonnement simulé. Prix : 12,99 € par mois ou 83,88 € par an (Individuel), 24,99 € ou 167,88 € (Famille). |
+| `server/billing.js` | Stripe Checkout en REST (sans SDK), webhooks signés, abonnement simulé. Formule unique, mensuelle, sans engagement : 5 € par mois (Individuel), 9,99 € par mois (Famille). Plus d’offre annuelle (`BILLING_PERIODS`) ; les anciens comptes « annual » restent lisibles. |
 | `server/mailer.js`, `server/templates.js` | Courriers (SMTP ou boîte d'envoi locale). `MANDATE_VERSION` est exporté et utilisé par l'API. |
 | `app/index.html`, `app/app.js`, `app/app.css` | Application abonné en JS vanilla, routage par hash. |
 | `app/admin.js`, `app/admin.css` | Panel d’administration (9 onglets). Chargé à la demande par `app.js` uniquement pour les administrateurs. Classes préfixées `adm-` (ne pas réutiliser `.chart`, déjà pris par le tableau de bord). |

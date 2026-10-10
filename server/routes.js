@@ -11,7 +11,7 @@ import {
 } from './auth.js';
 import { sendMail, mailMode } from './mailer.js';
 import { welcomeMail, mandateText, MANDATE_VERSION } from './templates.js';
-import { PLANS, billingMode, startCheckout, cancelSubscription, verifyStripeSignature, handleStripeEvent } from './billing.js';
+import { PLANS, BILLING_PERIODS, billingMode, startCheckout, cancelSubscription, verifyStripeSignature, handleStripeEvent } from './billing.js';
 import { launchProfile, applyOutcome, tick, DEMO } from './scheduler.js';
 import { EMAIL, publicUser, parseProfile, wrap, isId, str, strList, oneOf } from './util.js';
 import { buildDashboard, exportData } from './dashboard.js';
@@ -20,7 +20,6 @@ import { admin, auditAs, currentAnnouncement } from './admin.js';
 export const api = express.Router();
 const fresh = (req) => q.get('SELECT * FROM users WHERE id = ?', req.user.id);
 const bad = (res, msg, code = 400) => res.status(code).json({ error: msg });
-const BILLINGS = ['monthly', 'annual'];
 const PLAN_KEYS = Object.keys(PLANS);
 const PHONE = /^\+?[\d\s().-]{5,30}$/;
 const COUNTRY = /^[A-Z]{2}$/;
@@ -40,7 +39,7 @@ api.post('/auth/signup', rateLimit({ windowMs: 60 * 60000, max: 20 }), wrap(asyn
   if (problem) return bad(res, problem);
   if ((req.body.plan !== undefined && req.body.plan !== null && typeof req.body.plan !== 'string') || (req.body.billing !== undefined && req.body.billing !== null && typeof req.body.billing !== 'string')) return bad(res, 'Offre invalide.');
   const plan = PLAN_KEYS.includes(req.body.plan) ? req.body.plan : null;             // liste blanche ; valeur inconnue ignorée
-  const billing = BILLINGS.includes(req.body.billing) ? req.body.billing : (plan ? 'annual' : null);
+  const billing = plan ? 'monthly' : null;   // formule unique : une périodicité « annual » transmise est ignorée
   if (q.get('SELECT id FROM users WHERE email = ?', email)) return bad(res, 'Un compte existe déjà avec cette adresse.', 409);
   const password_hash = await hashPassword(password);
   if (q.get('SELECT id FROM users WHERE email = ?', email)) return bad(res, 'Un compte existe déjà avec cette adresse.', 409);
@@ -205,8 +204,10 @@ api.get('/requests/:id/mails', requireAuth, (req, res) => {
 
 /* ---------- Facturation ---------- */
 api.post('/billing/checkout', requireAuth, rateLimit({ max: 10 }), wrap(async (req, res) => {
-  const plan = oneOf(req.body.plan, PLAN_KEYS, 'plan'), billing = oneOf(req.body.billing, BILLINGS, 'billing');
-  if (!plan || !billing) return bad(res, 'Offre inconnue.');
+  const plan = oneOf(req.body.plan, PLAN_KEYS, 'plan');
+  if (!plan) return bad(res, 'Offre inconnue.');
+  if (req.body.billing != null && req.body.billing !== '' && !BILLING_PERIODS.includes(req.body.billing)) return bad(res, 'L’offre annuelle n’est plus proposée : l’abonnement est mensuel et sans engagement.');
+  const billing = 'monthly';
   try { res.json(await startCheckout(fresh(req), plan, billing)); }
   catch (e) { console.error(`[billing] checkout impossible (${req.id}) :`, e.message); bad(res, 'Le paiement n’a pas pu être initialisé. Réessayez dans quelques instants.', 502); }
 }));

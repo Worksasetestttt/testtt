@@ -21,6 +21,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 try {
   for (let i = 0; i < 40; i++) { try { if ((await fetch(base + '/health')).ok) break; } catch {} await wait(250); }
   let r = await call('GET', '/health'); assert.equal(r.data.ok, true);
+  r = await call('GET', '/config'); assert.equal(r.data.plans.individuel.monthly, 500); assert.equal(r.data.plans.famille.monthly, 999); assert.equal(r.data.plans.individuel.annual, undefined, 'formule unique');
   r = await call('POST', '/auth/signup', { email: 'admin@test.fr', password: 'motdepasse-solide', plan: 'famille', billing: 'annual' }); assert.equal(r.status, 201, JSON.stringify(r.data));
   r = await call('POST', '/auth/signup', { email: 'admin@test.fr', password: 'motdepasse-solide' }); assert.equal(r.status, 409);
   r = await call('GET', '/me'); assert.equal(r.data.user.role, 'admin');

@@ -4,10 +4,13 @@
 import crypto from 'node:crypto';
 import { q, now, logEvent, tx } from './db.js';
 
+// Formule unique, mensuelle et sans engagement (centimes TTC). L'offre annuelle n'est plus proposée ; les comptes
+// encore marqués « annual » (anciens abonnés) sont acceptés partout en lecture.
 export const PLANS = {
-  individuel: { name: 'Individuel', members: 1, monthly: 1299, annual: 8388 },   // centimes TTC ; annuel = 6,99 €/mois
-  famille: { name: 'Famille', members: 5, monthly: 2499, annual: 16788 },      // annuel = 13,99 €/mois
+  individuel: { name: 'Individuel', members: 1, monthly: 500 },
+  famille: { name: 'Famille', members: 5, monthly: 999 },
 };
+export const BILLING_PERIODS = ['monthly'];
 const STRIPE_KEY = process.env.STRIPE_SECRET_KEY || '';
 const WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || '';
 const APP_URL = (process.env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
@@ -37,7 +40,7 @@ const label = (plan, billing) => `${PLANS[plan]?.name || plan} (${billing === 'a
 
 export async function startCheckout(user, plan, billing) {
   const p = PLANS[plan];
-  if (!p || !['monthly', 'annual'].includes(billing)) throw new Error('Offre inconnue.');
+  if (!p || !BILLING_PERIODS.includes(billing)) throw new Error('Offre inconnue.');
   if (!user || user.deleted_at) throw new Error('Compte introuvable.');
   if (!STRIPE_KEY) {
     q.run(`UPDATE users SET plan = ?, billing = ?, subscription_status = 'active', billing_mode = 'simulated', subscription_ends_at = NULL WHERE id = ?`, plan, billing, user.id);
@@ -55,9 +58,9 @@ export async function startCheckout(user, plan, billing) {
     metadata: { user_id: user.id, plan, billing },
     subscription_data: { metadata: { user_id: user.id, plan, billing } },
     line_items: { 0: { quantity: 1, price_data: {
-      currency: 'eur', unit_amount: billing === 'annual' ? p.annual : p.monthly,
-      recurring: { interval: billing === 'annual' ? 'year' : 'month' },
-      product_data: { name: `Oubli ${p.name} — ${billing === 'annual' ? 'annuel' : 'mensuel'}` },
+      currency: 'eur', unit_amount: p.monthly,
+      recurring: { interval: 'month' },
+      product_data: { name: `Oubli ${p.name}` },
     } } },
   }, crypto.randomUUID());
   q.run('UPDATE users SET plan = ?, billing = ? WHERE id = ?', plan, billing, user.id);
