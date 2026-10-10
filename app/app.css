@@ -148,6 +148,7 @@ h1 em, h2 em { font-style: italic; font-weight: 400; }
 @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
 .chip--sent { color: var(--text); background: transparent; border-color: var(--border-strong); }
 .chip--queued { color: var(--muted); background: transparent; border: 1px dashed var(--border-strong); }
+.chip--stopped { color: var(--muted); background: var(--surface-2, transparent); border: 1px solid var(--border-strong); }
 .chip--refused { color: var(--danger); background: var(--danger-soft); border-color: var(--danger-soft); }
 .chip--error { color: var(--danger); background: transparent; border: 1px dashed var(--danger); }
 .chip--active { color: var(--success-ink); background: var(--success-soft); border-color: var(--success-soft); }
@@ -291,6 +292,7 @@ h1 em, h2 em { font-style: italic; font-weight: 400; }
 .donut__seg--action_required { stroke: var(--warning); }
 .donut__seg--in_progress { stroke: var(--accent-2); }
 .donut__seg--queued { stroke: var(--border-strong); }
+.donut__seg--stopped { stroke: var(--muted); opacity: .45; }
 .donut__seg--refused { stroke: var(--danger); }
 .donut__n { font-family: var(--font-display); font-size: 33px; font-weight: 450; fill: var(--text); text-anchor: middle; dominant-baseline: central; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
 .donut__l { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .16em; text-transform: uppercase; fill: var(--muted); text-anchor: middle; }

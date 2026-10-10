@@ -1,7 +1,7 @@
 // Tableau de bord d'un abonné : compteurs, exposition (valeur courante et historique sur 12 semaines),
 // répartition par catégorie et par sensibilité, demandes du cycle courant, journal, échéances.
 import { q, now, addDays } from './db.js';
-import { ref, subscriptionActive } from './scheduler.js';
+import { ref, subscriptionActive, hasAccess } from './scheduler.js';
 import { publicUser, parseProfile } from './util.js';
 import { mailMode } from './mailer.js';
 import { MAX_SITES_PER_PROFILE } from './sites.js';
@@ -34,8 +34,8 @@ function count(b, r) {
   b.total += 1;
   if (r.status === 'done') b.done += 1;
   else if (r.status === 'action_required') b.action_required += 1;
+  else if (r.status === 'queued' || isStopped(r)) b.queued += 1;   // arrêtée : jamais envoyée, comme une demande en file
   else if (r.status === 'refused') b.refused += 1;
-  else if (r.status === 'queued') b.queued += 1;
   else b.in_progress += 1; // sent | in_progress
 }
 
@@ -63,7 +63,10 @@ function siteState(r) {
 
 // Plainte possible auprès de l'autorité : refus du courtier (pas un arrêt dû à la révocation du mandat), ou relance
 // restée sans réponse huit jours (le délai accordé dans la relance).
-export const complaintReady = (r) => (r.status === 'refused' && !/^Mandat révoqué/.test(r.note || ''))
+// Demande arrêtée par la révocation du mandat avant son envoi : « refused » en base (note « Mandat révoqué… »), mais ce
+// n'est pas un refus du courtier. Le tableau de bord, son CSV et le rapport la montrent sous un statut à part : stopped.
+export const isStopped = (r) => r.status === 'refused' && /^Mandat révoqué/.test(r.note || '');
+export const complaintReady = (r) => (r.status === 'refused' && !isStopped(r))
   || (['sent', 'in_progress'].includes(r.status) && !!r.followup_sent_at && addDays(r.followup_sent_at, 8) <= now());
 
 export function buildDashboard(u, requestedProfileId) {
@@ -76,8 +79,8 @@ export function buildDashboard(u, requestedProfileId) {
   const active = [...latestByBroker.values()];
   // Compteurs sur le cycle en cours de chaque courtier (comme l'exposition) : après une revérification, l'ancien cycle
   // effacé ne compte plus en plus de la nouvelle demande.
-  const counts = { queued: 0, sent: 0, in_progress: 0, action_required: 0, done: 0, refused: 0, error: 0 };
-  active.forEach((r) => { counts[r.status] = (counts[r.status] || 0) + 1; });
+  const counts = { queued: 0, sent: 0, in_progress: 0, action_required: 0, done: 0, refused: 0, error: 0, stopped: 0 };
+  active.forEach((r) => { const st = isStopped(r) ? 'stopped' : r.status; counts[st] = (counts[st] || 0) + 1; });
   const nowDate = new Date();
   const exposure = exposureAt(active, nowDate.toISOString());
   const sentTotal = active.filter((r) => r.sent_at).length;
@@ -96,19 +99,20 @@ export function buildDashboard(u, requestedProfileId) {
   const profile = profiles.find((p) => p.id === pid);
   return {
     user: publicUser(u), profiles, profile_id: pid,
-    counters: { sent: sentTotal, in_progress: counts.sent + counts.in_progress, action_required: counts.action_required, done: counts.done, queued: counts.queued, refused: counts.refused, error: counts.error, total, brokers, active: active.length },
+    counters: { sent: sentTotal, in_progress: counts.sent + counts.in_progress, action_required: counts.action_required, done: counts.done, queued: counts.queued, refused: counts.refused, error: counts.error, stopped: counts.stopped, total, brokers, active: active.length },
     exposure, next_check_at: nextCheck,
     exposure_history: exposureHistory(active, nowDate),
     categories, sensitivity,
     next_due_at: nextDue, last_sent_at: lastSent,
     last_activity_at: events[0]?.created_at || null,
     sites: { count: active.filter((r) => r.custom).length, max: MAX_SITES_PER_PROFILE },
-    requests: active.map((r) => ({ id: r.id, broker: r.broker_name, custom: !!r.custom, source_url: r.source_url || null, site: r.custom ? siteState(r) : null, domain: r.domain, category: r.category, sensitivity: r.sensitivity, legal_basis: r.legal_basis, jurisdiction: r.jurisdiction, recheck_days: r.recheck_days, status: r.status, cycle: r.cycle, created_at: r.created_at, sent_at: r.sent_at, due_at: r.due_at, followup_sent_at: r.followup_sent_at, completed_at: r.completed_at, next_check_at: r.next_check_at, note: r.note, ref: ref(r), complaint: complaintReady(r) })),
+    requests: active.map((r) => ({ id: r.id, broker: r.broker_name, custom: !!r.custom, source_url: r.source_url || null, site: r.custom ? siteState(r) : null, domain: r.domain, category: r.category, sensitivity: r.sensitivity, legal_basis: r.legal_basis, jurisdiction: r.jurisdiction, recheck_days: r.recheck_days, status: isStopped(r) ? 'stopped' : r.status, cycle: r.cycle, created_at: r.created_at, sent_at: r.sent_at, due_at: r.due_at, followup_sent_at: r.followup_sent_at, completed_at: r.completed_at, next_check_at: r.next_check_at, note: r.note, ref: ref(r), complaint: complaintReady(r) })),
     events,
     onboarding: {
       profile_complete: !!(profile?.first_name && profile?.last_name),
       mandate: !!u.mandate_signed_at && !u.mandate_revoked_at,
       subscription: subscriptionActive(u),   // un abonnement offert par clé cesse à sa date de fin
+      access: hasAccess(u),                  // y compris résilié avec accès jusqu'à la fin de la période payée (ajout de sites)
       max_profiles: u.plan === 'famille' ? 5 : 1,
     },
   };

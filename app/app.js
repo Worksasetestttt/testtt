@@ -48,7 +48,7 @@
   }
   function params() { var h = location.hash.slice(1), i = h.indexOf('?'); var out = { route: i < 0 ? h : h.slice(0, i), q: {} }; if (i >= 0) new URLSearchParams(h.slice(i + 1)).forEach(function (v, k) { out.q[k] = v; }); return out; }
   function go(hash) { if (location.hash === '#' + hash) render(); else location.hash = hash; }
-  function statusLabel(s) { return { queued: 'À envoyer', sent: 'Envoyée', in_progress: 'En cours', action_required: 'Action requise', done: 'Effacée', refused: 'Refusée', error: 'Erreur d’envoi' }[s] || s; }
+  function statusLabel(s) { return { queued: 'À envoyer', sent: 'Envoyée', in_progress: 'En cours', action_required: 'Action requise', done: 'Effacée', refused: 'Refusée', error: 'Erreur d’envoi', stopped: 'Arrêtée' }[s] || s; }
   function subLabel(s) { return { none: 'Aucun abonnement', active: 'Actif', past_due: 'Paiement en attente', canceled: 'Résilié' }[s] || s; }
   function chip(s, label) { return '<span class="chip chip--' + esc(s) + '">' + esc(label || statusLabel(s)) + '</span>'; }
   function dots(n) { var o = '<span class="dots" title="' + (SENS[n] || 'Sensibilité ' + n + ' sur 3') + '"><span class="vh">' + (SENS[n] || 'Sensibilité ' + n + ' sur 3') + '.</span>'; for (var i = 1; i <= 3; i++) o += '<i class="' + (i <= n ? 'on' : '') + '"></i>'; return o + '</span>'; }
@@ -249,7 +249,7 @@
   /* ---------- tableau de bord ---------- */
   function currentProfile(d) { return d.profiles.filter(function (p) { return p.id === d.profile_id; })[0] || d.profiles[0] || {}; }
   function readOnly() { return !!state.impersonation; }   // accès support : consultation seulement
-  function canAddSite(d) { return !!(d.sites && d.onboarding.mandate && d.onboarding.subscription && !readOnly()); }
+  function canAddSite(d) { return !!(d.sites && d.onboarding.mandate && (d.onboarding.access || d.onboarding.subscription) && !readOnly()); }
   /* Pastille d'initiale : la teinte suit la catégorie, pour repérer d'un coup d'œil les courtiers de même nature. */
   var HUES = [16, 35, 150, 195, 222, 262, 320, 95];
   function hueOf(s) { var h = 0; s = String(s || ''); for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return HUES[h % HUES.length]; }
@@ -290,7 +290,8 @@
     var st = u.subscription_status, ends = u.subscription_ends_at, keyed = u.billing_mode === 'key', past = !!ends && Date.parse(ends) <= Date.now();
     if (!o.subscription) {
       var ended = st === 'canceled' ? !ends || past : keyed && past;
-      return card('todo',
+      // Résilié mais payé jusqu'à une date future : le service continue, une vérification demandée passe d'abord.
+      if (!(st === 'canceled' && !ended && c.action_required)) return card('todo',
         st === 'past_due' ? 'Mettez à jour votre moyen de paiement' : ended ? (keyed ? 'Votre abonnement offert est terminé' : 'Votre abonnement est terminé') : st === 'canceled' ? 'Votre abonnement est résilié' : 'Activez votre abonnement',
         st === 'past_due' ? 'Le dernier paiement a échoué. Les demandes reprennent dès que le paiement est régularisé.'
           : ended ? (ends ? 'Il a pris fin le ' + fmtDate(ends) + NBSP + ': plus' : 'Plus') + ' aucune demande ni relance ne part. ' + (keyed ? 'Choisissez une offre ou activez une nouvelle clé' : 'Choisissez une offre') + ' pour reprendre la surveillance.'
@@ -311,10 +312,10 @@
   function sigNext(d) { var c = d.counters, u = d.user; return JSON.stringify([d.onboarding, c.total, c.action_required, c.refused, c.done, c.active, u.subscription_status, u.subscription_ends_at, u.billing_mode, u.mandate_revoked_at, d.next_check_at, readOnly(), d.requests.filter(function (r) { return r.status === 'refused'; }).map(function (r) { return r.next_check_at; }).join()]); }
 
   /* Synthèse : anneau des statuts (exposition au centre), tuiles qui filtrent la liste, frise du cycle légal. */
-  var PART = { done: 'effacées', action_required: 'en attente de votre vérification', in_progress: 'en attente de réponse', queued: 'à envoyer', refused: 'refusées' };
+  var PART = { done: 'effacées', action_required: 'en attente de votre vérification', in_progress: 'en attente de réponse', queued: 'à envoyer', stopped: 'arrêtées (mandat révoqué)', refused: 'refusées' };
   function donut(d) {
     var c = d.counters, total = c.active || 0, R = 62, C = 2 * Math.PI * R, off = 0, segs = '';
-    var parts = [['done', c.done], ['action_required', c.action_required], ['in_progress', c.in_progress], ['queued', c.queued + (c.error || 0)], ['refused', c.refused]].filter(function (p) { return p[1] > 0; });
+    var parts = [['done', c.done], ['action_required', c.action_required], ['in_progress', c.in_progress], ['queued', c.queued + (c.error || 0)], ['stopped', c.stopped || 0], ['refused', c.refused]].filter(function (p) { return p[1] > 0; });
     var gap = parts.length > 1 ? 3 : 0;
     if (total) parts.forEach(function (p) {
       var len = C * p[1] / total, dash = Math.max(0.5, len - gap);
@@ -380,7 +381,7 @@
     var s = state.search.trim().toLowerCase();
     var list = d.requests.filter(matchesFilter).filter(function (r) { return !s || (r.broker + ' ' + r.category + ' ' + (r.domain || '')).toLowerCase().indexOf(s) >= 0; });
     var dateOf = function (r) { return r.completed_at || r.sent_at || r.created_at || ''; };
-    var rank = function (r) { return r.status === 'action_required' ? 0 : r.complaint ? 1 : { error: 2, in_progress: 3, sent: 4, queued: 5, refused: 6, done: 7 }[r.status]; };
+    var rank = function (r) { return r.status === 'action_required' ? 0 : r.complaint ? 1 : { error: 2, in_progress: 3, sent: 4, queued: 5, stopped: 6, refused: 6, done: 7 }[r.status]; };
     if (state.sort === 'status') list.sort(function (a, b) { return rank(a) - rank(b) || b.sensitivity - a.sensitivity || a.broker.localeCompare(b.broker, 'fr'); });
     else if (state.sort === 'sensitivity') list.sort(function (a, b) { return b.sensitivity - a.sensitivity || a.broker.localeCompare(b.broker, 'fr'); });
     else if (state.sort === 'name') list.sort(function (a, b) { return a.broker.localeCompare(b.broker, 'fr'); });
@@ -398,6 +399,7 @@
   }
   function whenHtml(r) {
     if (r.status === 'done') return '<span>Effacée le ' + fmtDay(r.completed_at) + '</span><small>' + (r.next_check_at ? 'revérification le ' + fmtDay(r.next_check_at) : basisLabel(r)) + '</small>';
+    if (r.status === 'stopped') return '<span>Demande arrêtée</span><small>mandat révoqué</small>';
     if (r.status === 'refused') return '<span>Refus du courtier</span><small>' + (r.next_check_at ? 'nouvelle demande le ' + fmtDay(r.next_check_at) : basisLabel(r)) + '</small>';
     if (r.status === 'action_required') return '<span>Vérification à faire</span><small>' + (r.sent_at ? 'demande du ' + fmtDay(r.sent_at) : basisLabel(r)) + '</small>';
     if (r.status === 'error') return '<span>Envoi en attente</span><small>contact en cours de vérification</small>';
@@ -557,6 +559,7 @@
     var ccpa = r.legal_basis === 'ccpa', motive = r.note && !/^(Refus du courtier|réponse reçue de|Mandat révoqué)/i.test(r.note) ? r.note : '';
     switch (r.status) {
       case 'queued': return r.custom && r.site && r.site.status === 'searching' ? 'Nous cherchons le contact du site' + NBSP + '; la demande part dès qu’il est connu.' : r.custom && r.site && r.site.status === 'review' ? 'Notre équipe vérifie l’adresse de contact du site avant l’envoi.' : 'La demande est prête' + NBSP + ': elle part dans la minute.';
+      case 'stopped': return 'Demande arrêtée avant son envoi' + NBSP + ': vous avez révoqué le mandat. Elle repartira dans un nouveau cycle dès que vous le signerez de nouveau.';
       case 'error': return 'L’envoi a échoué plusieurs fois' + NBSP + ': notre équipe vérifie l’adresse du courtier, puis la demande repart.';
       case 'sent': return 'Le courtier a jusqu’au ' + fmtDate(r.due_at) + ' pour répondre (' + (ccpa ? '45' + NBSP + 'jours, CCPA' : 'un mois, article' + NBSP + '12 du RGPD') + '). Sans réponse, nous le relançons.';
       case 'in_progress': return r.followup_sent_at ? 'Délai légal dépassé' + NBSP + ': nous avons relancé le courtier le ' + fmtDate(r.followup_sent_at) + (r.complaint ? '. Sans réponse depuis, vous pouvez déposer une plainte.' : '.') : 'Le courtier traite la demande' + (r.due_at ? NBSP + '; réponse attendue avant le ' + fmtDate(r.due_at) : '') + '.';
@@ -569,11 +572,14 @@
   function requestSteps(r) {
     var answered = r.status === 'done' || r.status === 'refused', s = [];
     s.push(['Demande préparée', fmtDay(r.created_at), 'done']);
-    s.push(['Envoyée au courtier', r.sent_at ? fmtWhen(r.sent_at) : r.status === 'error' ? 'envoi en échec' : r.custom && r.site && r.site.status === 'searching' ? 'dès que le contact est connu' : 'dans la minute', r.sent_at ? 'done' : 'current']);
-    if (r.status === 'action_required') s.push(['Vérification demandée', 'à faire de votre côté', 'current']);
-    s.push(['Relance', r.followup_sent_at ? fmtDay(r.followup_sent_at) : answered ? 'pas nécessaire' : r.due_at ? 'le ' + fmtDay(r.due_at) + ' sans réponse' : 'à l’échéance, si besoin', r.followup_sent_at ? 'done' : answered ? 'skip' : 'todo']);
-    s.push([r.status === 'refused' ? 'Refus du courtier' : 'Effacement confirmé', r.status === 'done' ? fmtDay(r.completed_at) : r.status === 'refused' ? 'refus reçu' : r.due_at ? 'attendu avant le ' + fmtDay(r.due_at) : 'après l’envoi', r.status === 'done' ? 'done' : r.status === 'refused' ? 'bad' : r.sent_at && r.status !== 'action_required' ? 'current' : 'todo']);
-    s.push([r.status === 'refused' ? 'Nouvelle demande' : 'Revérification', r.next_check_at ? 'le ' + fmtDay(r.next_check_at) : r.recheck_days ? 'tous les ' + r.recheck_days + NBSP + 'jours après l’effacement' : '—', 'todo']);
+    if (r.status === 'stopped') s.push(['Envoi arrêté', 'mandat révoqué', 'skip'], ['Nouvelle demande', 'dès la nouvelle signature du mandat', 'todo']);
+    else {
+      s.push(['Envoyée au courtier', r.sent_at ? fmtWhen(r.sent_at) : r.status === 'error' ? 'envoi en échec' : r.custom && r.site && r.site.status === 'searching' ? 'dès que le contact est connu' : 'dans la minute', r.sent_at ? 'done' : 'current']);
+      if (r.status === 'action_required') s.push(['Vérification demandée', 'à faire de votre côté', 'current']);
+      s.push(['Relance', r.followup_sent_at ? fmtDay(r.followup_sent_at) : answered ? 'pas nécessaire' : r.due_at ? 'le ' + fmtDay(r.due_at) + ' sans réponse' : 'à l’échéance, si besoin', r.followup_sent_at ? 'done' : answered ? 'skip' : 'todo']);
+      s.push([r.status === 'refused' ? 'Refus du courtier' : 'Effacement confirmé', r.status === 'done' ? fmtDay(r.completed_at) : r.status === 'refused' ? 'refus reçu' : r.due_at ? 'attendu avant le ' + fmtDay(r.due_at) : 'après l’envoi', r.status === 'done' ? 'done' : r.status === 'refused' ? 'bad' : r.sent_at && r.status !== 'action_required' ? 'current' : 'todo']);
+      s.push([r.status === 'refused' ? 'Nouvelle demande' : 'Revérification', r.next_check_at ? 'le ' + fmtDay(r.next_check_at) : r.recheck_days ? 'tous les ' + r.recheck_days + NBSP + 'jours après l’effacement' : '—', 'todo']);
+    }
     return '<ol class="steps">' + s.map(function (x) { return '<li class="steps__i is-' + x[2] + '"><span class="steps__dot" aria-hidden="true"></span><span class="steps__t">' + x[0] + '<span class="vh">' + (x[2] === 'done' ? ' (fait)' : x[2] === 'current' ? ' (en cours)' : x[2] === 'bad' ? ' (refus)' : x[2] === 'skip' ? ' (sans objet)' : ' (à venir)') + '</span></span><span class="steps__d">' + x[1] + '</span></li>'; }).join('') + '</ol>';
   }
   var JURIS = { FR: 'France', EU: 'Union européenne', UK: 'Royaume-Uni', US: 'États-Unis', CH: 'Suisse', CA: 'Canada' };

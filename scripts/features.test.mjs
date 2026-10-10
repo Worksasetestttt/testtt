@@ -122,9 +122,27 @@ try {
   db.close();
   step('relance : nouvelle demande immédiate avec la fiche citée, une seule par cycle ; un refus échu repart seul');
 
+  /* ---------- 6. Mandat révoqué : demandes « arrêtées » (ni refus ni plainte) ; accès maintenu jusqu'à la fin de période ---------- */
+  const C = await member('chloe@exemple.fr');
+  { const d = new DatabaseSync(DB); d.prepare(`UPDATE requests SET status = 'refused', note = 'Mandat révoqué par l’abonné.', sent_at = NULL WHERE user_id = ?`).run(C.id); d.close(); }
+  await call('DELETE', '/mandate', undefined, C.cookie);
+  r = await call('GET', '/dashboard', undefined, C.cookie);
+  assert.ok(r.data.requests.length > 0);
+  assert.ok(r.data.requests.every((x) => x.status === 'stopped' && !x.complaint), 'demande arrêtée : statut « stopped », pas de plainte');
+  assert.equal(r.data.counters.stopped, r.data.requests.length); assert.equal(r.data.counters.refused, 0, 'une révocation n’est pas un refus');
+  assert.match((await call('GET', '/requests.csv', undefined, C.cookie)).text, /Arrêtée \(mandat révoqué\)/);
+  await call('POST', '/mandate', { full_name: 'Léa Moreau', accepted: true }, C.cookie);
+  assert.equal((await call('POST', `/admin/users/${C.id}/subscription`, { status: 'canceled', ends_at: '2099-01-01' }, admin)).status, 200);
+  r = await call('GET', '/dashboard', undefined, C.cookie);
+  assert.equal(r.data.onboarding.subscription, false); assert.equal(r.data.onboarding.access, true, 'résilié mais payé : accès maintenu');
+  step('mandat révoqué : demandes « arrêtées » (ni refus ni plainte, CSV) ; résilié mais payé : accès maintenu');
+
   console.log(`✔ Fonctions validées (${passed} groupes de vérifications).`);
 } catch (e) {
   console.error('✘ Échec :', e.message);
   if (serverErr.trim()) console.error(serverErr.split('\n').slice(-15).join('\n'));
   process.exitCode = 1;
-} finally { server.kill(); fs.rmSync(tmp, { recursive: true, force: true }); }
+} finally {
+  if (server.exitCode === null) await new Promise((r) => { server.once('exit', r); server.kill(); setTimeout(r, 5000).unref(); });   // attendre l'arrêt : le serveur peut encore écrire dans tmp
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
