@@ -166,6 +166,33 @@ try {
   }
   step('réponse tardive ou sans objet : un accusé ne rouvre ni un effacement ni un refus, « en cours » refusé sur une demande non envoyée');
 
+  /* ---------- 4. Stripe : réabonnement, puis événements de l'ancien abonnement ---------- */
+  // Le compte était retrouvé par son identifiant client : la fin de l'ancien abonnement (updated « canceled »,
+  // deleted, dernière facture impayée) résiliait le nouvel abonnement payé et rétablissait l'ancienne offre.
+  {
+    const X = await member(S, { subscribe: false, launch: false });
+    const u = () => db.prepare('SELECT subscription_status AS status, subscription_ends_at AS ends, stripe_subscription_id AS sub, plan FROM users WHERE id = ?').get(X.id);
+    const cust = `cus_reg${seq}`, end = Math.floor(Date.now() / 1000) + 20 * 86400, nowS = Math.floor(Date.now() / 1000);
+    const checkout = (sub, plan) => stripeEvent(S, 'checkout.session.completed', { mode: 'subscription', payment_status: 'paid', customer: cust, subscription: sub, client_reference_id: X.id, metadata: { user_id: X.id, plan, billing: 'monthly' } });
+    await checkout('sub_old', 'individuel');
+    await stripeEvent(S, 'customer.subscription.updated', { id: 'sub_old', customer: cust, status: 'active', cancel_at_period_end: true, cancel_at: end, current_period_end: end, metadata: { user_id: X.id, plan: 'individuel' } });
+    assert.equal(u().status, 'canceled', 'résiliation à la fin de la période');
+    await checkout('sub_new', 'famille');
+    assert.deepEqual({ ...u() }, { status: 'active', ends: null, sub: 'sub_new', plan: 'famille' }, 'réabonnement');
+    await stripeEvent(S, 'customer.subscription.updated', { id: 'sub_old', customer: cust, status: 'canceled', ended_at: nowS, metadata: { user_id: X.id, plan: 'individuel' } });
+    await stripeEvent(S, 'customer.subscription.deleted', { id: 'sub_old', customer: cust, status: 'canceled', ended_at: nowS, metadata: { user_id: X.id } });
+    await stripeEvent(S, 'invoice.payment_failed', { customer: cust, subscription: 'sub_old' });
+    assert.deepEqual({ ...u() }, { status: 'active', ends: null, sub: 'sub_new', plan: 'famille' }, 'la fin de l’ancien abonnement ne touche pas au nouveau');
+    // Le nouvel abonnement suit son cours normal (format de facture récent : abonnement sous parent.subscription_details).
+    await stripeEvent(S, 'invoice.payment_failed', { customer: cust, parent: { subscription_details: { subscription: 'sub_new' } } });
+    assert.equal(u().status, 'past_due');
+    await stripeEvent(S, 'invoice.paid', { customer: cust, subscription: 'sub_new' });
+    assert.equal(u().status, 'active');
+    await stripeEvent(S, 'customer.subscription.deleted', { id: 'sub_new', customer: cust, status: 'canceled', ended_at: nowS });
+    assert.equal(u().status, 'canceled');
+  }
+  step('Stripe : la fin d’un ancien abonnement (updated, deleted, facture) ne résilie plus le nouvel abonnement');
+
   console.log(`✔ Régressions validées (${passed} groupes de vérifications).`);
 } catch (e) {
   console.error('✘ Échec :', e.message);

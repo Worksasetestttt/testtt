@@ -1,6 +1,7 @@
 // Facturation : Stripe Checkout (API REST via fetch, sans SDK) ou mode simulé quand STRIPE_SECRET_KEY est absent.
 // Les webhooks sont vérifiés (signature HMAC, tolérance 5 min), traités une seule fois (table stripe_events) et
-// l’utilisateur est retrouvé par ses identifiants Stripe (client / abonnement) plutôt que par les métadonnées.
+// l’utilisateur est retrouvé par ses identifiants Stripe (client / abonnement) plutôt que par les métadonnées ;
+// les événements d’un ancien abonnement du même client (réabonnement après résiliation) sont ignorés.
 import crypto from 'node:crypto';
 import { q, now, logEvent, tx } from './db.js';
 
@@ -97,6 +98,12 @@ function userByMetadata(uid, customer) {
   return u;
 }
 
+// Événement d'un autre abonnement que celui du compte (réabonnement après résiliation : même client Stripe, ancien
+// abonnement encore en fin de période) : ignoré, sinon la fin de l'ancien abonnement résilierait le nouveau.
+const staleSub = (u, subscription) => { const s = sid(subscription); return !!(s && u.stripe_subscription_id && u.stripe_subscription_id !== s); };
+// Abonnement d'une facture : champ subscription, ou parent.subscription_details.subscription (format récent de l'API).
+const invoiceSub = (o) => o.subscription || o.parent?.subscription_details?.subscription || null;
+
 function setStatus(u, status, ends, message, extra = {}) {
   const changed = status !== u.subscription_status || (ends || null) !== (u.subscription_ends_at || null);
   q.run(`UPDATE users SET subscription_status = ?, subscription_ends_at = ?, billing_mode = 'stripe', stripe_customer_id = COALESCE(?, stripe_customer_id), stripe_subscription_id = COALESCE(?, stripe_subscription_id), plan = COALESCE(?, plan), billing = COALESCE(?, billing) WHERE id = ?`,
@@ -124,20 +131,20 @@ function apply(event) {
       return;
     }
     case 'invoice.payment_failed': {
-      const u = userByIds(o.customer, o.subscription);
-      if (u && u.subscription_status !== 'canceled') setStatus(u, 'past_due', u.subscription_ends_at, 'Échec de paiement : abonnement en attente de régularisation.');
+      const u = userByIds(o.customer, invoiceSub(o));
+      if (u && !staleSub(u, invoiceSub(o)) && u.subscription_status !== 'canceled') setStatus(u, 'past_due', u.subscription_ends_at, 'Échec de paiement : abonnement en attente de régularisation.');
       return;
     }
     case 'invoice.paid':
     case 'invoice.payment_succeeded': {
-      const u = userByIds(o.customer, o.subscription);
-      if (u && u.subscription_status === 'past_due') setStatus(u, 'active', null, 'Paiement régularisé : abonnement de nouveau actif.');
+      const u = userByIds(o.customer, invoiceSub(o));
+      if (u && !staleSub(u, invoiceSub(o)) && u.subscription_status === 'past_due') setStatus(u, 'active', null, 'Paiement régularisé : abonnement de nouveau actif.');
       return;
     }
     case 'customer.subscription.created':
     case 'customer.subscription.updated': {
       const u = userByIds(o.customer, o.id) || userByMetadata(o.metadata?.user_id, o.customer);
-      if (!u) return;
+      if (!u || staleSub(u, o.id)) return;
       const periodEnd = o.current_period_end || o.items?.data?.[0]?.current_period_end || null;
       const interval = o.items?.data?.[0]?.price?.recurring?.interval || o.plan?.interval || null;
       const extra = { customer: sid(o.customer), subscription: sid(o.id), plan: PLANS[o.metadata?.plan] ? o.metadata.plan : null, billing: interval === 'year' ? 'annual' : interval === 'month' ? 'monthly' : null };
@@ -157,7 +164,7 @@ function apply(event) {
     }
     case 'customer.subscription.deleted': {
       const u = userByIds(o.customer, o.id);
-      if (u) setStatus(u, 'canceled', iso(o.ended_at) || now(), 'Abonnement résilié.');
+      if (u && !staleSub(u, o.id)) setStatus(u, 'canceled', iso(o.ended_at) || now(), 'Abonnement résilié.');
       return;
     }
     default: return;
