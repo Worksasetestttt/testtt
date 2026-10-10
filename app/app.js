@@ -276,18 +276,21 @@
       msgEl('msg-mandate-form', 'margin-top:14px') + '</form></div></div>';
   }
 
-  /* Offres : formule unique, mensuelle et sans engagement. */
+  /* Offres : formule unique, mensuelle et sans engagement. Abonnement par carte résilié dont la période payée court encore
+     (resumable) : choisir une offre reprend cet abonnement chez Stripe, sans nouvelle page de paiement (voir server/billing.js). */
   function plansBlock() {
     var plans = state.config.plans, u = state.user;
     var subscribed = subActive(u), featured = u && u.plan && plans[u.plan] ? u.plan : 'individuel';
+    var resumable = !!(u && u.billing_mode === 'stripe' && u.subscription_status === 'canceled' && plans[u.plan] && u.subscription_ends_at && Date.parse(u.subscription_ends_at) > Date.now());
+    var resume = resumable ? '<p class="notice notice--info" style="margin-bottom:20px">Votre abonnement ' + esc(plans[u.plan].name) + ' reste payé jusqu’au ' + fmtDate(u.subscription_ends_at, LONG) + '. Le reprendre annule la résiliation, sans nouveau paiement' + NBSP + '; passer à l’autre offre prend effet aussitôt, la différence au prorata figurant sur votre prochaine facture.</p>' : '';
     var cards = Object.keys(plans).map(function (k) {
       var p = plans[k], cur = subscribed && u.plan === k;
       return '<div class="sheet plan' + (k === featured ? ' plan--featured' : '') + (cur ? ' is-current' : '') + '"><div class="plan__head"><h3>' + esc(p.name) + '</h3><span class="mono">' + (p.members > 1 ? 'Jusqu’à ' + p.members + NBSP + 'personnes' : 'Une personne') + '</span></div>' +
         '<div class="plan__price"><b>' + money(p.monthly) + '</b><small>/mois</small></div><p class="plan__note">' + (p.members > 1 ? 'Moins de 2' + NNBSP + '€ par personne pour cinq proches' : 'Sans engagement, résiliable en un clic') + '</p>' +
         '<ul><li>Demandes auprès de ' + (state.config.brokers || '') + NBSP + 'courtiers et annuaires</li><li>Vos propres sites ajoutés en collant leur adresse</li><li>Relances automatiques à l’échéance légale</li><li>Nouvelle vérification tous les 60' + NBSP + 'à' + NBSP + '90' + NBSP + 'jours</li><li>Rapport mensuel par e-mail</li><li>Journal horodaté, preuves exportables</li>' + (p.members > 1 ? '<li>Un dossier par personne, une seule facture</li>' : '') + '</ul>' +
-        (cur ? '<p class="notice notice--ok">Votre offre actuelle' + (u.billing === 'annual' ? ' (ancienne formule annuelle)' : '') + '.</p>' : '<button class="btn btn--block' + (subscribed || k !== featured ? ' btn--outline' : '') + '" type="button" data-checkout="' + k + '">' + (subscribed ? 'Passer à ' + esc(p.name) : 'Choisir ' + esc(p.name)) + '</button>') + '</div>';
+        (cur ? '<p class="notice notice--ok">Votre offre actuelle' + (u.billing === 'annual' ? ' (ancienne formule annuelle)' : '') + '.</p>' : '<button class="btn btn--block' + (subscribed || k !== featured ? ' btn--outline' : '') + '" type="button" data-checkout="' + k + '">' + (resumable && k === u.plan ? 'Reprendre ' + esc(p.name) : subscribed || resumable ? 'Passer à ' + esc(p.name) : 'Choisir ' + esc(p.name)) + '</button>') + '</div>';
     }).join('');
-    return '<div class="plans-block">' + (state.config.billing === 'simulated' ? '<div class="toolbar"><span class="mono">Paiement simulé' + SEP + 'aucune clé Stripe</span></div>' : '') + '<div class="plans">' + cards + '</div><p class="mono" style="margin-top:18px">Prix TTC' + SEP + 'Sans engagement' + SEP + 'Satisfait ou remboursé 30' + NBSP + 'jours' + SEP + 'Résiliation en un clic</p></div>';
+    return '<div class="plans-block">' + (state.config.billing === 'simulated' ? '<div class="toolbar"><span class="mono">Paiement simulé' + SEP + 'aucune clé Stripe</span></div>' : '') + resume + '<div class="plans">' + cards + '</div><p class="mono" style="margin-top:18px">Prix TTC' + SEP + 'Sans engagement' + SEP + 'Satisfait ou remboursé 30' + NBSP + 'jours' + SEP + 'Résiliation en un clic</p></div>';
   }
 
   /* ---------- tableau de bord ---------- */
@@ -1135,7 +1138,8 @@
       lock(t, true);
       api('/billing/checkout', { body: { plan: t.getAttribute('data-checkout'), billing: 'monthly' } }).then(function (r) {
         if (r.mode === 'stripe') { location.href = r.url; return; }
-        return loadMe().then(function () { state.dash = null; toast('Abonnement activé.'); if (onboardingDone()) return launch(); render(); });
+        /* simulated, ou resumed : abonnement Stripe repris sans paiement (le message dit si l'offre change au prorata). */
+        return loadMe().then(function () { state.dash = null; toast(r.message || 'Abonnement activé.'); if (onboardingDone()) return launch(); render(); });
       }).catch(function (err) { toast(err.message, true); lock(t, false); });
     }
     else if (t.id === 'cancel-sub') { if (!arm(t, 'Confirmer la résiliation')) return; api('/billing/cancel', { method: 'POST' }).then(loadMe).then(function () { state.dash = null; toast('Abonnement résilié.'); render(); }).catch(function (err) { toast(err.message, true); }); }
