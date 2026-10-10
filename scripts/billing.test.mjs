@@ -709,8 +709,8 @@ try {
   step('webhooks : signature absente, malformée, d’un autre secret, modifiée, tronquée, hors tolérance ou sur un corps modifié → 400 sans effet ; rotation acceptée ; comparaison par timingSafeEqual');
 
   /* ---------- 10. Abonnement d'un compte déjà supprimé : arrêté dès que Stripe l'annonce ---------- */
-  // Un paiement terminé dans un onglet resté ouvert, un webhook arrivé après la suppression, ou une suppression par
-  // l'administration (qui résilie en fin de période) laissaient un abonnement prélevé sans compte pour l'arrêter.
+  // Un paiement terminé dans un onglet resté ouvert ou un webhook arrivé après la suppression laissaient un abonnement
+  // prélevé sans compte pour l'arrêter. La suppression par l'administration arrête désormais l'abonnement elle-même.
   {
     const deletedRow = (id) => !!row(id).deleted_at;
     const checkoutOf = (a, sub) => ({ object: 'checkout.session', mode: 'subscription', payment_status: 'paid', customer: sub.customer, subscription: sub.id, client_reference_id: a.id, metadata: { user_id: a.id, plan: 'individuel', billing: 'monthly' } });
@@ -741,18 +741,23 @@ try {
     r = await send();   // même événement, renvoyé par Stripe
     assert.equal(r.status, 200, r.text); assert.equal(fake.subs.get(subO2.id).status, 'canceled');
 
-    // c. Suppression par l'administration (résiliation en fin de période) : l'annonce de Stripe arrête l'abonnement.
+    // c. Suppression par l'administration : abonnement arrêté tout de suite, comme par l'abonné (elle résiliait en fin de
+    // période) ; Stripe en erreur → 502, rien n'est supprimé. L'annonce suivante de Stripe ne déclenche plus rien.
     const ADM = await actor('admin3@exemple.fr');
     db.prepare(`UPDATE users SET role = 'admin' WHERE id = ?`).run(ADM.id);
     const H = await actor('supprime-par-admin@exemple.fr');
     const subH = await paid(H, 'individuel');
     const invH = fake.addInvoice(subH);
+    fake.fail('DELETE', `/v1/subscriptions/${subH.id}`, 500);
+    r = await ADM.call('DELETE', `/admin/users/${H.id}`, { reason: 'demande écrite' });
+    assert.equal(r.status, 502, r.text); assert.ok(!deletedRow(H.id), 'Stripe en erreur : rien n’est supprimé'); assert.equal(fake.subs.get(subH.id).status, 'active');
+    m = fake.mark();
     assert.equal((await ADM.call('DELETE', `/admin/users/${H.id}`, { reason: 'demande écrite' })).status, 200);
-    assert.ok(deletedRow(H.id)); assert.equal(fake.subs.get(subH.id).cancel_at_period_end, true);
+    assert.deepEqual(sig(fake.since(m)), [`GET /v1/subscriptions/${subH.id}`, `DELETE /v1/subscriptions/${subH.id}`, 'GET /v1/invoices', `POST /v1/invoices/${invH.id}/void`], 'arrêt immédiat, sans résiliation en fin de période');
+    assert.ok(deletedRow(H.id)); assert.deepEqual([fake.subs.get(subH.id).status, fake.invoices.get(invH.id).status], ['canceled', 'void']);
     m = fake.mark();
     await stripeEvent('customer.subscription.updated', structuredClone(fake.subs.get(subH.id)));
-    assert.deepEqual(sig(fake.since(m)), [`GET /v1/subscriptions/${subH.id}`, `DELETE /v1/subscriptions/${subH.id}`, 'GET /v1/invoices', `POST /v1/invoices/${invH.id}/void`]);
-    assert.equal(fake.subs.get(subH.id).status, 'canceled');
+    assert.deepEqual(sig(fake.since(m)), [], 'abonnement déjà arrêté : plus rien à faire');
 
     // d. Pas de faux positif : un compte vivant, ou un événement sans métadonnées, ne déclenche aucun appel.
     const Live = await actor('vivant@exemple.fr');
@@ -762,7 +767,7 @@ try {
     await stripeEvent('customer.subscription.updated', { ...structuredClone(fake.addSubscription({ userId: 'inconnu' })), metadata: {} });
     assert.deepEqual(sig(fake.since(m)), []); assert.equal(fake.subs.get(subLive.id).status, 'active');
   }
-  step('compte supprimé : un abonnement annoncé ensuite (paiement tardif, suppression par l’administration) est arrêté tout de suite, factures ouvertes annulées ; Stripe en erreur → 500 puis nouvel envoi traité ; aucun faux positif');
+  step('compte supprimé : un abonnement annoncé ensuite (paiement tardif) est arrêté tout de suite, factures ouvertes annulées ; Stripe en erreur → 500 puis nouvel envoi traité ; suppression par l’administration : arrêt immédiat ou 502 ; aucun faux positif');
 
   db.close();
   assert.ok(!(serverOut + serverErr).includes(SK), 'la clé secrète n’apparaît jamais dans la console du serveur');
