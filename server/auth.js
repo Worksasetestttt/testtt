@@ -234,9 +234,10 @@ export function noteLoginFailure(email) {
 export function clearLoginFailures(email) { failures.delete(lockKey(email)); }
 
 const buckets = new Map(); // « METHOD route|ip » → { n, reset }
-export function rateLimit({ windowMs = 15 * 60000, max = 30, name } = {}) {
+// by (facultatif) : fonction qui identifie le client autrement que par l'adresse IP (ex. le compte connecté).
+export function rateLimit({ windowMs = 15 * 60000, max = 30, name, by } = {}) {
   return (req, res, next) => {
-    const key = `${name || `${req.method} ${req.baseUrl}${req.path}`}|${req.ip}`;
+    const key = `${name || `${req.method} ${req.baseUrl}${req.path}`}|${by ? by(req) : req.ip}`;
     const t = Date.now();
     let b = buckets.get(key);
     if (!b || t >= b.reset) b = { n: 0, reset: t + windowMs };

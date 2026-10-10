@@ -58,9 +58,19 @@
   function formData(form) { var o = {}; new FormData(form).forEach(function (v, k) { o[k] = v; }); return o; }
   function initials(p) { return ((p.first_name || '?')[0] + (p.last_name || '')[0] || '').toUpperCase(); }
   function fullName(p) { return ((p.first_name || '') + ' ' + (p.last_name || '')).trim() || 'Sans nom'; }
-  function onboardingDone() { var u = state.user, p = state.profiles[0]; return !!(u && p && p.first_name && p.last_name && u.mandate_signed_at && !u.mandate_revoked_at && u.subscription_status === 'active'); }
+  /* Abonnement actif. Un abonnement offert par clé d'activation cesse à sa date de fin (même règle que le serveur). */
+  function subActive(u) { return !!(u && u.subscription_status === 'active' && (u.billing_mode !== 'key' || (u.subscription_ends_at && Date.parse(u.subscription_ends_at) > Date.now()))); }
+  function onboardingDone() { var u = state.user, p = state.profiles[0]; return !!(u && p && p.first_name && p.last_name && u.mandate_signed_at && !u.mandate_revoked_at && subActive(u)); }
   /* Page d'accueil après connexion : un administrateur sans abonnement va à l'administration, pas à l'ouverture de dossier. */
-  function home() { return onboardingDone() ? 'dashboard' : state.user && state.user.role === 'admin' && !state.user.mandate_signed_at && state.user.subscription_status !== 'active' ? 'admin' : 'onboarding'; }
+  function home() { return onboardingDone() ? 'dashboard' : state.user && state.user.role === 'admin' && !state.user.mandate_signed_at && !subActive(state.user) ? 'admin' : 'onboarding'; }
+  /* Clé d'activation reçue par un lien de partage (#signup?key=…) : gardée pour la session (sessionStorage, ou en mémoire
+     si le stockage est refusé) jusqu'à l'étape « offre », où elle est proposée. Jamais envoyée ailleurs qu'à /billing/redeem. */
+  var KEY_STORE = 'oubli.activation-key', memKey = '';
+  function pendingKey() { var v = memKey; try { v = sessionStorage.getItem(KEY_STORE) || memKey; } catch (e) { /* stockage indisponible */ } return v || ''; }
+  function setPendingKey(v) { memKey = v || ''; try { if (v) sessionStorage.setItem(KEY_STORE, v); else sessionStorage.removeItem(KEY_STORE); } catch (e) { /* stockage indisponible */ } }
+  function keyNotice() { return pendingKey() ? '<p class="notice notice--ok key-note">Clé d’activation reçue' + NBSP + ': elle vous sera proposée à la dernière étape, et l’abonnement démarrera sans paiement.</p>' : ''; }
+  var LONG = { day: 'numeric', month: 'long', year: 'numeric' };
+  var KEY_FMT = ['OUBLI', 'XXXX', 'XXXX', 'XXXX'].join('\u2011');   // traits d'union insécables : le format ne se coupe pas
   function fileNo(id) { return 'N°' + NBSP + String(id || '').slice(0, 4).toUpperCase(); }
   function scopeOf(p) { return String(p.id || 'new').slice(0, 8); }
 
@@ -99,7 +109,7 @@
   var views = {};
 
   views.login = function (q) {
-    return '<section class="auth"><div class="auth__mark">' + MARK + '</div><h1>Bon retour.</h1><p class="lead">Connectez-vous pour suivre vos demandes.</p>' +
+    return '<section class="auth"><div class="auth__mark">' + MARK + '</div><h1>Bon retour.</h1><p class="lead">Connectez-vous pour suivre vos demandes.</p>' + keyNotice() +
       '<form id="login-form" class="sheet" novalidate><div class="sheet__body"><div class="fields">' + field('email', 'Adresse e-mail', q.email || '', { extra: 'type="email" autocomplete="email" required' }) + field('password', 'Mot de passe', '', { extra: 'type="password" autocomplete="current-password" required' }) +
       '</div>' + msgEl('msg-login-form', 'margin-top:16px') + '<button class="btn btn--block" type="submit">Se connecter</button></div></form>' +
       '<p class="switch">Pas encore de dossier' + NBSP + '? <a href="#signup">Créer un compte</a></p></section>';
@@ -107,9 +117,9 @@
   views.signup = function (q) {
     var plan = state.config && state.config.plans[q.plan] ? q.plan : 'individuel';
     var p = state.config ? state.config.plans[plan] : null;
-    return '<section class="auth"><div class="auth__mark">' + MARK + '</div><h1>Ouvrons votre <em>dossier</em>.</h1><p class="lead">Deux minutes pour créer le compte. Les demandes partent dès que le mandat est signé.</p>' +
+    return '<section class="auth"><div class="auth__mark">' + MARK + '</div><h1>Ouvrons votre <em>dossier</em>.</h1><p class="lead">Deux minutes pour créer le compte. Les demandes partent dès que le mandat est signé.</p>' + keyNotice() +
       '<form id="signup-form" class="sheet" novalidate><div class="sheet__body"><input type="hidden" name="plan" value="' + esc(plan) + '">' +
-      (p ? '<div class="offer"><span><span class="mono">Offre</span><br><strong>' + esc(p.name) + '</strong>' + SEP + 'sans engagement</span><span><strong>' + money(p.monthly) + '</strong><small class="mono--plain mono">/mois</small></span></div>' : '') +
+      (p && !pendingKey() ? '<div class="offer"><span><span class="mono">Offre</span><br><strong>' + esc(p.name) + '</strong>' + SEP + 'sans engagement</span><span><strong>' + money(p.monthly) + '</strong><small class="mono--plain mono">/mois</small></span></div>' : '') +
       '<div class="fields">' + field('email', 'Adresse e-mail', q.email || '', { extra: 'type="email" autocomplete="email" required' }) + field('password', 'Mot de passe', '', { extra: 'type="password" autocomplete="new-password" minlength="10" required' }, 'Au moins 10' + NBSP + 'caractères.') +
       '</div>' + msgEl('msg-signup-form', 'margin-top:16px') + '<button class="btn btn--block" type="submit">Créer mon compte <span class="btn__arrow" aria-hidden="true">→</span></button></div></form>' +
       '<p class="switch">Déjà un compte' + NBSP + '? <a href="#login">Se connecter</a></p></section>';
@@ -117,16 +127,26 @@
 
   views.onboarding = function () {
     var u = state.user, p = state.profiles[0] || {};
-    var s1 = !!(p.first_name && p.last_name), s2 = !!(u.mandate_signed_at && !u.mandate_revoked_at), s3 = u.subscription_status === 'active';
+    var s1 = !!(p.first_name && p.last_name), s2 = !!(u.mandate_signed_at && !u.mandate_revoked_at), s3 = subActive(u);
     var cur = !s1 ? 1 : !s2 ? 2 : 3;
     function step(n, title, sub, done) { return '<li class="rail__step ' + (done ? 'is-done' : cur === n ? 'is-current' : '') + '"' + (cur === n ? ' aria-current="step"' : '') + '><span class="rail__n">0' + n + '</span><div><strong>' + title + '</strong><span>' + sub + '</span></div></li>'; }
     var html = '<div class="page-head"><div><span class="mono">Dossier ' + fileNo(p.id) + SEP + 'Ouverture</span><h1>Trois étapes, puis nous prenons le relais.</h1></div></div>' +
       '<div class="onb"><ol class="rail" aria-label="Étapes">' + step(1, 'Vos informations', 'Ce que les courtiers peuvent connaître de vous.', s1) + step(2, 'Le mandat', 'L’autorisation d’écrire en votre nom. Révocable.', s2) + step(3, 'L’offre', 'Satisfait ou remboursé 30' + NBSP + 'jours.', s3) + '</ol><div>';
-    if (cur === 1) html += profileForm(p, true);
-    else if (cur === 2) html += mandateCard(p);
-    else html += '<div class="stack"><div><h2>Dernière étape' + NBSP + ': votre offre</h2><p class="lead">Les demandes partent dans la foulée.</p></div>' + plansBlock() + '</div>';
+    if (cur === 1) html += keyNotice() + profileForm(p, true);
+    else if (cur === 2) html += keyNotice() + mandateCard(p);
+    else html += '<div class="stack"><div><h2>Dernière étape' + NBSP + ': votre offre</h2><p class="lead">' + (pendingKey() ? 'Activez la clé reçue, ou choisissez une offre' + NBSP + ': les demandes partent dans la foulée.' : 'Les demandes partent dans la foulée.') + '</p></div>' + (pendingKey() ? keyBlock() + plansBlock() : plansBlock() + keyBlock()) + '</div>';
     return html + '</div></div>';
   };
+
+  /* Clé d'activation (abonnement offert) : bloc discret replié, ouvert et pré-rempli quand une clé a été reçue par lien. */
+  function keyBlock() {
+    var u = state.user, pk = pendingKey(), keyed = u.billing_mode === 'key' && subActive(u);
+    var hint = keyed ? 'Une nouvelle clé prolonge votre abonnement offert' + NBSP + '; une clé Famille vous fait passer à l’offre Famille.' : 'La clé se présente sous la forme ' + KEY_FMT + NBSP + ': l’abonnement démarre aussitôt, sans paiement.';
+    return '<details class="keybox"' + (pk ? ' open' : '') + '><summary class="keybox__sum">Vous avez une clé d’activation' + NBSP + '?</summary>' +
+      '<form id="key-form" class="keybox__form" novalidate>' + (pk ? '<p class="notice notice--ok">Une clé d’activation vous a été transmise' + NBSP + ': vérifiez-la, puis activez-la pour démarrer sans paiement.</p>' : '') +
+      '<div class="keybox__row"><div class="f"><label for="key-input">Clé d’activation</label><input id="key-input" name="key" value="' + esc(pk) + '" placeholder="OUBLI-XXXX-XXXX-XXXX" maxlength="40" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-describedby="key-hint"><span class="hint" id="key-hint">' + hint + '</span></div>' +
+      '<button class="btn" type="submit">Activer</button></div>' + msgEl('msg-key-form') + '</form></details>';
+  }
 
   /* Les identifiants ne sont préfixés (scope) que sur la page Dossier, où plusieurs formulaires coexistent. */
   function profileForm(p, onboarding) {
@@ -155,7 +175,7 @@
   /* Offres : formule unique, mensuelle et sans engagement. */
   function plansBlock() {
     var plans = state.config.plans, u = state.user;
-    var subscribed = !!(u && u.subscription_status === 'active'), featured = u && u.plan && plans[u.plan] ? u.plan : 'individuel';
+    var subscribed = subActive(u), featured = u && u.plan && plans[u.plan] ? u.plan : 'individuel';
     var cards = Object.keys(plans).map(function (k) {
       var p = plans[k], cur = subscribed && u.plan === k;
       return '<div class="sheet plan' + (k === featured ? ' plan--featured' : '') + (cur ? ' is-current' : '') + '"><div class="plan__head"><h3>' + esc(p.name) + '</h3><span class="mono">' + (p.members > 1 ? 'Jusqu’à ' + p.members + NBSP + 'personnes' : 'Une personne') + '</span></div>' +
@@ -436,9 +456,15 @@
   };
 
   views.billing = function () {
-    var u = state.user;
-    var status = '<section class="sheet" aria-labelledby="sub-h"><div class="sheet__head"><h2 id="sub-h">Votre abonnement</h2>' + chip(u.subscription_status, subLabel(u.subscription_status)) + '</div><div class="sheet__body"><dl class="kv"><dt>Offre</dt><dd>' + (u.plan && state.config.plans[u.plan] ? esc(state.config.plans[u.plan].name) + SEP + (u.billing === 'annual' ? 'annuel (ancienne formule)' : 'mensuel') : '—') + '</dd><dt>Paiement</dt><dd>' + (u.billing_mode === 'stripe' ? 'Carte via Stripe' : u.billing_mode === 'simulated' ? 'Simulé (environnement de test)' : '—') + '</dd>' + (u.subscription_ends_at ? '<dt>Fin d’accès</dt><dd>' + fmtDate(u.subscription_ends_at) + '</dd>' : '') + '</dl></div>' + (u.subscription_status === 'active' ? '<div class="sheet__foot"><button class="btn btn--danger btn--sm" type="button" id="cancel-sub">Résilier l’abonnement</button><span class="mono">Satisfait ou remboursé 30' + NBSP + 'jours</span></div>' : '') + '</section>';
-    return '<div class="page-head"><div><span class="mono">Abonnement</span><h1>Un prix clair. Une <em>seule</em> mission.</h1></div></div><div class="stack">' + status + plansBlock() + '</div>';
+    var u = state.user, keyed = u.billing_mode === 'key', live = subActive(u), ends = u.subscription_ends_at;
+    var ended = keyed && !live && !(ends && Date.parse(ends) > Date.now());   // abonnement offert arrivé à son terme
+    var endRow = !ends ? '' : keyed && live ? '<dt>Accès</dt><dd><strong>Activé par clé jusqu’au ' + fmtDate(ends, LONG) + '</strong></dd>' : '<dt>Fin d’accès</dt><dd>' + (ended ? 'Abonnement offert terminé le ' + fmtDate(ends, LONG) : fmtDate(ends)) + '</dd>';
+    /* « Résilier » est masqué pour un abonnement offert : aucun paiement à arrêter, il s'arrête de lui-même (voir server/keys.js). */
+    var foot = keyed && live ? '<div class="sheet__foot"><p class="key-foot">Rien à résilier' + NBSP + ': l’abonnement offert s’arrête de lui-même le ' + fmtDate(ends, LONG) + '. Pour suspendre les demandes, révoquez le mandat depuis votre <a href="#dossier">dossier</a>.</p></div>'
+      : live ? '<div class="sheet__foot"><button class="btn btn--danger btn--sm" type="button" id="cancel-sub">Résilier l’abonnement</button><span class="mono">Satisfait ou remboursé 30' + NBSP + 'jours</span></div>' : '';
+    var status = '<section class="sheet" aria-labelledby="sub-h"><div class="sheet__head"><h2 id="sub-h">Votre abonnement</h2>' + (ended ? chip('canceled', 'Terminé') : chip(u.subscription_status, subLabel(u.subscription_status))) + '</div><div class="sheet__body"><dl class="kv"><dt>Offre</dt><dd>' + (u.plan && state.config.plans[u.plan] ? esc(state.config.plans[u.plan].name) + SEP + (keyed ? 'offerte par clé' : u.billing === 'annual' ? 'annuel (ancienne formule)' : 'mensuel') : '—') + '</dd><dt>Paiement</dt><dd>' + (u.billing_mode === 'stripe' ? 'Carte via Stripe' : u.billing_mode === 'simulated' ? 'Simulé (environnement de test)' : keyed ? 'Clé d’activation, sans paiement' : '—') + '</dd>' + endRow + '</dl></div>' + foot + '</section>';
+    var swap = keyed && live ? '<p class="notice notice--info">Souscrire une offre payante remplace l’abonnement offert, sans report des jours restants.</p>' : '';
+    return '<div class="page-head"><div><span class="mono">Abonnement</span><h1>Un prix clair. Une <em>seule</em> mission.</h1></div></div><div class="stack">' + status + (pendingKey() || (keyed && live) ? keyBlock() + swap + plansBlock() : plansBlock() + keyBlock()) + '</div>';
   };
 
   /* Rapport imprimable du dossier affiché (et export CSV) : impression navigateur ou « Enregistrer en PDF ». */
@@ -492,9 +518,15 @@
   function render() {
     var p = params(), route = p.route || (state.user ? 'dashboard' : 'login');
     clearInterval(pollTimer);
+    /* Lien de partage d'une clé d'activation : la clé est mise de côté et retirée de l'adresse (et de l'historique). */
+    if (p.q.key !== undefined) {
+      setPendingKey(String(p.q.key).trim().slice(0, 40)); delete p.q.key;
+      var rest = new URLSearchParams(p.q).toString();
+      history.replaceState(null, '', location.pathname + location.search + '#' + (p.route || route) + (rest ? '?' + rest : ''));
+    }
     if (route === 'billing-success') { toast('Paiement confirmé. Les demandes partent automatiquement.'); location.hash = 'dashboard'; return; }
     if (!state.user && !/^(login|signup)$/.test(route)) { location.hash = 'login' + (location.hash.indexOf('?') > 0 ? location.hash.slice(location.hash.indexOf('?')) : ''); return; }
-    if (state.user && /^(login|signup)$/.test(route)) { location.hash = home(); return; }
+    if (state.user && /^(login|signup)$/.test(route)) { location.hash = pendingKey() && onboardingDone() ? 'billing' : home(); return; }
     if (state.user && route === 'dashboard' && !onboardingDone() && !(state.dash && state.dash.counters.total)) { if (!state.user.mandate_signed_at || !state.profiles[0].first_name) { location.hash = 'onboarding'; return; } }
     if (route === 'admin' && (!state.user || state.user.role !== 'admin')) { location.hash = 'dashboard'; return; }
     if (!views[route]) { location.hash = state.user ? 'dashboard' : 'login'; return; }
@@ -562,7 +594,22 @@
     if (f._busy) return;
     if (f.id === 'login-form' || f.id === 'signup-form') {
       var d = formData(f); busy(f, true); showMsg(f, '');
-      api(f.id === 'login-form' ? '/auth/login' : '/auth/signup', { body: d }).then(function () { state.dash = null; state.profileId = null; return loadMe(); }).then(function () { toast(f.id === 'login-form' ? 'Connecté.' : 'Compte créé. Dossier ouvert.'); go(home()); }).catch(function (err) { showMsg(f, err.message, true, null, $('#f-password', f)); }).finally(function () { busy(f, false); });
+      api(f.id === 'login-form' ? '/auth/login' : '/auth/signup', { body: d }).then(function () { state.dash = null; state.profileId = null; return loadMe(); }).then(function () { toast(f.id === 'login-form' ? 'Connecté.' : 'Compte créé. Dossier ouvert.'); go(pendingKey() && onboardingDone() ? 'billing' : home()); }).catch(function (err) { showMsg(f, err.message, true, null, $('#f-password', f)); }).finally(function () { busy(f, false); });
+    } else if (f.id === 'key-form') {
+      var ki = $('#key-input', f), kv = ki.value.trim();
+      if (!kv) { showMsg(f, 'Saisissez la clé reçue, sous la forme ' + KEY_FMT + '.', true, null, ki); return; }
+      busy(f, true); showMsg(f, '');
+      api('/billing/redeem', { body: { key: kv } }).then(function (r) {
+        setPendingKey('');
+        var plan = state.config.plans[r.plan], text = 'Abonnement ' + (plan ? plan.name : r.plan) + (r.extended ? ' prolongé' : ' activé') + ' jusqu’au ' + fmtDate(r.ends_at, LONG) + (r.launched ? NBSP + ': ' + plural(r.launched, 'demande préparée', 'demandes préparées') : '') + '.';
+        return loadMe().then(function () {
+          state.dash = null; toast(text);
+          if (params().route === 'onboarding' && onboardingDone()) { go('dashboard'); setTimeout(loadDash, 1500); setTimeout(loadDash, 4000); } else render();
+        });
+      }).catch(function (err) {
+        if (err.status === 400 || err.status === 404 || err.status === 410) setPendingKey('');   // clé inutilisable : on ne la repropose plus
+        showMsg(f, err.message, true, null, ki);
+      }).finally(function () { busy(f, false); });
     } else if (f.classList.contains('profile-form')) {
       var pd = profilePayload(f); busy(f, true); showMsg(f, '');
       api('/profiles/' + f.getAttribute('data-id'), { method: 'PUT', body: pd }).then(function () { return loadMe(); }).then(function () { toast('Informations enregistrées.'); if (params().route === 'onboarding') render(); else { var s = $('.sheet__head .mono--plain', f); if (s) s.textContent = 'Enregistré à l’instant'; } }).catch(function (err) { showMsg(f, err.message, true, null, $('input[name="first_name"]', f)); }).finally(function () { busy(f, false); });
@@ -664,7 +711,7 @@
   window.addEventListener('resize', function () { clearTimeout(resizeTimer); resizeTimer = setTimeout(function () { var h = $('#exp-chart'); if (h && h._size && Math.abs(h.clientWidth - h._size.W) > 8) drawChart(); }, 150); });
 
   /* ---------- API interne pour les modules optionnels (admin) ---------- */
-  window.Oubli = { chrome: setChrome, registerView: registerView, api: api, esc: esc, toast: toast, fmtDate: fmtDate, fmtTime: fmtTime, money: money, chip: chip, dots: dots, statusLabel: statusLabel, subLabel: subLabel, field: field, go: go, render: render, params: params, state: state, NBSP: NBSP, NNBSP: NNBSP, announce: announce, typo: typo, fmtDay: fmtDay, plural: plural };
+  window.Oubli = { chrome: setChrome, registerView: registerView, api: api, esc: esc, toast: toast, fmtDate: fmtDate, fmtTime: fmtTime, money: money, chip: chip, dots: dots, statusLabel: statusLabel, subLabel: subLabel, field: field, go: go, render: render, params: params, state: state, NBSP: NBSP, NNBSP: NNBSP, announce: announce, typo: typo, fmtDay: fmtDay, plural: plural, subActive: subActive };
 
   /* ---------- démarrage ---------- */
   Promise.all([api('/config').catch(function () { return { plans: { individuel: { name: 'Individuel', members: 1, monthly: 500 }, famille: { name: 'Famille', members: 5, monthly: 999 } }, billing: 'simulated', brokers: 50, mandate_version: '' }; }), loadMe()]).then(function (r) {

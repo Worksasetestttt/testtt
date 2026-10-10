@@ -421,6 +421,28 @@ h1 em, h2 em { font-style: italic; font-weight: 400; }
 .counters .ledger__stat:last-child { border-right: 0; }
 .table-wrap { overflow-x: auto; }
 
+/* ---------- Clé d’activation (abonnement offert) : bloc discret, replié sauf clé reçue par lien ---------- */
+.keybox { border: 1px dashed var(--border-strong); border-radius: 14px; background: var(--surface); min-width: 0; }
+.keybox[open] { border-style: solid; border-color: var(--border); box-shadow: var(--shadow); }
+.keybox__sum { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 12px 24px; cursor: pointer; list-style: none; font-weight: 500; color: var(--accent-2); border-radius: 14px; }
+.keybox__sum::-webkit-details-marker { display: none; }
+.keybox__sum::before { content: ""; flex: none; width: 7px; height: 7px; margin: 0 2px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform .15s var(--ease); }
+.keybox[open] > .keybox__sum::before { transform: rotate(45deg); }
+.keybox__sum:hover { color: var(--text); }
+.keybox__form { display: grid; gap: 14px; padding: 2px 24px 22px; }
+.keybox__row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px 24px; align-items: end; }
+.keybox__row input { font-family: var(--font-mono); font-size: 1rem; letter-spacing: .06em; text-transform: uppercase; }
+.keybox .msg:empty { min-height: 0; }
+.key-note { margin-bottom: 24px; }
+.key-foot { color: var(--muted); font-size: .92rem; max-width: 72ch; }
+.key-foot a { color: var(--accent-2); text-underline-offset: 3px; }
+@media (max-width: 767px) {
+  .keybox__sum { padding: 10px 20px; }
+  .keybox__form { padding: 2px 20px 20px; }
+  .keybox__row { grid-template-columns: minmax(0, 1fr); }
+  .keybox__row .btn { width: 100%; }
+}
+
 /* ---------- Responsive ---------- */
 @media (max-width: 1150px) {
   .dash-grid { grid-template-columns: 1fr; }

@@ -1,7 +1,7 @@
 // Tableau de bord d'un abonné : compteurs, exposition (valeur courante et historique sur 12 semaines),
 // répartition par catégorie et par sensibilité, demandes du cycle courant, journal, échéances.
 import { q, now, addDays } from './db.js';
-import { ref } from './scheduler.js';
+import { ref, subscriptionActive } from './scheduler.js';
 import { publicUser, parseProfile } from './util.js';
 import { mailMode } from './mailer.js';
 import { MAX_SITES_PER_PROFILE } from './sites.js';
@@ -47,6 +47,8 @@ export function exportData(u) {
     requests: q.all('SELECT r.*, b.name AS broker FROM requests r JOIN brokers b ON b.id = r.broker_id WHERE r.user_id = ?', u.id),
     events: q.all('SELECT * FROM events WHERE user_id = ? ORDER BY id', u.id),
     mails: q.all('SELECT to_addr, subject, body, created_at FROM mails WHERE user_id = ? ORDER BY id', u.id),
+    // Clés d’activation utilisées : indice (4 derniers caractères) seulement, jamais la clé.
+    key_redemptions: q.all('SELECT k.hint, k.plan, k.days, kr.redeemed_at, kr.ends_at FROM key_redemptions kr JOIN activation_keys k ON k.id = kr.key_id WHERE kr.user_id = ? ORDER BY kr.id', u.id),
   };
 }
 
@@ -106,7 +108,7 @@ export function buildDashboard(u, requestedProfileId) {
     onboarding: {
       profile_complete: !!(profile?.first_name && profile?.last_name),
       mandate: !!u.mandate_signed_at && !u.mandate_revoked_at,
-      subscription: u.subscription_status === 'active',
+      subscription: subscriptionActive(u),   // un abonnement offert par clé cesse à sa date de fin
       max_profiles: u.plan === 'famille' ? 5 : 1,
     },
   };
