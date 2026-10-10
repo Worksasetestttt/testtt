@@ -137,7 +137,7 @@ function rechecks() {
       const newer = q.get('SELECT id FROM requests WHERE profile_id = ? AND broker_id = ? AND cycle > ?', r.profile_id, r.broker_id, r.cycle);
       tx(() => {
         q.run('UPDATE requests SET next_check_at = NULL WHERE id = ?', r.id);
-        if (!newer) insertRequest(r.user_id, r.profile_id, r.broker_id, r.cycle + 1);
+        if (!newer) insertRequest(r.user_id, r.profile_id, r.broker_id, r.cycle + 1, r.source_url);   // la fiche signalée reste citée
       });
       if (!newer) logEvent(user.id, 'recheck', r.status === 'refused' ? `Nouvelle demande à ${broker.name} (cycle ${r.cycle + 1}) après son refus.` : `Nouvelle vérification chez ${broker.name} (cycle ${r.cycle + 1}) : une demande est renvoyée.`, { profile_id: r.profile_id });
     } catch (e) { console.error('[scheduler] revérification', r.id, e); }

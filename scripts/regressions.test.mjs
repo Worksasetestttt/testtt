@@ -275,6 +275,21 @@ try {
   }
   step('mandat re-signé : nouveau cycle pour les demandes arrêtées, sites ajoutés compris (fiche citée), sans dépendre du client');
 
+  /* ---------- 8. Revérification d'un site ajouté : la fiche reste citée ---------- */
+  {
+    const M = await member(S, { launch: false });
+    const site = await S.call('POST', '/sites', { url: 'https://pages-perso.fr/profil/lea' }, M.cookie);
+    await S.call('POST', '/admin/tick', {}, ADM);
+    await S.call('POST', `/admin/requests/${site.data.request_id}/outcome`, { outcome: 'done' }, ADM);
+    db.prepare('UPDATE requests SET next_check_at = ? WHERE id = ?').run(new Date(Date.now() - 60000).toISOString(), site.data.request_id);
+    await S.call('POST', '/admin/tick', {}, ADM);   // revérification : nouvelle demande en file
+    await S.call('POST', '/admin/tick', {}, ADM);   // envoi au passage suivant
+    const next = db.prepare('SELECT id, cycle, status, source_url FROM requests WHERE profile_id = ? AND broker_id = ? ORDER BY cycle DESC LIMIT 1').get(M.pid, site.data.broker.id);
+    assert.equal(next.cycle, 2); assert.equal(next.status, 'sent');
+    assert.equal(next.source_url, 'https://pages-perso.fr/profil/lea'); assert.match(mailsOf(next.id)[0].body, /pages-perso\.fr\/profil\/lea/);
+  }
+  step('revérification d’un site ajouté : le nouveau courrier cite toujours l’adresse de la fiche');
+
   console.log(`✔ Régressions validées (${passed} groupes de vérifications).`);
 } catch (e) {
   console.error('✘ Échec :', e.message);
