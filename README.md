@@ -9,7 +9,7 @@ Service « type Incogni » : une landing page, une application abonné et une AP
 ```bash
 npm install
 npm start          # http://localhost:3000  (landing)  ·  http://localhost:3000/app/  (application)
-npm test           # douze suites : parcours, sécurité (deux séries), administration, sites, fonctions, comptes, clés, performance, régressions, facturation, double authentification
+npm test           # treize suites : parcours, sécurité (deux séries), administration, sites, fonctions, comptes, clés, performance, régressions, facturation, double authentification, planificateur
 ```
 
 Sans fichier `.env`, le serveur tourne en mode développement : abonnement simulé (pas de Stripe), e-mails écrits dans `data/outbox/` au lieu d'être envoyés, et mode démo désactivé. Pour voir le pipeline « vivre » (les courtiers répondent en quelques minutes), lancez `DEMO_MODE=true npm start`.
@@ -34,7 +34,7 @@ Parcours : créer un compte → renseigner les informations à faire effacer →
 | `server/util.js` | Validation des entrées, sérialisation publique (sans secret), helpers partagés. |
 | `server/db.js` | SQLite via `node:sqlite` (Node ≥ 22.13, aucune dépendance native). Schéma créé automatiquement, registre de courtiers chargé depuis `server/brokers.json`. |
 | `server/auth.js` | Mots de passe scrypt, sessions en base, cookie HttpOnly signé, limitation de débit. |
-| `server/scheduler.js` | Planificateur : envoi des demandes, relances à l'échéance (30 j RGPD / 45 j CCPA), nouveau cycle après 60–90 j, simulation en démo. |
+| `server/scheduler.js` | Planificateur : envoi des demandes, relances à l'échéance (30 j RGPD / 45 j CCPA), nouveau cycle après 60–90 j, simulation en démo. Chaque demande est réservée avant l'envoi (jamais deux envois, même avec deux instances) ; un courtier ajouté au registre reçoit une demande pour les abonnés existants ; un courtier retiré arrête ses demandes jamais envoyées, relancées à sa réactivation. |
 | `server/templates.js` | Courriers (FR + EN) : demande d'effacement, relance, mandat, notifications. |
 | `server/mailer.js` | SMTP (nodemailer) ou boîte d'envoi locale. Un secret envoyé par e-mail (jeton d'un lien) est masqué dans la table `mails` (`redact`). |
 | `server/compress.js`, `server/static.js` | Compression brotli ou gzip de l'API, ETag fort et réponse 304 ; fichiers statiques servis depuis la mémoire, précompressés et versionnés (`?v=` + empreinte, cache d'un an). |
@@ -98,7 +98,7 @@ Toutes les réponses sont en JSON ; les erreurs ont la forme `{ "error": "messag
 | `GET /api/requests.csv?profile_id=`, `PUT /api/preferences` | Demandes du profil en CSV ; préférence du rapport mensuel. |
 | `POST /api/billing/checkout` · `/cancel` · `/webhook` | Abonnement (Stripe ou simulé). 409 si l'offre couvre moins de personnes que le dossier ; rien à résilier pour un abonnement offert par clé. Un abonnement Stripe résilié encore payé est repris (`{ mode: 'resumed' }` : même offre sans paiement, autre offre au prorata) ; 409 si un paiement est en attente ; 502 sans nouvelle session si Stripe ne répond pas. Le webhook arrête l'abonnement annoncé pour un compte supprimé (500 si Stripe échoue : Stripe renvoie l'événement). |
 | `POST /api/billing/redeem` | Activer une clé d'activation (10 essais par heure par compte et par adresse IP). |
-| `POST /api/inbound` | Réponses des courtiers (webhook e-mail entrant) : texte cité et objet « Re: » ignorés ; `applied` indique si la réponse a changé la demande (une réponse tardive ne la fait jamais reculer). |
+| `POST /api/inbound` | Réponses des courtiers (webhook e-mail entrant) : texte cité et objet « Re: » ignorés ; `applied` indique si la réponse a changé la demande (une réponse tardive ne la fait jamais reculer), `status` son statut après traitement. Un effacement ou un refus n'est appliqué que s'il vient du domaine du courtier (ou d'un sous-domaine) ou de son contact vérifié ; sinon la demande passe au plus « en cours » et la réponse est signalée à l'équipe (`review: true`). Cette règle suppose que votre fournisseur d'e-mail entrant rejette les expéditeurs usurpés (SPF, DKIM, DMARC). |
 | `GET /api/export`, `DELETE /api/account` | Export RGPD et suppression définitive. L'abonnement Stripe est arrêté tout de suite et ses factures ouvertes annulées ; 502 sans rien supprimer si Stripe échoue. |
 | `GET/POST /api/unsubscribe/report?u=&t=` | Désinscription du rapport mensuel par le lien signé de l'e-mail, sans session : POST en un clic (RFC 8058), GET renvoie vers la page de confirmation sans rien changer. |
 | `POST /api/newsletter`, `POST /api/contact` | Formulaires de la landing. |
@@ -118,7 +118,8 @@ Toutes les réponses sont en JSON ; les erreurs ont la forme `{ "error": "messag
 | `POST /api/admin/users/:id/message` · `/email`, `GET /api/admin/users/:id/export` | Message à l'abonné, changement d'adresse (l'ancienne est prévenue), export RGPD. |
 | `GET /api/admin/security`, `POST /api/admin/blocklist`, `DELETE /api/admin/blocklist/:id` | Suspensions, accès support récents, sessions actives ; liste de blocage (adresses et domaines). |
 | `PUT/DELETE /api/admin/announcement` | Annonce affichée en bandeau dans l'application (`announcement` dans `/api/config`). |
-| `GET /api/admin/requests?q=&status=&sort=&broker=&user=&page=`, `GET /api/admin/requests/:id` | Demandes (par identifiant ou référence `OUBLI-…`). |
+| `GET /api/admin/requests?q=&status=&sort=&broker=&user=&page=`, `GET /api/admin/requests/:id` | Demandes (par identifiant ou référence `OUBLI-…`) ; `status=review` et `sort=review` pour les réponses à vérifier (leur nombre figure aussi dans `/api/admin/stats`, champ `review`). |
+| `DELETE /api/admin/requests/:id/review` | Classe une réponse à vérifier sans changer la demande (message sans rapport, doublon). |
 | `POST /api/admin/requests/:id/outcome` · `/resend`, `POST /api/admin/requests/bulk` | Réponse d'un courtier (409 si elle ne s'applique pas), renvoi (essais remis à zéro), réponses groupées (100 au plus, `ignored`). |
 | `POST /api/admin/keys`, `GET /api/admin/keys?status=&q=&batch=&page=`, `POST /api/admin/keys/:id/revoke` | Clés d'activation : création par lot (seule réponse qui contient les clés en clair), liste filtrable, révocation. |
 | `GET/POST /api/admin/brokers`, `PUT/DELETE /api/admin/brokers/:id`, `POST /api/admin/brokers/:id/test-mail` · `/discover` | Registre des courtiers : création, édition, désactivation, courrier de test, nouvelle recherche du contact d'un site ajouté. |
@@ -172,9 +173,9 @@ Accès : `/app/#admin`, pour les adresses listées dans `ADMIN_EMAILS`. Hors pro
 | Clés | Création par lot d'abonnements offerts, affichage unique des clés (copie, CSV, liens de partage), liste filtrable par statut (actives, utilisées, expirées, révoquées) et par lot, comptes qui les ont utilisées, révocation. |
 | Utilisateurs | Recherche (e-mail, nom, identifiant), filtres avec compteurs (dont « Suspendus »), fiche : accès au compte en lecture seule, suspension, abonnement manuel, rôle, message, changement d'adresse, export RGPD, sessions ouvertes, notes internes, lancement des demandes, suppression, profils, journal de l'abonné, actions des administrateurs. |
 | Demandes | Filtres par statut, tri, recherche par référence, fiche dépliable (réponse, renvoi, courriers, journal), sélection groupée. |
-| Courtiers | Registre : édition, création, contact vérifié, courrier de test, désactivation. Une nouvelle adresse de contact perd sa vérification, sauf confirmation explicite. |
+| Courtiers | Registre : édition, création, contact vérifié, courrier de test, désactivation (les demandes jamais envoyées sont arrêtées, sans être présentées comme des refus ; elles repartent à la réactivation). Une nouvelle adresse de contact perd sa vérification, sauf confirmation explicite. |
 | Courriers | Tous les courriers envoyés, filtrables, avec leur contenu exact. |
-| Réponses entrantes | État du webhook `/api/inbound` et qualification manuelle d'une réponse collée. |
+| Réponses entrantes | État du webhook `/api/inbound`, réponses à vérifier (effacement ou refus annoncé par un expéditeur non reconnu : confirmer, choisir un autre résultat ou classer) et qualification manuelle d'une réponse collée. |
 | Contacts | Messages reçus (à traiter, traités), inscrits à la lettre d'information, exports CSV. |
 | Sécurité | Comptes suspendus (réactivation), liste de blocage d'adresses et de domaines, accès support récents, sessions actives. |
 | Système | Annonce (bandeau dans l'application), version de Node, modes (courrier, paiement, démo), planificateur, volumes, sauvegardes (dernière copie, sauvegarde immédiate), variables d'environnement (présence seulement). |
@@ -206,7 +207,7 @@ Les filtres et les pages se rechargent sans perdre le focus ; les actions destru
 ## Tests
 
 ```bash
-npm test                    # les douze suites, l'une après l'autre
+npm test                    # les treize suites, l'une après l'autre
 npm run test:security       # sécurité (en-têtes, cookies, CSRF, autorisations, webhooks)
 npm run test:security2      # sécurité, seconde série (découverte des sites, débit, administrateurs en production)
 npm run test:admin          # administration
@@ -218,6 +219,7 @@ npm run test:perf           # compression, cache, santé, sauvegardes, arrêt pr
 npm run test:regressions    # bugs corrigés
 npm run test:billing        # facturation contre un faux Stripe (reprise, webhooks en retard, suppression, signatures)
 npm run test:twofactor      # double authentification et verrouillage de connexion
+npm run test:scheduler      # planificateur (courtiers ajoutés ou retirés, réponses à vérifier, réservation avant envoi)
 npm run test:ui             # audit navigateur (Playwright installé à part), 1280 et 390 px
 ```
 
