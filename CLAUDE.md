@@ -18,7 +18,7 @@ Oubli est un service « type Incogni » : il envoie, suit et relance des demande
 npm install
 npm start                    # http://localhost:3000 (landing) et /app/ (application)
 DEMO_MODE=true npm start     # les courtiers « répondent » après environ 45 s
-npm test                     # smoke.mjs (parcours complet) puis security.test.mjs
+npm test                     # smoke.mjs (parcours complet), security.test.mjs, admin.test.mjs
 PORT=3081 node server/index.js
 ```
 
@@ -40,9 +40,10 @@ Sans `.env`, le serveur tourne en mode développement : abonnement simulé, cour
 | `server/billing.js` | Stripe Checkout en REST (sans SDK), webhooks signés, abonnement simulé. Prix : 12,99 € par mois ou 83,88 € par an (Individuel), 24,99 € ou 167,88 € (Famille). |
 | `server/mailer.js`, `server/templates.js` | Courriers (SMTP ou boîte d'envoi locale). `MANDATE_VERSION` est exporté et utilisé par l'API. |
 | `app/index.html`, `app/app.js`, `app/app.css` | Application abonné en JS vanilla, routage par hash. |
-| `app/admin.js`, `app/admin.css` | Administration. Chargée à la demande par `app.js` uniquement pour les administrateurs. |
+| `app/admin.js`, `app/admin.css` | Panel d’administration (9 onglets). Chargé à la demande par `app.js` uniquement pour les administrateurs. Classes préfixées `adm-` (ne pas réutiliser `.chart`, déjà pris par le tableau de bord). |
 | `scripts/smoke.mjs` | Parcours complet de bout en bout. |
 | `scripts/security.test.mjs` | Tests de sécurité : en-têtes, cookies, autorisations, limitation de débit, webhooks. |
+| `scripts/admin.test.mjs` | Tests de l’API d’administration : autorisations, comptes, demandes, courtiers, exports, audit. |
 | `docs/handoff/` | Rapports des relectures (bureau, accessibilité, mobile) et contrat de découpage des fichiers. Lis-les avant de toucher l'interface. |
 
 ### Contrats à ne pas casser
@@ -62,6 +63,7 @@ Sans `.env`, le serveur tourne en mode développement : abonnement simulé, cour
 - Accessibilité : chaque champ a un `<label>` unique (attention aux ids dupliqués quand le même formulaire est rendu plusieurs fois). Les messages d'erreur ont `role="alert"`. Ne fais pas de `aria-live` sur `<main>`. Les mouvements respectent `prefers-reduced-motion`.
 - Mobile : pas de débordement horizontal à 360, 390, 768, 820 et 1024 px, ni sur le document ni sur un `.sheet`. Les cibles tactiles font au moins 44 px.
 - Le tableau de bord se rafraîchit toutes les 6 s. Ne remplace jamais toute la vue pendant le rafraîchissement : cela fait perdre le focus.
+- Un texte `.vh` (position absolue) dans un conteneur défilant déborde de la page si ce conteneur n’est pas positionné : `.tbl-wrap` est en `position: relative` pour cette raison.
 
 ## Sécurité
 
@@ -77,17 +79,15 @@ Sans `.env`, le serveur tourne en mode développement : abonnement simulé, cour
 
 Fait et poussé :
 - Landing page, application abonné en style dossier, backend complet (inscription, profils, mandat, abonnement, demandes, relances, réponses, export, suppression).
-- Découpage du serveur en modules (`util`, `dashboard`, `admin`) et administration chargée à la demande.
-- En-têtes de sécurité, limitation de débit, contrôle des webhooks. `npm test` passe.
-- Rapports des relectures dans `docs/handoff/`.
+- Correctifs des trois relectures (`docs/handoff/`) et accessibilité : vérifiés au navigateur à 1280 et 390 px (débordements à 360–1280 px, ids, labels, focus pendant le rafraîchissement, erreurs annoncées).
+- Tableau de bord : exposition sur 12 semaines, catégories, sensibilité, recherche, tri, filtres avec compteurs, « Afficher plus », journal de 8 entrées.
+- Panel d’administration complet (vue d’ensemble, utilisateurs, demandes, courtiers, courriers, réponses entrantes, contacts, système, audit) et `scripts/admin.test.mjs`.
+- `npm test` passe (trois suites). README à jour.
 
-À faire, dans cet ordre :
-1. Appliquer les correctifs des trois relectures (`docs/handoff/desktop.md`, `a11y.md`, `mobile.md`). Commence par les points marqués majeurs ou critiques.
-2. Corriger l'accessibilité : annonceur de route, messages d'erreur liés aux champs, focus conservé pendant le rafraîchissement, ids scopés sur le dossier.
-3. Améliorer le tableau de bord : graphique d'exposition sur 12 semaines (SVG en ligne), répartition par catégorie, recherche, tri, filtres avec compteurs, « Afficher plus », journal de 8 entrées.
-4. Construire le panel admin complet : vue d'ensemble, utilisateurs, demandes, courtiers, courriers, réponses entrantes, contacts, système et journal d'audit. Il n'existe pas encore de test admin dédié (`scripts/admin.test.mjs` est à créer).
-5. Vérifier les tests (`npm test`) et un parcours navigateur Playwright à 1280 et 390 px, sans erreur console.
-6. Mettre à jour le README (panel admin, sécurité, tests) puis commiter et pousser.
+Pistes suivantes (non commencées) :
+- Scripts Playwright versionnés dans le dépôt (les vérifications navigateur ont été faites hors dépôt).
+- Typographie des textes produits par le serveur (erreurs d’API, journal, courriers) : espaces ordinaires avant « : » et quelques apostrophes droites (ex. `routes.js`, message de l’offre Individuel). Le client corrige l’affichage du journal et des messages de l’administration avec `typo()`, pas le contenu des courriers.
+- Authentification à deux facteurs pour les administrateurs.
 
 ## Pièges connus
 
