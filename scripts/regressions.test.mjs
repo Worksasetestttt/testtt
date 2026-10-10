@@ -290,6 +290,33 @@ try {
   }
   step('revérification d’un site ajouté : le nouveau courrier cite toujours l’adresse de la fiche');
 
+  /* ---------- 9. « Renvoyer » (administration) : compteur d'échecs et recul remis à zéro ---------- */
+  // Le renvoi gardait attempts et next_attempt_at : une demande en erreur repassait en erreur au premier échec, et une
+  // demande en recul attendait la fin du recul au lieu de partir.
+  {
+    const M = await member(S);
+    await settle(S);
+    const [x1] = db.prepare(`SELECT id FROM requests WHERE user_id = ? AND status = 'sent' LIMIT 1`).all(M.id);
+    db.prepare(`UPDATE requests SET attempts = 3, next_attempt_at = ?, last_error = 'Délai d’envoi dépassé.' WHERE id = ?`).run(new Date(Date.now() + 3600000).toISOString(), x1.id);
+    let r = await S.call('POST', `/admin/requests/${x1.id}/resend`, {}, ADM); assert.equal(r.status, 200);
+    await S.call('POST', '/admin/tick', {}, ADM);
+    assert.equal(reqRow(x1.id).status, 'sent', 'renvoyée tout de suite'); assert.equal(mailsOf(x1.id, 'Demande%').length, 2);
+    // SMTP fermé : une demande en erreur renvoyée a de nouveau droit à tous ses essais.
+    const SM = await start('smtp-closed', { SMTP_URL: 'smtp://127.0.0.1:9', ALLOW_UNVERIFIED_CONTACTS: 'true', MAIL_TIMEOUT_MS: '1000' });
+    const SMA = await adminOf(SM);
+    const N = await member(SM);
+    await settle(SM);
+    const sdb = SM.sql();
+    const e1 = sdb.prepare(`SELECT id FROM requests WHERE user_id = ? LIMIT 1`).get(N.id);
+    sdb.prepare(`UPDATE requests SET status = 'error', attempts = 6, next_attempt_at = NULL, last_error = 'refus SMTP' WHERE id = ?`).run(e1.id);
+    r = await SM.call('POST', `/admin/requests/${e1.id}/resend`, {}, SMA); assert.equal(r.status, 200);
+    await SM.call('POST', '/admin/tick', {}, SMA);
+    const row = sdb.prepare('SELECT status, attempts FROM requests WHERE id = ?').get(e1.id);
+    assert.equal(row.status, 'queued', 'un échec après renvoi ne repasse pas aussitôt en erreur'); assert.equal(row.attempts, 1);
+    sdb.close(); await SM.stop();
+  }
+  step('renvoi par l’administration : départ immédiat malgré un recul en cours, essais remis à zéro après une erreur');
+
   console.log(`✔ Régressions validées (${passed} groupes de vérifications).`);
 } catch (e) {
   console.error('✘ Échec :', e.message);

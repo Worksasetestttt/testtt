@@ -459,7 +459,9 @@ admin.post('/requests/:id/outcome', wrap(async (req, res) => {
 admin.post('/requests/:id/resend', (req, res) => {
   const r = getRequest(req.params.id);
   if (!r) return bad(res, 'Demande introuvable.', 404);
-  q.run(`UPDATE requests SET status = 'queued', sent_at = NULL, due_at = NULL, followup_sent_at = NULL, completed_at = NULL, next_check_at = NULL, note = ? WHERE id = ?`, 'Nouvel envoi demandé par l’équipe Oubli.', r.id);
+  // Nouvel envoi immédiat : compteur d'échecs et recul remis à zéro (sinon une demande en erreur y retombe au premier
+  // échec, et une demande en recul attend la fin du délai).
+  q.run(`UPDATE requests SET status = 'queued', sent_at = NULL, due_at = NULL, followup_sent_at = NULL, completed_at = NULL, next_check_at = NULL, attempts = 0, next_attempt_at = NULL, last_error = NULL, note = ? WHERE id = ?`, 'Nouvel envoi demandé par l’équipe Oubli.', r.id);
   logEvent(r.user_id, 'queued', `Nouvel envoi programmé vers ${q.get('SELECT name FROM brokers WHERE id = ?', r.broker_id)?.name || 'le courtier'} (cycle ${r.cycle}).`, { profile_id: r.profile_id, request_id: r.id });
   audit(req, 'request.resend', r.id, { token: r.token, from: r.status });
   setTimeout(() => tick(), 10);
