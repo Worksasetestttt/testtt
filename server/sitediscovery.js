@@ -128,12 +128,14 @@ export function safeFetch(url, { timeoutMs = 6000, maxBytes = 600000, redirects 
 }
 
 /* ---------- Extraction ---------- */
+// Le HTML vient d'un site choisi par l'abonné (600 Ko au plus) et le serveur est mono-processus : aucune expression ne doit
+// avoir un coût quadratique (répétitions non bornées suivies d'un échec). Les espaces autour de [at] sont donc bornés.
 const ENTITIES = { '&#64;': '@', '&#x40;': '@', '&commat;': '@', '&#46;': '.', '&#x2e;': '.', '&period;': '.', '&amp;': '&', '&nbsp;': ' ' };
 function deobfuscate(html) {
   return String(html || '')
     .replace(/&#(?:64|x40);|&commat;|&#(?:46|x2e);|&period;|&amp;|&nbsp;/gi, (m) => ENTITIES[m.toLowerCase()] || m)
-    .replace(/\s*[[(]\s*(?:at|arobase)\s*[\])]\s*/gi, '@')
-    .replace(/\s*[[(]\s*(?:dot|point)\s*[\])]\s*/gi, '.');
+    .replace(/\s{0,20}[[(]\s{0,20}(?:at|arobase)\s{0,20}[\])]\s{0,20}/gi, '@')
+    .replace(/\s{0,20}[[(]\s{0,20}(?:dot|point)\s{0,20}[\])]\s{0,20}/gi, '.');
 }
 const PREFERRED = [/^(dpo|rgpd|gdpr|privacy|privacidad|privacidade|datenschutz|dataprotection|data-protection|data\.protection|protection-?donnees|donnees(-?personnelles)?|cnil|vie-?privee|confidentialite)\b/, /^(legal|juridique|compliance|conformite)\b/, /^(contact|support|service-?client|serviceclient|hello|bonjour|info|infos|help|aide)\b/];
 const IGNORE = /^(no-?reply|ne-?pas-?repondre|donotreply|mailer-daemon|postmaster|abuse|webmaster|example|exemple|nom|name|prenom|votre|your|email|e-mail|test|john\.doe|jean\.dupont)\b/;
@@ -155,15 +157,23 @@ export function extractContacts(html, domain) {
   return [...found.entries()].sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0])).map(([e, score]) => ({ email: e, score }));
 }
 // Liens internes qui mènent aux pages utiles (mentions légales, confidentialité, contact).
+// Lecture balise par balise (chaque caractère n'est parcouru qu'une fois) : une expression unique sur toute la page
+// avait un coût quadratique, voire cubique, sur des balises <a jamais fermées.
 export function legalLinks(html, base) {
-  const out = [];
-  const re = /<a\b[^>]*href\s*=\s*["']([^"'#]+)["'][^>]*>([\s\S]{0,200}?)<\/a>/gi;
+  const out = [], s = String(html || ''), open = /<a\b/gi;
   let m;
-  while ((m = re.exec(String(html || ''))) && out.length < 12) {
-    const label = `${m[1]} ${m[2].replace(/<[^>]+>/g, ' ')}`.toLowerCase();
+  while ((m = open.exec(s)) && out.length < 12) {
+    const end = s.indexOf('>', m.index);
+    if (end < 0) break;
+    open.lastIndex = end + 1;
+    let href = null;                                                                       // dernier href de la balise
+    for (const h of s.slice(m.index, end).matchAll(/href\s*=\s*["']([^"'#]+)["']/gi)) href = h[1];
+    const after = s.slice(end + 1, end + 205), close = after.search(/<\/a>/i);
+    if (!href || close < 0 || close > 200) continue;
+    const label = `${href} ${after.slice(0, close).replace(/<[^>]+>/g, ' ')}`.toLowerCase();
     if (!/(confidentialit|privacy|mentions|l[ée]gal|rgpd|gdpr|donn[ée]es|cookies|contact|dpo)/.test(label)) continue;
     try {
-      const u = new URL(m[1], base);
+      const u = new URL(href, base);
       if (u.hostname.replace(/^www\d?\./, '') === new URL(base).hostname.replace(/^www\d?\./, '') && !out.includes(u.href)) out.push(u.href);
     } catch { /* lien ignoré */ }
   }
@@ -183,7 +193,7 @@ export async function discoverContact(host, { fetchPage = safeFetch, budgetMs = 
     let page;
     try { page = await fetchPage(url, { timeoutMs: Math.max(1000, Math.min(6000, deadline - Date.now())) }); } catch { if (pages === 1) queue.push(`http://${host}/`); continue; }
     if (!page || !page.html) continue;
-    if (title === null) { const t = page.html.match(/<title[^>]*>([^<]{1,200})<\/title>/i); title = t ? t[1].replace(/\s+/g, ' ').trim().slice(0, 80) : ''; }
+    if (title === null) { const t = page.html.match(/<title[^>]{0,200}>([^<]{1,200})<\/title>/i); title = t ? t[1].replace(/\s+/g, ' ').trim().slice(0, 80) : ''; }
     const c = extractContacts(page.html, domain)[0];
     if (c && (!best || c.score < best.score)) best = { ...c, page: page.url || url };
     if (best && best.score < 10) break;                                                // adresse DPO / confidentialité : inutile d'aller plus loin
