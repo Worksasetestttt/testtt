@@ -71,19 +71,31 @@ function isPublicV4(ip) {
   if (a === 203 && b === 0 && c === 113) return false;                               // 203.0.113/24
   return true;
 }
+// Adresse IPv6 déjà validée par net.isIP → 8 mots de 16 bits (forme compressée « :: », IPv4 finale et zone %eth0 acceptées).
+function v6words(ip) {
+  let s = ip.toLowerCase().replace(/%.*$/, '');
+  const tail = s.match(/(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (tail) { const [a, b, c, d] = tail.slice(1).map(Number); s = `${s.slice(0, tail.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`; }
+  const [head, rest] = s.split('::');
+  const h = head ? head.split(':') : [], t = rest ? rest.split(':') : [];
+  return (rest === undefined ? h : [...h, ...Array(8 - h.length - t.length).fill('0'), ...t]).map((x) => parseInt(x, 16));
+}
+// Les règles portent sur la valeur de l'adresse, pas sur son écriture : dns.lookup rend par exemple une adresse NAT64
+// en hexadécimal (64:ff9b::a9fe:a9fe = 169.254.169.254), qu'une passerelle NAT64 joint dans un réseau IPv6 seul.
 export function isPublicIp(ip) {
   const kind = net.isIP(String(ip || ''));
   if (kind === 4) return isPublicV4(ip);
   if (kind !== 6) return false;
-  const s = ip.toLowerCase();
-  const mapped = s.match(/^(?:::ffff:|::|64:ff9b::)(\d+\.\d+\.\d+\.\d+)$/);        // IPv4 encapsulée
-  if (mapped) return isPublicV4(mapped[1]);
-  if (s === '::' || s === '::1') return false;
-  const head = parseInt(s.split(':')[0] || '0', 16);
-  if ((head & 0xfe00) === 0xfc00) return false;                                      // fc00::/7 (adresses uniques locales)
-  if ((head & 0xffc0) === 0xfe80) return false;                                      // fe80::/10 (lien local)
-  if ((head & 0xff00) === 0xff00) return false;                                      // ff00::/8 (multicast)
-  if (s.startsWith('2001:db8:') || s.startsWith('2001:0db8:')) return false;         // documentation
+  const w = v6words(String(ip));
+  const v4at = (i) => `${w[i] >> 8}.${w[i] & 255}.${w[i + 1] >> 8}.${w[i + 1] & 255}`;
+  const zeros = (from, to) => w.slice(from, to).every((x) => x === 0);
+  if (zeros(0, 5) && (w[5] === 0 || w[5] === 0xffff)) return isPublicV4(v4at(6));     // ::a.b.c.d, ::ffff:a.b.c.d (::, ::1 compris)
+  if (zeros(0, 4) && w[4] === 0xffff && w[5] === 0) return isPublicV4(v4at(6));       // ::ffff:0:a.b.c.d (IPv4 traduite)
+  if (w[0] === 0x64 && w[1] === 0xff9b && zeros(2, 6)) return isPublicV4(v4at(6));    // 64:ff9b::/96 (NAT64)
+  if (w[0] === 0x2002) return isPublicV4(v4at(1));                                    // 2002::/16 (6to4)
+  if ((w[0] & 0xe000) !== 0x2000) return false;                                        // hors 2000::/3 : fc00::/7, fe80::/10, ff00::/8, réservé…
+  if (w[0] === 0x2001 && (w[1] < 0x200 || w[1] === 0xdb8)) return false;              // 2001::/23 (Teredo, ORCHID…), 2001:db8::/32
+  if (w[0] === 0x3fff && w[1] < 0x1000) return false;                                  // 3fff::/20 (documentation)
   return true;
 }
 // Résolution vérifiée, compatible avec l'option « all » de net.connect (sélection automatique de famille).

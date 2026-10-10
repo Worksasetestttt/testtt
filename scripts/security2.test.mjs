@@ -1,12 +1,12 @@
 // Tests de sécurité, seconde série (audit) : découverte des sites ajoutés (expressions à coût quadratique, durée totale
-// d'une lecture).
+// d'une lecture, adresses IPv6 qui encapsulent une IPv4 privée).
 // Les groupes réseau démarrent leurs propres serveurs sur des ports libres, avec une base et une boîte d'envoi temporaires.
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
-import { discoverContact, safeFetch } from '../server/sitediscovery.js';
+import { discoverContact, isPublicIp, safeFetch } from '../server/sitediscovery.js';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'oubli-sec2-'));
 const servers = [];
@@ -61,6 +61,14 @@ try {
     assert.equal(fast.html, '<title>Rapide</title>', 'une réponse rapide est lue normalement');
   } finally { clearTimeout(guard); http.request = realRequest; slow.closeAllConnections(); slow.close(); }
   step('découverte : une réponse au goutte-à-goutte est coupée à la durée totale prévue');
+
+  /* ---------- 3. Garde réseau : IPv4 encapsulées dans IPv6, quelle que soit leur écriture ---------- */
+  // dns.lookup rend une adresse NAT64 (64:ff9b::/96) en hexadécimal : 64:ff9b::a9fe:a9fe est 169.254.169.254, joignable
+  // par la passerelle NAT64 d'un réseau IPv6 seul. Les autres écritures de l'IPv4 encapsulée sont refusées de même.
+  for (const ip of ['64:ff9b::7f00:1', '64:ff9b::a9fe:a9fe', '64:ff9b::a00:1', '64:ff9b:1::a00:1', '::ffff:7f00:1', '::7f00:1', '0:0:0:0:0:ffff:7f00:1', '::ffff:0:7f00:1',
+    '::ffff:a9fe:a9fe', '2002:7f00:1::1', '2002:a9fe:a9fe::1', '2001:0:4136:e378:8000:63bf:3fff:fdd2', 'fec0::1', '100::1', 'fe80::1%eth0', '::ffff:0:0']) assert.equal(isPublicIp(ip), false, ip);
+  for (const ip of ['64:ff9b::808:808', '64:ff9b::8.8.8.8', '2002:808:808::1', '2001:4860:4860::8888', '2a00:1450:4007::1', '2606:4700:4700::1111', '::ffff:8.8.8.8', '8.8.8.8']) assert.equal(isPublicIp(ip), true, ip);
+  step('garde réseau : NAT64, IPv4 mappée ou traduite en hexadécimal, 6to4, Teredo, plages réservées refusées');
 
   for (const s of servers) assert.ok(!/TypeError|RangeError|→ 500/.test(s.err), `erreurs serveur :\n${s.err}`);
   console.log(`✔ Sécurité (seconde série) validée (${passed} groupes de vérifications).`);
