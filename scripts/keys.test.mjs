@@ -345,7 +345,13 @@ try {
   assert.equal(r.data.key_redemptions.length, 3); assert.ok(r.data.key_redemptions.every((x) => /^[0-9A-HJKMNP-TV-Z]{4}$/.test(x.hint) && !('key_hash' in x)));
   r = await admin.call('POST', `/admin/users/${lea.id}/subscription`, { status: 'active', plan: 'famille', ends_at: '' });
   assert.deepEqual([r.data.user.billing_mode, r.data.user.subscription_ends_at], ['manual', null], 'sans date : abonnement sans limite de l’équipe');
-  step('administration : filtres et compteurs, pagination, recherche, lot, révocation (409, 404), audit, revenu hors clés, fiche, export');
+  // Compte supprimé : l'activation reste comptée, sans l'adresse (anonymisée) du compte.
+  const winner = racers[results.findIndex((x) => x.status === 200)];
+  assert.equal((await winner.call('DELETE', '/account', { password: STRONG })).status, 200);
+  r = await admin.call('GET', `/admin/keys?q=${KC.hint}`);
+  const kcRow = r.data.keys.find((k) => k.id === KC.id);
+  assert.equal(kcRow.uses, 1); assert.deepEqual([kcRow.redemptions[0].deleted, kcRow.redemptions[0].email], [true, null]);
+  step('administration : filtres et compteurs, pagination, recherche, lot, révocation (409, 404), audit, revenu hors clés, fiche, export, compte supprimé');
 
   /* ---------- 16. Ni la console du serveur, ni les courriers, ni la base ne contiennent de clé ---------- */
   const mails = fs.existsSync(OUTBOX) ? fs.readdirSync(OUTBOX).map((f) => fs.readFileSync(path.join(OUTBOX, f), 'utf8')).join('\n') : '';
