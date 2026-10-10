@@ -79,6 +79,7 @@ async function sendQueued() {
   const rows = q.all(`SELECT * FROM requests WHERE status = 'queued' AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ORDER BY created_at LIMIT ?`, t, BATCH);
   let sent = 0;
   for (const r of rows) {
+    beat = Date.now();
     try {
       // Relecture avant chaque envoi : une demande abandonnée (mandat révoqué, profil supprimé) pendant le passage n’est pas traitée.
       if (q.get('SELECT status FROM requests WHERE id = ?', r.id)?.status !== 'queued') continue;
@@ -104,6 +105,7 @@ async function followUps() {
   const t = now();
   const rows = q.all(`SELECT * FROM requests WHERE status IN ('sent', 'in_progress') AND followup_sent_at IS NULL AND due_at IS NOT NULL AND due_at <= ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ORDER BY due_at LIMIT ?`, t, t, BATCH);
   for (const r of rows) {
+    beat = Date.now();
     try {
       const user = q.get('SELECT * FROM users WHERE id = ?', r.user_id);
       const profile = q.get('SELECT * FROM profiles WHERE id = ?', r.profile_id);
@@ -192,22 +194,29 @@ function autoLaunch() {
 
 // Un seul passage à la fois : un tick demandé pendant un passage en cours est fusionné (un nouveau passage suit).
 let inflight = null, again = false, lastTick = null;
+// Signe de vie (ms) : début et fin de passage, et chaque demande traitée ; un long passage qui avance reste « vivant ».
+let beat = null, every = null, startedAt = null;
 // Date (ISO) de la fin du dernier passage, affichée dans l’administration.
 export const lastTickAt = () => lastTick;
+// État lu par /api/health (health.js) : un planificateur sans signe de vie depuis trois intervalles est figé.
+export const schedulerState = () => ({ startedAt, intervalMs: every, lastTickAt: lastTick, lastBeatAt: beat, running: !!inflight });
 export function tick() {
   if (inflight) { again = true; return inflight; }
   inflight = (async () => {
     do {
       again = false;
+      beat = Date.now();
       try { autoLaunch(); await sendQueued(); await followUps(); rechecks(); if (DEMO) await simulateReplies(); }
       catch (e) { console.error('[scheduler]', e); }
       lastTick = now();
+      beat = Date.now();
     } while (again);
   })().finally(() => { inflight = null; });
   return inflight;
 }
 export function startScheduler() {
-  const every = Math.max(1000, Number(process.env.SCHEDULER_INTERVAL_MS) || (DEMO ? 20000 : 60000));
+  every = Math.max(1000, Number(process.env.SCHEDULER_INTERVAL_MS) || (DEMO ? 20000 : 60000));
+  startedAt = Date.now();
   setTimeout(tick, 1500);
   const h = setInterval(tick, every); h.unref();
   console.log(`[scheduler] actif toutes les ${every / 1000} s · courrier : ${mailMode} · démo : ${DEMO ? 'oui' : 'non'} · réponses attendues sur ${REPLY_TO}`);

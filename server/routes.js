@@ -3,7 +3,7 @@
 // les points sensibles sont limités en débit, et aucune donnée interne (haché, identifiants Stripe, sessions) ne sort.
 import express from 'express';
 import crypto from 'node:crypto';
-import { q, now, logEvent, db } from './db.js';
+import { q, now, logEvent, db, dbPing } from './db.js';
 import {
   hashPassword, verifyPassword, verifyDecoy, passwordProblem, createSession, destroySession, destroyOtherSessions,
   requireAuth, requireAdmin, rateLimit, isAdminEmail, promoteIfAdmin, loginLockRemaining, noteLoginFailure, clearLoginFailures, fmtWait,
@@ -12,11 +12,12 @@ import {
 import { sendMail, mailMode } from './mailer.js';
 import { welcomeMail, mandateText, complaintDraft, MANDATE_VERSION } from './templates.js';
 import { PLANS, BILLING_PERIODS, billingMode, startCheckout, cancelSubscription, verifyStripeSignature, handleStripeEvent } from './billing.js';
-import { launchProfile, applyOutcome, tick, ref, DEMO } from './scheduler.js';
+import { launchProfile, applyOutcome, tick, ref, DEMO, schedulerState } from './scheduler.js';
 import { EMAIL, publicUser, parseProfile, wrap, isId, str, strList, oneOf } from './util.js';
 import { buildDashboard, exportData, complaintReady } from './dashboard.js';
 import { addSite, relaunchRequest } from './sites.js';
 import { admin, auditAs, currentAnnouncement, toCsv } from './admin.js';
+import { evaluateHealth } from './health.js';
 import { sendJsonConditional } from './compress.js';
 
 export const api = express.Router();
@@ -28,7 +29,11 @@ const COUNTRY = /^[A-Z]{2}$/;
 const tooMany = (res, seconds) => { res.setHeader('Retry-After', String(seconds)); return bad(res, `Trop de tentatives. Réessayez dans ${fmtWait(seconds)}.`, 429); };
 const isoDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v) && new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10) === v;
 
-api.get('/health', (_req, res) => res.json({ ok: true, mail: mailMode, billing: billingMode, demo: DEMO, time: now() }));
+// Santé profonde (health.js) : 200, ou 503 si la base ne répond pas, si le planificateur est figé ou pendant l'arrêt.
+api.get('/health', (_req, res) => {
+  const h = evaluateHealth({ db: dbPing(), scheduler: schedulerState() });
+  res.status(h.ok ? 200 : 503).json({ ok: h.ok, mail: mailMode, billing: billingMode, demo: DEMO, time: now(), checks: h.checks });
+});
 api.get('/config', (_req, res) => res.json({ plans: PLANS, billing: billingMode, mail: mailMode, demo: DEMO, mandate_version: MANDATE_VERSION, brokers: q.get('SELECT COUNT(*) AS c FROM brokers WHERE active = 1 AND custom = 0').c, announcement: currentAnnouncement() }));
 
 /* ---------- Authentification ---------- */
