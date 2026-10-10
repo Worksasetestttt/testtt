@@ -158,7 +158,13 @@ api.post('/mandate', requireAuth, (req, res) => {
   if (name.toLowerCase().replace(/\s+/g, ' ') !== expected) return bad(res, `Tapez exactement « ${p.first_name} ${p.last_name} » pour signer.`);
   q.run('UPDATE users SET mandate_signed_at = ?, mandate_name = ?, mandate_ip = ?, mandate_version = ?, mandate_revoked_at = NULL WHERE id = ?', now(), name, String(req.ip || '').slice(0, 64), MANDATE_VERSION, u.id);
   logEvent(u.id, 'mandate', `Mandat de représentation signé électroniquement (version ${MANDATE_VERSION}).`);
-  res.json({ ok: true, signed_at: now() });
+  // Re-signature : les demandes arrêtées par la révocation repartent dans un nouveau cycle, sans attendre le client
+  // (sans effet tant que l'abonnement n'est pas en cours ; idempotent sinon).
+  const signed = fresh(req);
+  let relaunched = 0;
+  for (const p of q.all('SELECT * FROM profiles WHERE user_id = ?', u.id)) relaunched += launchProfile(signed, p).created;
+  if (relaunched) setTimeout(() => tick(), 10);
+  res.json({ ok: true, signed_at: signed.mandate_signed_at, relaunched });
 });
 api.delete('/mandate', requireAuth, (req, res) => {
   q.run('UPDATE users SET mandate_revoked_at = ? WHERE id = ?', now(), req.user.id);

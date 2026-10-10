@@ -38,28 +38,31 @@ const canMail = (b) => !!b && b.active === 1 && !(b.custom === 1 && b.discovery_
   && (mailMode !== 'smtp' || b.contact_verified === 1 || ALLOW_UNVERIFIED || (AUTO_SITE && b.custom === 1 && b.contact_source === 'site'));
 const backoffDate = (attempts) => new Date(Date.now() + Math.min(24 * 60, 2 ** attempts) * 60000).toISOString(); // 2, 4, 8… min, plafond 24 h
 const errMsg = (e) => String(e?.message || e).slice(0, 300);
-const insertRequest = (user_id, profile_id, broker_id, cycle) =>
-  q.run(`INSERT INTO requests (id, user_id, profile_id, broker_id, cycle, status, token, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)`, crypto.randomUUID(), user_id, profile_id, broker_id, cycle, newToken(), now());
+// source_url : adresse de la fiche signalée par l'abonné, reprise d'un cycle à l'autre (citée dans le courrier).
+const insertRequest = (user_id, profile_id, broker_id, cycle, source_url = null) =>
+  q.run(`INSERT INTO requests (id, user_id, profile_id, broker_id, cycle, status, token, created_at, source_url) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?)`, crypto.randomUUID(), user_id, profile_id, broker_id, cycle, newToken(), now(), source_url);
+const revokedStop = (r) => r.status === 'refused' && /^Mandat révoqué/.test(r.note || '');
 
 // Crée (si besoin) les demandes d’un profil complet. Idempotent : un courtier qui a déjà une demande vivante n’en reçoit
-// pas de seconde ; une demande abandonnée par révocation du mandat est relancée dans un nouveau cycle (après re-signature).
+// pas de seconde ; une demande abandonnée par révocation du mandat est relancée dans un nouveau cycle (après re-signature),
+// y compris pour un site que l'abonné avait ajouté (les autres sites ajoutés ne concernent que leurs propres profils).
 export function launchProfile(user, profile) {
   if (!isEligible(user)) return { created: 0, reason: 'Mandat non signé ou abonnement inactif.' };
   if (!profile || profile.user_id !== user.id) return { created: 0, reason: 'Profil introuvable.' };
   if (!profile.first_name || !profile.last_name) return { created: 0, reason: 'Profil incomplet.' };
-  const brokers = q.all('SELECT id FROM brokers WHERE active = 1 AND custom = 0 ORDER BY id');   // registre seulement
+  const brokers = q.all('SELECT id, custom FROM brokers WHERE active = 1 AND (custom = 0 OR id IN (SELECT broker_id FROM requests WHERE profile_id = ?)) ORDER BY id', profile.id);
   const latest = new Map();
-  for (const r of q.all('SELECT broker_id, cycle, status, note FROM requests WHERE profile_id = ? ORDER BY cycle, created_at', profile.id)) latest.set(r.broker_id, r);
+  for (const r of q.all('SELECT broker_id, cycle, status, note, source_url FROM requests WHERE profile_id = ? ORDER BY cycle, created_at', profile.id)) latest.set(r.broker_id, r);
   let created = 0;
   tx(() => {
     for (const b of brokers) {
       const last = latest.get(b.id);
-      if (last && !(last.status === 'refused' && /^Mandat révoqué/.test(last.note || ''))) continue;
-      insertRequest(user.id, profile.id, b.id, last ? last.cycle + 1 : 1);
+      if (last ? !revokedStop(last) : b.custom) continue;
+      insertRequest(user.id, profile.id, b.id, last ? last.cycle + 1 : 1, last?.source_url || null);
       created += 1;
     }
   });
-  if (created) logEvent(user.id, 'launch', `${created} demandes préparées pour ${profile.first_name} ${profile.last_name} (${brokers.length} courtiers surveillés).`, { profile_id: profile.id });
+  if (created) logEvent(user.id, 'launch', `${created} demandes préparées pour ${profile.first_name} ${profile.last_name} (${brokers.filter((b) => !b.custom).length} courtiers surveillés).`, { profile_id: profile.id });
   return { created };
 }
 

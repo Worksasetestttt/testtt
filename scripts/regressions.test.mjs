@@ -45,7 +45,8 @@ async function start(name, extra = {}, { cwd = ROOT, db } = {}) {
   return s;
 }
 let seq = 0;
-// Abonné complet : profil, mandat, abonnement (simulé), demandes lancées.
+// Abonné complet : profil, mandat, abonnement activé par l'administration (sans passer par /billing/checkout, limité à
+// 10 appels par quart d'heure et par adresse), demandes lancées.
 async function member(s, { plan = 'individuel', subscribe = true, launch = true, first = 'Léa', last = 'Moreau' } = {}) {
   const email = `abonne${++seq}@exemple.fr`;
   const r = await s.call('POST', '/auth/signup', { email, password: STRONG, plan });
@@ -54,14 +55,20 @@ async function member(s, { plan = 'individuel', subscribe = true, launch = true,
   const me = await s.call('GET', '/me', undefined, cookie);
   await s.call('PUT', `/profiles/${me.data.profiles[0].id}`, { first_name: first, last_name: last }, cookie);
   await s.call('POST', '/mandate', { full_name: `${first} ${last}`, accepted: true }, cookie);
-  if (subscribe) await s.call('POST', '/billing/checkout', { plan }, cookie);
-  if (subscribe && launch) await s.call('POST', '/requests/launch', {}, cookie);
+  if (subscribe) assert.equal((await s.call('POST', `/admin/users/${me.data.user.id}/subscription`, { status: 'active', plan, billing: 'monthly' }, await adminOf(s))).status, 200);
+  if (subscribe && launch) assert.ok((await s.call('POST', '/requests/launch', {}, cookie)).data.created > 0, 'demandes lancées');
   return { cookie, id: me.data.user.id, email, pid: me.data.profiles[0].id };
 }
+// Laisse partir les passages programmés (setTimeout de 10 ms après un lancement ou un ajout de site) : un passage qui
+// envoie beaucoup de courriers en boîte d'envoi locale occupe le serveur et peut retarder ces minuteurs au-delà d'un
+// passage manuel. Deux passages espacés garantissent qu'aucun ne reste en attente avant que le test ne modifie la base.
+async function settle(s) { for (let i = 0; i < 2; i++) { await wait(60); await s.call('POST', '/admin/tick', {}, await adminOf(s)); } }
 async function adminOf(s) {
+  if (s.admin) return s.admin;
   let r = await s.call('POST', '/auth/login', { email: 'admin@test.fr', password: STRONG });
   if (r.status !== 200) r = await s.call('POST', '/auth/signup', { email: 'admin@test.fr', password: STRONG });
-  return r.cookie;
+  s.admin = r.cookie;
+  return s.admin;
 }
 // Événement Stripe signé (STRIPE_WEBHOOK_SECRET du serveur de test).
 async function stripeEvent(s, type, object, id = `evt_${crypto.randomBytes(8).toString('hex')}`) {
@@ -102,7 +109,7 @@ try {
   // cité contiennent « effacement », « supprimer » : toute réponse était lue comme une confirmation d'effacement.
   {
     const A = await member(S);
-    await S.call('POST', '/admin/tick', {}, ADM);
+    await settle(S);
     const sent = db.prepare(`SELECT id, token FROM requests WHERE user_id = ? AND status = 'sent' ORDER BY created_at`).all(A.id);
     const subject = (r) => mailsOf(r.id)[0].subject;
     const quoteFr = '\n\nLe 3 oct. 2026 à 10:00, Oubli <demandes@oubli.example> a écrit :\n> 2. de supprimer l’ensemble de ces données (article 17 du RGPD, « droit à l’effacement ») ;\n> Identité de la personne concernée :';
@@ -136,7 +143,7 @@ try {
   // perdue, relance envoyée au courtier qui avait effacé) ; « en cours » sur une demande en file la bloquait à jamais.
   {
     const A = await member(S);
-    await S.call('POST', '/admin/tick', {}, ADM);
+    await settle(S);
     const [d1, d2, d3] = db.prepare(`SELECT id, token FROM requests WHERE user_id = ? AND status = 'sent' ORDER BY created_at LIMIT 3`).all(A.id);
     await S.call('POST', `/admin/requests/${d1.id}/outcome`, { outcome: 'done', note: 'confirmé' }, ADM);
     const check = reqRow(d1.id).next_check_at;
@@ -152,17 +159,18 @@ try {
     r = await S.call('POST', `/admin/requests/${d3.id}/outcome`, { outcome: 'in_progress' }, ADM);
     assert.equal(r.status, 200, 'accusé de réception sur une demande envoyée : appliqué'); assert.equal(reqRow(d3.id).status, 'in_progress');
     // Demande jamais envoyée : « en cours » ou « vérification » n'ont pas de sens et la bloqueraient.
-    const B = await member(S, { launch: false });
-    await S.call('POST', '/requests/launch', {}, B.cookie);
+    const B = await member(S);
+    await settle(S);
     const q1 = db.prepare(`SELECT id FROM requests WHERE user_id = ? ORDER BY created_at LIMIT 1`).get(B.id);
-    db.prepare(`UPDATE requests SET status = 'queued', sent_at = NULL, due_at = NULL WHERE id = ?`).run(q1.id);
+    db.prepare(`UPDATE requests SET status = 'queued', sent_at = NULL, due_at = NULL WHERE id = ?`).run(q1.id);   // pas encore partie
+    const before = mailsOf(q1.id).length;
     r = await S.call('POST', `/admin/requests/${q1.id}/outcome`, { outcome: 'in_progress' }, ADM);
     assert.equal(r.status, 409, 'refusé avec explication'); assert.ok(r.data.error);
     r = await S.call('POST', '/admin/requests/bulk', { ids: [q1.id, d3.id], outcome: 'action_required' }, ADM);
     assert.equal(r.data.updated, 1); assert.equal(r.data.ignored.length, 1);
     assert.equal(reqRow(q1.id).status, 'queued');
     await S.call('POST', '/admin/tick', {}, ADM);
-    assert.equal(reqRow(q1.id).status, 'sent', 'la demande part normalement'); assert.equal(mailsOf(q1.id).length, 1);
+    assert.equal(reqRow(q1.id).status, 'sent', 'la demande part normalement'); assert.equal(mailsOf(q1.id).length, before + 1);
   }
   step('réponse tardive ou sans objet : un accusé ne rouvre ni un effacement ni un refus, « en cours » refusé sur une demande non envoyée');
 
@@ -239,6 +247,33 @@ try {
     assert.equal(r.status, 502); assert.equal(ST.sql().prepare('SELECT deleted_at FROM users WHERE id = ?').get(T.data.user.id).deleted_at, null);
   }
   step('suppression : abonnement en attente de paiement résilié ; échec de la résiliation Stripe → rien n’est supprimé (502)');
+
+  /* ---------- 7. Mandat re-signé : les demandes arrêtées par la révocation repartent ---------- */
+  // La re-signature ne relançait rien côté serveur (seul le client appelait /requests/launch, et seulement avec un
+  // abonnement « actif ») et les sites ajoutés par l'abonné restaient « refusés » pour toujours.
+  {
+    const M = await member(S);
+    const site = await S.call('POST', '/sites', { url: 'https://annuaire-perso.fr/fiche/lea-moreau' }, M.cookie);
+    assert.equal(site.status, 201);
+    await settle(S);
+    const stopped = db.prepare('SELECT id, broker_id FROM requests WHERE user_id = ? ORDER BY created_at LIMIT 4').all(M.id).concat([{ id: site.data.request_id, broker_id: site.data.broker.id }]);
+    for (const x of stopped) db.prepare(`UPDATE requests SET status = 'queued', sent_at = NULL, due_at = NULL WHERE id = ?`).run(x.id);
+    await S.call('DELETE', '/mandate', undefined, M.cookie);
+    for (const x of stopped) { const r = reqRow(x.id); assert.equal(r.status, 'refused'); assert.match(r.note, /^Mandat révoqué/); }
+    // Abonnement résilié mais payé jusqu'à une date future : toujours éligible, mais le client ne relance pas.
+    await S.call('POST', `/admin/users/${M.id}/subscription`, { status: 'canceled', ends_at: new Date(Date.now() + 10 * 86400000).toISOString() }, ADM);
+    const r = await S.call('POST', '/mandate', { full_name: 'Léa Moreau', accepted: true }, M.cookie);
+    assert.equal(r.status, 200);
+    await S.call('POST', '/admin/tick', {}, ADM);
+    for (const x of stopped) {
+      const next = db.prepare('SELECT status, cycle, source_url FROM requests WHERE profile_id = ? AND broker_id = ? ORDER BY cycle DESC LIMIT 1').get(M.pid, x.broker_id);
+      assert.equal(next.cycle, 2, 'nouveau cycle après re-signature'); assert.equal(next.status, 'sent');
+    }
+    const relaunchedSite = db.prepare('SELECT id, source_url FROM requests WHERE profile_id = ? AND broker_id = ? AND cycle = 2').get(M.pid, site.data.broker.id);
+    assert.equal(relaunchedSite.source_url, 'https://annuaire-perso.fr/fiche/lea-moreau', 'la fiche signalée reste citée');
+    assert.match(mailsOf(relaunchedSite.id)[0].body, /annuaire-perso\.fr\/fiche\/lea-moreau/);
+  }
+  step('mandat re-signé : nouveau cycle pour les demandes arrêtées, sites ajoutés compris (fiche citée), sans dépendre du client');
 
   console.log(`✔ Régressions validées (${passed} groupes de vérifications).`);
 } catch (e) {
