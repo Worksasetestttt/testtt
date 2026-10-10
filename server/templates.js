@@ -40,7 +40,7 @@ export function removalRequest({ profile, broker, user, ref, mandateDate, url = 
   const basisFr = rgpd ? (uk ? 'art. 17 UK GDPR' : 'art. 17 RGPD') : 'CCPA';
   const subject = `Demande d’effacement de données personnelles — ${basisFr} [${ref}]`;
 
-  const fr = `Madame, Monsieur,
+  const fr = frTypo(`Madame, Monsieur,
 
 Au nom et pour le compte de la personne identifiée ci-dessous, en vertu du mandat écrit qui nous a été confié le ${fmtDate(mandateDate)} (copie disponible sur demande), nous vous demandons :
 
@@ -59,7 +59,7 @@ Merci de répondre à ce message en conservant la référence [${ref}] dans l’
 Cordialement,
 ${COMPANY}, mandataire de la personne concernée
 ${COMPANY_ADDR}
-Référence : ${ref}`;
+Référence : ${ref}`);
 
   const deadlineEn = rgpd && ccpa
     ? `Under Article 12(3) ${gdpr} you must respond within one month of receipt; under the CCPA (Cal. Civ. Code § 1798.130) within 45 days.`
@@ -93,7 +93,7 @@ export function followUp({ broker, ref, sentAt, profile }) {
   const ccpa = broker.legal_basis !== 'rgpd';
   return {
     subject: `Relance — demande d’effacement sans réponse [${ref}]`,
-    text: `Madame, Monsieur,
+    text: frTypo(`Madame, Monsieur,
 
 Notre demande d’effacement référencée [${ref}], envoyée le ${fmtDate(sentAt)}, est restée sans réponse à l’expiration du délai légal ${rgpd ? 'd’un mois (article 12, paragraphe 3, du RGPD)' : 'de 45 jours (CCPA)'}.
 
@@ -101,7 +101,7 @@ Nous vous demandons de confirmer la suppression des données sous 8 jours. À d�
 
 — Reminder: our erasure request [${ref}] sent on ${fmtDateEn(sentAt)} received no answer within the statutory period${rgpd ? ' (Article 12(3) GDPR)' : ' (CCPA, 45 days)'}. Please confirm deletion within 8 days; otherwise a complaint will be filed with the competent supervisory authority${ccpa ? ' and the California Privacy Protection Agency' : ''}.
 
-${COMPANY}, mandataire — Référence : ${ref}`,
+${COMPANY}, mandataire — Référence : ${ref}`),
   };
 }
 
@@ -169,11 +169,11 @@ export function monthlyReport({ month, blocks }) {
     `  • ${b.inProgress} demande${b.inProgress > 1 ? 's' : ''} en cours`,
     b.action ? `  • ${b.action} vérification${b.action > 1 ? 's' : ''} attend${b.action > 1 ? 'ent' : ''} votre action` : null,
     b.refused ? `  • ${b.refused} refus : nouvelle demande programmée, plainte prête à déposer depuis le tableau de bord` : null,
-    `  • Exposition estimée : ${b.exposure} %`,
+    `  • Exposition estimée : ${b.exposure}\u00a0%`,
   ].filter(Boolean).join('\n')).join('\n\n');
   return {
     subject: `Votre rapport mensuel Oubli — ${month}`,
-    text: `Bonjour,
+    text: frTypo(`Bonjour,
 
 Voici où en est votre dossier.
 
@@ -183,14 +183,14 @@ Le détail, demande par demande : ${APP_URL}/app/#dashboard
 Rapport imprimable : ${APP_URL}/app/#report
 
 Vous recevez ce rapport parce qu’il est activé dans vos paramètres (${APP_URL}/app/#settings).
-— L’équipe Oubli`,
+— L’équipe Oubli`),
   };
 }
 
 export function welcomeMail({ email }) {
   return {
     subject: 'Bienvenue chez Oubli — votre dossier est ouvert',
-    text: `Bonjour,
+    text: frTypo(`Bonjour,
 
 Votre compte Oubli est créé pour ${email}. Trois étapes restent à faire pour lancer la première vague de demandes :
 1. renseigner les informations à faire effacer ;
@@ -200,20 +200,20 @@ Votre compte Oubli est créé pour ${email}. Trois étapes restent à faire pour
 Votre tableau de bord : ${APP_URL}/app/
 
 À bientôt,
-L’équipe Oubli`,
+L’équipe Oubli`),
   };
 }
 
 export function actionRequiredMail({ broker, ref }) {
   return {
     subject: `Action requise — ${broker.name} demande une vérification [${ref}]`,
-    text: `Bonjour,
+    text: frTypo(`Bonjour,
 
 ${broker.name} demande une vérification avant de supprimer vos données (généralement un clic sur un lien de confirmation ou une pièce d’identité partielle). Rendez-vous sur votre tableau de bord pour voir la marche à suivre :
 ${APP_URL}/app/#dashboard
 
 Référence : ${ref}
-L’équipe Oubli`,
+L’équipe Oubli`),
   };
 }
 
@@ -272,7 +272,7 @@ L’équipe Oubli`),
 }
 
 export function mandateText({ user, profile, signedAt }) {
-  return `MANDAT DE REPRÉSENTATION — version ${MANDATE_VERSION}
+  return frTypo(`MANDAT DE REPRÉSENTATION — version ${MANDATE_VERSION}
 
 Mandant : ${profile.first_name} ${String(profile.last_name || '').toUpperCase()} (${user.email})
 Mandataire : ${COMPANY}, ${COMPANY_ADDR}
@@ -281,5 +281,5 @@ Le mandant autorise le mandataire à exercer en son nom et pour son compte, aupr
 
 Le mandataire s’engage à n’utiliser les données transmises qu’aux fins d’exécution de ce mandat, à les conserver de manière sécurisée et à les supprimer à la fin de la relation contractuelle. Le mandant peut révoquer ce mandat à tout moment depuis son tableau de bord ; la révocation prend effet immédiatement pour les demandes à venir.
 
-Signé électroniquement le ${fmtDate(signedAt)} par ${user.mandate_name}.`;
+Signé électroniquement le ${fmtDate(signedAt)} par ${user.mandate_name}.`);
 }

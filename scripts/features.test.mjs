@@ -70,7 +70,7 @@ try {
   r = await call('POST', '/admin/reports/run', {}, admin); assert.equal(r.data.sent, 1, 'un seul rapport : Basile s’est désinscrit');
   const mail = db.prepare(`SELECT to_addr, subject, body FROM mails WHERE subject LIKE 'Votre rapport mensuel%'`).all();
   assert.equal(mail.length, 1); assert.equal(mail[0].to_addr, 'lea@exemple.fr');
-  assert.match(mail[0].body, /Léa Moreau/); assert.match(mail[0].body, /Exposition estimée : \d+ %/); assert.match(mail[0].body, /#settings/);
+  assert.match(mail[0].body, /Léa Moreau/); assert.match(mail[0].body, /Exposition estimée\u00a0: \d+\u00a0%/, 'typographie française : espace insécable avant « : » et « % »'); assert.match(mail[0].body, /#settings/);
   r = await call('POST', '/admin/reports/run', {}, admin); assert.equal(r.data.sent, 0, 'pas de second rapport dans les 30 jours');
   assert.equal(db.prepare(`SELECT COUNT(*) AS c FROM mails WHERE subject LIKE 'Votre rapport mensuel%'`).get().c, 1);
   step('rapport mensuel : activé par défaut, envoyé après 30 jours, désinscription respectée, pas de doublon');
