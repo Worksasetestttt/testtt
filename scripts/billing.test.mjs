@@ -469,6 +469,84 @@ try {
   }
   step('application : avis « reste payé jusqu’au… », boutons « Reprendre » et « Passer à », reprise et changement d’offre sans page de paiement, à 1280 et 390 px');
 
+  /* ---------- 6. Webhooks livrés en retard : un événement plus ancien que le dernier appliqué est ignoré ---------- */
+  // Un checkout.session.completed livré en retard (autre identifiant d'événement) réactivait un compte résilié jusqu'au
+  // prochain événement ; une mise à jour ancienne défaisait une reprise ou une résiliation plus récente.
+  {
+    const mark = (id) => row(id).stripe_event_created;
+    const T0 = nowS() - 7200;
+    const checkoutOf = (a, sub, plan = 'individuel') => ({ object: 'checkout.session', mode: 'subscription', payment_status: 'paid', customer: sub.customer, subscription: sub.id, client_reference_id: a.id, metadata: { user_id: a.id, plan, billing: 'monthly' } });
+    const state = async (a) => { const u = await a.me(); return [u.subscription_status, u.billing_mode]; };
+    // a. Abonnement supprimé : un ancien checkout ou une ancienne mise à jour (autres identifiants) ne le réactivent pas.
+    const L = await actor('retard@exemple.fr');
+    const subL = await paid(L, 'individuel', { created: T0 });
+    assert.equal(mark(L.id), T0, 'date (event.created) du dernier événement appliqué');
+    await stripeEvent('customer.subscription.deleted', { ...structuredClone(subL), status: 'canceled', ended_at: T0 + 600 }, { created: T0 + 600 });
+    assert.deepEqual(await state(L), ['canceled', 'stripe']);
+    await stripeEvent('checkout.session.completed', checkoutOf(L, subL), { created: T0 + 60 });
+    await stripeEvent('checkout.session.async_payment_succeeded', checkoutOf(L, subL), { created: T0 + 70 });
+    await stripeEvent('customer.subscription.updated', { ...structuredClone(subL), status: 'active' }, { created: T0 + 300 });
+    await stripeEvent('invoice.paid', { object: 'invoice', customer: subL.customer, subscription: subL.id }, { created: T0 + 400 });
+    assert.deepEqual(await state(L), ['canceled', 'stripe'], 'aucun événement plus ancien ne réactive le compte');
+    assert.equal(mark(L.id), T0 + 600);
+    // Un événement plus récent s'applique, même s'il est daté de la même seconde que le dernier.
+    await stripeEvent('customer.subscription.updated', { ...structuredClone(subL), status: 'active', cancel_at_period_end: false }, { created: T0 + 600 });
+    assert.deepEqual(await state(L), ['active', 'stripe'], 'même seconde : appliqué');
+    await stripeEvent('customer.subscription.updated', { ...structuredClone(subL), status: 'canceled', ended_at: T0 + 900 }, { created: T0 + 900 });
+    assert.deepEqual(await state(L), ['canceled', 'stripe']); assert.equal(mark(L.id), T0 + 900);
+    // La déduplication par identifiant reste : un événement rejoué tel quel n'est traité qu'une fois.
+    const dup = `evt_dup_${crypto.randomBytes(6).toString('hex')}`;
+    for (let i = 0; i < 2; i++) await stripeEvent('checkout.session.async_payment_failed', checkoutOf(L, subL), { created: T0 + 950, id: dup });
+    assert.equal(journal(L.id).filter((x) => /^Paiement refusé par la banque/.test(x)).length, 1, 'rejoué : traité une fois');
+
+    // b. Impayé régularisé : l'échec ancien livré après le paiement ne repasse pas le compte en attente.
+    const I = await actor('facture-retard@exemple.fr');
+    const subI = await paid(I, 'individuel', { created: T0 });
+    await stripeEvent('invoice.payment_failed', { object: 'invoice', customer: subI.customer, subscription: subI.id }, { created: T0 + 100 });
+    assert.deepEqual(await state(I), ['past_due', 'stripe']);
+    await stripeEvent('invoice.paid', { object: 'invoice', customer: subI.customer, subscription: subI.id }, { created: T0 + 200 });
+    await stripeEvent('invoice.payment_failed', { object: 'invoice', customer: subI.customer, subscription: subI.id }, { created: T0 + 150 });
+    assert.deepEqual(await state(I), ['active', 'stripe'], 'échec plus ancien que le paiement : ignoré');
+
+    // c. Ancien abonnement (garde staleSub) : ses événements, même récents, ne comptent pas pour le compte.
+    const M = await actor('ancien-abonnement@exemple.fr');
+    const subOld = await paid(M, 'individuel', { created: T0 });
+    await stripeEvent('customer.subscription.updated', { ...structuredClone(subOld), cancel_at_period_end: true, cancel_at: subOld.current_period_end }, { created: T0 + 10 });
+    const subNew = fake.addSubscription({ userId: M.id, plan: 'famille', customer: subOld.customer });
+    await stripeEvent('checkout.session.completed', checkoutOf(M, subNew, 'famille'), { created: T0 + 20 });
+    assert.equal(row(M.id).stripe_subscription_id, subNew.id);
+    await stripeEvent('customer.subscription.deleted', { ...structuredClone(subOld), status: 'canceled', ended_at: T0 + 5000 }, { created: T0 + 5000 });
+    assert.equal(mark(M.id), T0 + 20, 'un événement de l’ancien abonnement ne fait pas avancer la date');
+    await stripeEvent('customer.subscription.updated', { ...structuredClone(subNew), cancel_at_period_end: true, cancel_at: subNew.current_period_end }, { created: T0 + 500 });
+    assert.deepEqual(await state(M), ['canceled', 'stripe'], 'le nouvel abonnement suit son cours');
+
+    // d. Abonnement offert par clé (garde keyRunning) qui suit un abonnement payé : la fin de l'abonnement payé est notée,
+    // et son ancien checkout livré en retard ne remplace pas la clé par un abonnement terminé.
+    const K = await actor('cle-retard@exemple.fr');
+    const subK = await paid(K, 'individuel', { created: T0 });
+    db.prepare(`UPDATE users SET subscription_status = 'active', billing_mode = 'key', billing = NULL, subscription_ends_at = ? WHERE id = ?`).run(iso(nowS() + 30 * DAY), K.id);
+    await stripeEvent('customer.subscription.deleted', { ...structuredClone(subK), status: 'canceled', ended_at: T0 + 100 }, { created: T0 + 100 });
+    assert.deepEqual(await state(K), ['active', 'key'], 'clé conservée');
+    await stripeEvent('checkout.session.completed', checkoutOf(K, subK), { created: T0 + 50 });
+    assert.deepEqual(await state(K), ['active', 'key'], 'ancien checkout : la clé reste');
+
+    // e. Action de l'abonné (API) : la réponse de Stripe compte comme un événement daté de la réponse. L'annonce,
+    // livrée en retard, d'un état antérieur ne défait ni la reprise ni la résiliation.
+    const A = await actor('api-retard@exemple.fr');
+    const subA = await paid(A, 'individuel', { created: T0 });
+    assert.equal((await A.call('POST', '/billing/cancel', {})).status, 200);
+    const cancelSeen = mark(A.id);
+    assert.ok(cancelSeen >= nowS() - 5 && cancelSeen <= nowS() + 1, `date de la réponse de Stripe (${cancelSeen})`);
+    await stripeEvent('customer.subscription.updated', { ...structuredClone(subA), cancel_at_period_end: false, cancel_at: null }, { created: cancelSeen - 30 });
+    assert.deepEqual(await state(A), ['canceled', 'stripe'], 'état antérieur à la résiliation : ignoré');
+    await wait(1100);   // la reprise est datée d'une seconde ultérieure
+    assert.equal((await A.call('POST', '/billing/checkout', { plan: 'individuel' })).data.mode, 'resumed');
+    assert.ok(mark(A.id) > cancelSeen);
+    await stripeEvent('customer.subscription.updated', { ...structuredClone(subA), cancel_at_period_end: true, cancel_at: subA.current_period_end }, { created: cancelSeen });
+    assert.deepEqual(await state(A), ['active', 'stripe'], 'annonce de la résiliation livrée après la reprise : ignorée');
+  }
+  step('webhooks en retard : ancien checkout, mise à jour ou facture ignorés (autre identifiant), même seconde appliquée, déduplication, ancien abonnement et clé, réponses de l’API datées');
+
   db.close();
   assert.ok(!(serverOut + serverErr).includes(SK), 'la clé secrète n’apparaît jamais dans la console du serveur');
   console.log(`✔ Facturation Stripe validée (${passed} groupes de vérifications).`);

@@ -1,9 +1,10 @@
 // Facturation : Stripe Checkout (API REST via fetch, sans SDK) ou mode simulé quand STRIPE_SECRET_KEY est absent.
 // Les webhooks sont vérifiés (signature HMAC, tolérance 5 min), traités une seule fois (table stripe_events) et
 // l’utilisateur est retrouvé par ses identifiants Stripe (client / abonnement) plutôt que par les métadonnées ;
-// les événements d’un ancien abonnement du même client (réabonnement après résiliation) sont ignorés.
+// les événements d’un ancien abonnement du même client (réabonnement après résiliation) sont ignorés, de même que ceux
+// qui sont plus anciens que la dernière information appliquée au compte (webhook livré en retard).
 import crypto from 'node:crypto';
-import { q, now, logEvent, tx } from './db.js';
+import { q, now, logEvent, tx, ensureColumn } from './db.js';
 import { HttpError } from './util.js';
 
 // Formule unique, mensuelle et sans engagement (centimes TTC). L'offre annuelle n'est plus proposée ; les comptes
@@ -27,6 +28,10 @@ if (STRIPE_KEY && process.env.NODE_ENV === 'production' && !/^https:\/\//i.test(
   console.error('[billing] STRIPE_API_BASE doit commencer par https:// en production (la clé secrète part dans chaque requête). Arrêt.');
   process.exit(1);
 }
+// Date Stripe (secondes Unix) de la dernière information appliquée au compte : event.created du dernier webhook
+// appliqué, ou en-tête Date de la réponse de l'API après une action de l'abonné (reprise, résiliation). Un webhook plus
+// ancien, quel que soit son identifiant, est ignoré : livré en retard, il défaisait un état plus récent.
+ensureColumn('users', 'stripe_event_created', 'INTEGER');
 
 // Paramètres form-urlencoded : dans l'adresse pour un GET (sans corps), dans le corps sinon. Une erreur porte le statut
 // HTTP de Stripe (stripeStatus) : 404 = objet inconnu de Stripe.
@@ -39,8 +44,12 @@ async function stripe(method, path, params, idempotencyKey) {
   const r = await fetch(`${STRIPE_API}${path}${query}`, { method, headers, body: form && !query ? form : undefined, signal: AbortSignal.timeout(20000) });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw Object.assign(new Error(data.error?.message || `Stripe ${r.status}`), { stripeStatus: r.status });
+  const at = Math.floor(Date.parse(r.headers.get('date') || '') / 1000);
+  if (Number.isSafeInteger(at) && at > 0 && data && typeof data === 'object') answeredAt.set(data, at);
   return data;
 }
+// Réponse de l'API → sa date selon Stripe (en-tête Date), même horloge que event.created des webhooks.
+const answeredAt = new WeakMap();
 function flatten(obj, prefix = '', out = {}) {
   for (const [k, v] of Object.entries(obj)) {
     const key = prefix ? `${prefix}[${k}]` : k;
@@ -144,9 +153,9 @@ async function planPrice(plan) {
   return id;
 }
 // Abonnement relu dans une réponse de l'API après une action de l'abonné : même traduction qu'un webhook
-// customer.subscription.updated (statut, fin d'accès, offre des métadonnées).
+// customer.subscription.updated (statut, fin d'accès, offre des métadonnées), daté de la réponse.
 function applySnapshot(sub) {
-  tx(() => apply({ type: 'customer.subscription.updated', data: { object: sub } }));
+  tx(() => apply({ type: 'customer.subscription.updated', created: answeredAt.get(sub) ?? null, data: { object: sub } }));
 }
 
 // En-tête Stripe-Signature : t=<horodatage>,v1=<hmac>[,v1=<hmac>…]. Comparaison en temps constant, tolérance 5 minutes.
@@ -188,7 +197,16 @@ const staleSub = (u, subscription) => { const s = sid(subscription); return !!(s
 // Abonnement d'une facture : champ subscription, ou parent.subscription_details.subscription (format récent de l'API).
 const invoiceSub = (o) => o.subscription || o.parent?.subscription_details?.subscription || null;
 
+// Date de l'événement (event.created, secondes) ; null si absente : l'événement s'applique alors sans comparaison.
+const eventTime = (e) => (Number.isSafeInteger(e?.created) && e.created > 0 ? e.created : null);
+// La date de la dernière information appliquée ne recule jamais.
+function touch(userId, at) {
+  if (at) q.run('UPDATE users SET stripe_event_created = ? WHERE id = ? AND (stripe_event_created IS NULL OR stripe_event_created < ?)', at, userId, at);
+}
+// Un événement pris en compte (même sans effet, ou écarté par la garde de la clé) fait avancer la date du compte : ce
+// qu'il annonce est plus récent que tout événement plus ancien qui arriverait ensuite.
 function setStatus(u, status, ends, message, extra = {}) {
+  touch(u.id, extra.at);
   if (status !== 'active' && keyRunning(u)) return;
   const changed = status !== u.subscription_status || (ends || null) !== (u.subscription_ends_at || null);
   q.run(`UPDATE users SET subscription_status = ?, subscription_ends_at = ?, billing_mode = 'stripe', stripe_customer_id = COALESCE(?, stripe_customer_id), stripe_subscription_id = COALESCE(?, stripe_subscription_id), plan = COALESCE(?, plan), billing = COALESCE(?, billing) WHERE id = ?`,
@@ -198,16 +216,19 @@ function setStatus(u, status, ends, message, extra = {}) {
 
 function apply(event) {
   const o = event.data?.object || {};
+  const at = eventTime(event);
+  // Plus ancien que la dernière information appliquée au compte (même seconde : appliqué).
+  const late = (u) => at !== null && u.stripe_event_created != null && at < u.stripe_event_created;
   switch (event.type) {
     case 'checkout.session.completed':
     case 'checkout.session.async_payment_succeeded': {
       if (o.mode && o.mode !== 'subscription') return;
       if (o.payment_status && !['paid', 'no_payment_required'].includes(o.payment_status)) return; // paiement différé : on attend async_payment_succeeded
       const u = userByIds(o.customer, o.subscription) || userByMetadata(o.client_reference_id || o.metadata?.user_id, o.customer);
-      if (!u) return;
+      if (!u || late(u)) return;
       const plan = Object.hasOwn(PLANS, o.metadata?.plan ?? '') ? o.metadata.plan : null;
       const billing = ['monthly', 'annual'].includes(o.metadata?.billing) ? o.metadata.billing : null;
-      setStatus(u, 'active', null, 'Paiement confirmé par Stripe : abonnement actif.', { customer: sid(o.customer), subscription: sid(o.subscription), plan, billing });
+      setStatus(u, 'active', null, 'Paiement confirmé par Stripe : abonnement actif.', { customer: sid(o.customer), subscription: sid(o.subscription), plan, billing, at });
       return;
     }
     case 'checkout.session.async_payment_failed': {
@@ -217,22 +238,22 @@ function apply(event) {
     }
     case 'invoice.payment_failed': {
       const u = userByIds(o.customer, invoiceSub(o));
-      if (u && !staleSub(u, invoiceSub(o)) && u.subscription_status !== 'canceled') setStatus(u, 'past_due', u.subscription_ends_at, 'Échec de paiement : abonnement en attente de régularisation.');
+      if (u && !staleSub(u, invoiceSub(o)) && !late(u) && u.subscription_status !== 'canceled') setStatus(u, 'past_due', u.subscription_ends_at, 'Échec de paiement : abonnement en attente de régularisation.', { at });
       return;
     }
     case 'invoice.paid':
     case 'invoice.payment_succeeded': {
       const u = userByIds(o.customer, invoiceSub(o));
-      if (u && !staleSub(u, invoiceSub(o)) && u.subscription_status === 'past_due') setStatus(u, 'active', null, 'Paiement régularisé : abonnement de nouveau actif.');
+      if (u && !staleSub(u, invoiceSub(o)) && !late(u) && u.subscription_status === 'past_due') setStatus(u, 'active', null, 'Paiement régularisé : abonnement de nouveau actif.', { at });
       return;
     }
     case 'customer.subscription.created':
     case 'customer.subscription.updated': {
       const u = userByIds(o.customer, o.id) || userByMetadata(o.metadata?.user_id, o.customer);
-      if (!u || staleSub(u, o.id)) return;
+      if (!u || staleSub(u, o.id) || late(u)) return;
       const periodEnd = o.current_period_end || o.items?.data?.[0]?.current_period_end || null;
       const interval = o.items?.data?.[0]?.price?.recurring?.interval || o.plan?.interval || null;
-      const extra = { customer: sid(o.customer), subscription: sid(o.id), plan: Object.hasOwn(PLANS, o.metadata?.plan ?? '') ? o.metadata.plan : null, billing: interval === 'year' ? 'annual' : interval === 'month' ? 'monthly' : null };
+      const extra = { customer: sid(o.customer), subscription: sid(o.id), plan: Object.hasOwn(PLANS, o.metadata?.plan ?? '') ? o.metadata.plan : null, billing: interval === 'year' ? 'annual' : interval === 'month' ? 'monthly' : null, at };
       switch (o.status) {
         case 'active': case 'trialing':
           if (o.cancel_at_period_end) setStatus(u, 'canceled', iso(o.cancel_at) || iso(periodEnd), 'Résiliation enregistrée ; accès maintenu jusqu’à la fin de la période payée.', extra);
@@ -249,7 +270,7 @@ function apply(event) {
     }
     case 'customer.subscription.deleted': {
       const u = userByIds(o.customer, o.id);
-      if (u && !staleSub(u, o.id)) setStatus(u, 'canceled', iso(o.ended_at) || now(), 'Abonnement résilié.');
+      if (u && !staleSub(u, o.id) && !late(u)) setStatus(u, 'canceled', iso(o.ended_at) || now(), 'Abonnement résilié.', { at });
       return;
     }
     default: return;
@@ -274,6 +295,7 @@ export async function cancelSubscription(user) {
     const sub = await stripe('POST', `/subscriptions/${user.stripe_subscription_id}`, { cancel_at_period_end: true });
     const ends = iso(sub.cancel_at) || iso(sub.current_period_end) || iso(sub.items?.data?.[0]?.current_period_end) || user.subscription_ends_at || null;
     q.run(`UPDATE users SET subscription_status = 'canceled', subscription_ends_at = ? WHERE id = ?`, ends, user.id);
+    touch(user.id, answeredAt.get(sub));   // un webhook antérieur à la résiliation, livré ensuite, ne la défait pas
     if (user.subscription_status !== 'canceled') logEvent(user.id, 'billing', 'Résiliation enregistrée ; accès maintenu jusqu’à la fin de la période payée.');
     return { ends_at: ends };
   }
