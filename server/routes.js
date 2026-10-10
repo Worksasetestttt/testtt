@@ -6,19 +6,12 @@ import { hashPassword, verifyPassword, createSession, destroySession, requireAut
 import { sendMail, mailMode } from './mailer.js';
 import { welcomeMail, mandateText, MANDATE_VERSION } from './templates.js';
 import { PLANS, billingMode, startCheckout, cancelSubscription, verifyStripeSignature, handleStripeEvent } from './billing.js';
-import { launchProfile, applyOutcome, tick, ref, DEMO } from './scheduler.js';
+import { launchProfile, applyOutcome, tick, DEMO } from './scheduler.js';
+import { EMAIL, clean, arr, publicUser, parseProfile, wrap } from './util.js';
+import { buildDashboard } from './dashboard.js';
+import { admin } from './admin.js';
 
 export const api = express.Router();
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
-const clean = (v, max = 200) => String(v ?? '').trim().slice(0, max);
-const arr = (v, max = 10) => (Array.isArray(v) ? v : String(v ?? '').split(/[\n,;]+/)).map((s) => clean(s, 160)).filter(Boolean).slice(0, max);
-const publicUser = (u) => ({
-  id: u.id, email: u.email, role: u.role, plan: u.plan, billing: u.billing,
-  subscription_status: u.subscription_status, subscription_ends_at: u.subscription_ends_at, billing_mode: u.billing_mode,
-  mandate_signed_at: u.mandate_signed_at, mandate_name: u.mandate_name, mandate_version: u.mandate_version, mandate_revoked_at: u.mandate_revoked_at, created_at: u.created_at,
-});
-const parseProfile = (p) => ({ ...p, emails: JSON.parse(p.emails), phones: JSON.parse(p.phones), addresses: JSON.parse(p.addresses), aliases: JSON.parse(p.aliases) });
-const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 const fresh = (req) => q.get('SELECT * FROM users WHERE id = ?', req.user.id);
 
 api.get('/health', (_req, res) => res.json({ ok: true, mail: mailMode, billing: billingMode, demo: DEMO, time: now() }));
@@ -143,32 +136,7 @@ api.post('/requests/launch', requireAuth, wrap(async (req, res) => {
   setTimeout(() => tick(), 10);
   res.json({ created });
 }));
-api.get('/dashboard', requireAuth, (req, res) => {
-  const u = fresh(req);
-  const profiles = q.all('SELECT * FROM profiles WHERE user_id = ? ORDER BY is_primary DESC, created_at', u.id).map(parseProfile);
-  const pid = req.query.profile_id && profiles.some((p) => p.id === req.query.profile_id) ? req.query.profile_id : profiles[0]?.id;
-  const rows = q.all(`SELECT r.*, b.name AS broker_name, b.category, b.domain, b.sensitivity, b.legal_basis, b.recheck_days FROM requests r JOIN brokers b ON b.id = r.broker_id WHERE r.profile_id = ? ORDER BY CASE r.status WHEN 'action_required' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'sent' THEN 2 WHEN 'queued' THEN 3 WHEN 'done' THEN 4 ELSE 5 END, b.sensitivity DESC, b.name`, pid);
-  const counts = { queued: 0, sent: 0, in_progress: 0, action_required: 0, done: 0, refused: 0 };
-  rows.forEach((r) => { counts[r.status] = (counts[r.status] || 0) + 1; });
-  const total = rows.length;
-  const latestByBroker = new Map();
-  rows.forEach((r) => { const k = r.broker_id; if (!latestByBroker.has(k) || latestByBroker.get(k).cycle < r.cycle) latestByBroker.set(k, r); });
-  const active = [...latestByBroker.values()];
-  const exposed = active.filter((r) => r.status !== 'done').length;
-  const exposure = active.length ? Math.round((exposed / active.length) * 100) : 100;
-  const sentTotal = rows.filter((r) => r.sent_at).length;
-  const nextCheck = q.get(`SELECT MIN(next_check_at) AS d FROM requests WHERE profile_id = ? AND next_check_at IS NOT NULL`, pid)?.d || null;
-  const events = q.all('SELECT * FROM events WHERE user_id = ? ORDER BY id DESC LIMIT 40', u.id);
-  const brokers = q.get('SELECT COUNT(*) AS c FROM brokers WHERE active = 1').c;
-  res.json({
-    user: publicUser(u), profiles, profile_id: pid,
-    counters: { sent: sentTotal, in_progress: counts.sent + counts.in_progress, action_required: counts.action_required, done: counts.done, queued: counts.queued, refused: counts.refused, total, brokers },
-    exposure, next_check_at: nextCheck,
-    requests: active.map((r) => ({ id: r.id, broker: r.broker_name, domain: r.domain, category: r.category, sensitivity: r.sensitivity, legal_basis: r.legal_basis, status: r.status, cycle: r.cycle, sent_at: r.sent_at, due_at: r.due_at, completed_at: r.completed_at, next_check_at: r.next_check_at, note: r.note, ref: ref(r) })),
-    events,
-    onboarding: { profile_complete: !!(profiles[0]?.first_name && profiles[0]?.last_name), mandate: !!u.mandate_signed_at && !u.mandate_revoked_at, subscription: u.subscription_status === 'active' },
-  });
-});
+api.get('/dashboard', requireAuth, (req, res) => res.json(buildDashboard(fresh(req), req.query.profile_id)));
 api.post('/requests/:id/resolve', requireAuth, wrap(async (req, res) => {
   const r = q.get('SELECT * FROM requests WHERE id = ? AND user_id = ?', req.params.id, req.user.id);
   if (!r) return res.status(404).json({ error: 'Demande introuvable.' });
@@ -250,25 +218,5 @@ api.delete('/account', requireAuth, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
-/* ---------- Administration ---------- */
-api.get('/admin/stats', requireAuth, requireAdmin, (_req, res) => res.json({
-  users: q.get('SELECT COUNT(*) AS c FROM users WHERE deleted_at IS NULL').c,
-  active: q.get(`SELECT COUNT(*) AS c FROM users WHERE subscription_status = 'active'`).c,
-  requests: q.all('SELECT status, COUNT(*) AS n FROM requests GROUP BY status'),
-  mails: q.get('SELECT COUNT(*) AS c FROM mails').c,
-  action_required: q.all(`SELECT r.id, r.token, b.name AS broker, u.email FROM requests r JOIN brokers b ON b.id = r.broker_id JOIN users u ON u.id = r.user_id WHERE r.status = 'action_required' ORDER BY r.created_at LIMIT 100`),
-}));
-api.post('/admin/requests/:id/outcome', requireAuth, requireAdmin, wrap(async (req, res) => {
-  const r = q.get('SELECT * FROM requests WHERE id = ? OR token = ?', req.params.id, req.params.id);
-  if (!r) return res.status(404).json({ error: 'Demande introuvable.' });
-  if (!['done', 'in_progress', 'action_required', 'refused'].includes(req.body.outcome)) return res.status(400).json({ error: 'Résultat inconnu.' });
-  await applyOutcome(r, req.body.outcome, clean(req.body.note, 300));
-  res.json({ ok: true });
-}));
-api.put('/admin/brokers/:id', requireAuth, requireAdmin, (req, res) => {
-  const b = q.get('SELECT * FROM brokers WHERE id = ?', req.params.id);
-  if (!b) return res.status(404).json({ error: 'Courtier introuvable.' });
-  q.run('UPDATE brokers SET contact_email = ?, contact_verified = ?, active = ? WHERE id = ?', clean(req.body.contact_email ?? b.contact_email, 160), req.body.contact_verified ? 1 : 0, req.body.active === false ? 0 : 1, b.id);
-  res.json({ broker: q.get('SELECT * FROM brokers WHERE id = ?', b.id) });
-});
-api.post('/admin/tick', requireAuth, requireAdmin, wrap(async (_req, res) => { await tick(); res.json({ ok: true }); }));
+/* ---------- Administration (voir server/admin.js) ---------- */
+api.use('/admin', requireAuth, requireAdmin, admin);

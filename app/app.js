@@ -179,9 +179,15 @@
       '<form class="sheet" id="delete-form" novalidate><div class="sheet__head"><h2>Supprimer le compte</h2></div><div class="sheet__body"><p class="lead" style="margin-bottom:22px">Résilie l’abonnement, supprime vos profils, vos demandes et le journal. Irréversible.</p><div class="fields">' + field('password', 'Mot de passe', '', { extra: 'type="password" autocomplete="current-password" required' }) + '</div><p class="msg" id="form-msg-del" style="margin-top:16px"></p></div><div class="sheet__foot"><button class="btn btn--danger" type="submit">Supprimer définitivement</button><span class="mono">RGPD art. 17</span></div></form></div>';
   };
 
-  views.admin = function () {
-    return '<div class="page-head"><div><span class="mono">Administration</span><h1>Suivi global et réponses des courtiers.</h1></div><div class="btn-row"><button class="btn btn--outline btn--sm" type="button" id="admin-tick">Exécuter le planificateur</button></div></div><div id="admin-body"><span class="spinner"></span></div>';
-  };
+  /* Vue admin : le code d'administration (app/admin.js + app/admin.css) n'est chargé que pour les administrateurs. */
+  var plugins = {}, adminLoaded = false;
+  function loadAdminAssets() {
+    if (adminLoaded) return; adminLoaded = true;
+    var l = document.createElement('link'); l.rel = 'stylesheet'; l.href = '/app/admin.css'; document.head.appendChild(l);
+    var sc = document.createElement('script'); sc.src = '/app/admin.js'; sc.onerror = function () { adminLoaded = false; toast('Impossible de charger l’administration.', true); }; document.body.appendChild(sc);
+  }
+  views.admin = function () { loadAdminAssets(); return '<div class="page-head"><div><span class="mono">Administration</span><h1>Chargement…</h1></div></div><span class="spinner"></span>'; };
+  function registerView(name, renderFn, afterFn) { views[name] = renderFn; plugins[name] = afterFn || null; if (params().route === name) render(); }
 
   /* ---------- rendu & routage ---------- */
   function render() {
@@ -198,10 +204,10 @@
     after(route, p.q);
     window.scrollTo(0, 0);
   }
-  function after(route) {
+  function after(route, q) {
     if (route === 'dashboard') { loadDash(); pollTimer = setInterval(loadDash, 6000); }
     if (route === 'onboarding' || route === 'dossier') loadMandateText();
-    if (route === 'admin') loadAdmin();
+    if (plugins[route]) plugins[route](q || {});
   }
   function loadDash() {
     var pid = state.profileId ? '?profile_id=' + encodeURIComponent(state.profileId) : '';
@@ -210,17 +216,6 @@
   function loadMandateText() {
     var box = $('#mandate-text'); if (!box) return;
     api('/mandate').then(function (m) { box.textContent = m.text || ''; }).catch(function (e) { box.textContent = e.message; });
-  }
-  function loadAdmin() {
-    api('/admin/stats').then(function (s) {
-      var reqs = s.requests.map(function (r) { return '<div class="deadline"><b>' + r.n + '</b>' + chip(r.status) + '</div>'; }).join('');
-      var act = s.action_required.map(function (r) { return '<div class="row" style="grid-template-columns:1fr auto"><div class="row__who"><strong>' + esc(r.broker) + '</strong><small>' + esc(r.email) + ' · OUBLI-' + esc(r.token) + '</small></div><div class="row__act"><button class="btn btn--sm" data-outcome="done" data-req="' + esc(r.id) + '" type="button">Effacée</button><button class="btn btn--outline btn--sm" data-outcome="in_progress" data-req="' + esc(r.id) + '" type="button">En cours</button><button class="btn btn--danger btn--sm" data-outcome="refused" data-req="' + esc(r.id) + '" type="button">Refus</button></div></div>'; }).join('');
-      $('#admin-body').innerHTML = '<div class="stack"><section class="sheet counters"><div class="ledger__stat" style="padding-left:32px"><span class="mono">Comptes</span><span class="ledger__n">' + s.users + '</span></div><div class="ledger__stat ledger__stat--ok"><span class="mono">Abonnés actifs</span><span class="ledger__n">' + s.active + '</span></div><div class="ledger__stat"><span class="mono">Courriers</span><span class="ledger__n">' + s.mails + '</span></div></section><div class="dash-grid" style="margin-top:0"><section class="sheet"><div class="sheet__head"><h2>Actions requises à traiter</h2></div>' + (act || '<p class="empty">Rien en attente.</p>') + '</section><section class="sheet"><div class="sheet__head"><h2>Demandes par statut</h2></div><div class="deadlines">' + (reqs || '<p class="empty">Aucune</p>') + '</div></section></div><section class="sheet"><div class="sheet__head"><h2>Contacts des courtiers</h2><span class="mono">Vérifier avant tout envoi réel</span></div><div id="admin-brokers"><span class="spinner"></span></div></section></div>';
-      return api('/brokers');
-    }).then(function (b) {
-      var rows = b.brokers.map(function (x) { return '<div class="row" style="grid-template-columns:minmax(0,1fr) minmax(0,1.2fr) auto auto"><div class="row__who"><strong>' + esc(x.name) + '</strong><small>' + esc(x.category) + ' · ' + esc(x.jurisdiction) + '</small></div><div class="f"><input data-broker-email="' + x.id + '" value="' + esc(x.contact_email || '') + '" aria-label="Contact ' + esc(x.name) + '"></div><label class="check" style="align-items:center;font-size:.9rem"><input type="checkbox" data-broker-verified="' + x.id + '"' + (x.contact_verified ? ' checked' : '') + '> vérifié</label><button class="btn btn--outline btn--sm" type="button" data-broker-save="' + x.id + '">Enregistrer</button></div>'; }).join('');
-      $('#admin-brokers').innerHTML = rows;
-    }).catch(function (e) { $('#admin-body').innerHTML = '<p class="notice">' + esc(e.message) + '</p>'; });
   }
 
   /* ---------- interactions (délégation) ---------- */
@@ -301,13 +296,13 @@
       }).catch(function (err) { toast(err.message, true); });
     }
     else if (t.hasAttribute('data-remove')) { if (!t.getAttribute('data-confirm')) { t.setAttribute('data-confirm', '1'); t.textContent = 'Confirmer le retrait'; return; } api('/profiles/' + t.getAttribute('data-remove'), { method: 'DELETE' }).then(loadMe).then(function () { toast('Profil retiré.'); render(); }).catch(function (err) { toast(err.message, true); }); }
-    else if (t.id === 'admin-tick') { t.disabled = true; api('/admin/tick', { method: 'POST' }).then(function () { toast('Planificateur exécuté.'); loadAdmin(); }).finally(function () { t.disabled = false; }); }
-    else if (t.hasAttribute('data-outcome')) { api('/admin/requests/' + t.getAttribute('data-req') + '/outcome', { body: { outcome: t.getAttribute('data-outcome') } }).then(function () { toast('Résultat enregistré.'); loadAdmin(); }).catch(function (err) { toast(err.message, true); }); }
-    else if (t.hasAttribute('data-broker-save')) { var id = t.getAttribute('data-broker-save'); api('/admin/brokers/' + id, { method: 'PUT', body: { contact_email: $('[data-broker-email="' + id + '"]').value, contact_verified: $('[data-broker-verified="' + id + '"]').checked } }).then(function () { toast('Contact enregistré.'); }).catch(function (err) { toast(err.message, true); }); }
     else if (t.getAttribute('href') && /^#profile-/.test(t.getAttribute('href'))) { e.preventDefault(); var el = $(t.getAttribute('href')); if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); var inp = $('input', el); if (inp) setTimeout(function () { inp.focus({ preventScroll: true }); }, 400); } }
   });
   document.addEventListener('change', function (e) { if (e.target.id === 'profile-select') { state.profileId = e.target.value; loadDash(); } });
   window.addEventListener('hashchange', render);
+
+  /* ---------- API interne pour les modules optionnels (admin) ---------- */
+  window.Oubli = { registerView: registerView, api: api, esc: esc, toast: toast, fmtDate: fmtDate, fmtTime: fmtTime, money: money, chip: chip, dots: dots, statusLabel: statusLabel, subLabel: subLabel, field: field, go: go, render: render, params: params, state: state, NBSP: NBSP, NNBSP: NNBSP };
 
   /* ---------- démarrage ---------- */
   Promise.all([api('/config').catch(function () { return { plans: { individuel: { name: 'Individuel', members: 1, monthly: 1299, annual: 8388 }, famille: { name: 'Famille', members: 5, monthly: 2499, annual: 16788 } }, billing: 'simulated', brokers: 50, mandate_version: '' }; }), loadMe()]).then(function (r) {
