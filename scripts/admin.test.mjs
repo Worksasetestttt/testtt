@@ -210,7 +210,97 @@ try {
   assert.equal(r.data.modes.mail, 'outbox'); assert.ok(r.data.scheduler.last_tick_at); assert.ok(r.data.counts.requests > 0);
   step('système : variables d’environnement en présence seulement, modes, planificateur, volumes');
 
-  /* ---------- 10. Suppression d'un compte et journal d'audit ---------- */
+  /* ---------- 10. Suspension, liste de blocage, pause du planificateur ---------- */
+  const C = await signup('chloe@exemple.fr');
+  assert.equal((await call('POST', `/admin/users/${C.user.id}/suspend`, { reason: '' }, AD)).status, 400, 'motif obligatoire');
+  assert.equal((await call('POST', `/admin/users/${admin.user.id}/suspend`, { reason: 'test' }, AD)).status, 400, 'pas d’auto-suspension');
+  await call('POST', `/admin/users/${B.user.id}/role`, { role: 'admin' }, AD);
+  assert.equal((await call('POST', `/admin/users/${B.user.id}/suspend`, { reason: 'test' }, AD)).status, 400, 'un administrateur se rétrograde d’abord');
+  await call('POST', `/admin/users/${B.user.id}/role`, { role: 'user' }, AD);
+  assert.equal((await call('POST', `/admin/users/${C.user.id}/suspend`, { reason: 'fraude', until: '2000-01-01' }, AD)).status, 400, 'date de fin passée refusée');
+  r = await call('POST', `/admin/users/${C.user.id}/suspend`, { reason: 'fraude au paiement', block_email: true }, AD);
+  assert.equal(r.status, 200); assert.equal(r.data.user.suspended, true); assert.ok(r.data.sessions >= 1);
+  assert.equal((await call('GET', '/me', undefined, { cookie: C.cookie })).data.user, null, 'sessions du compte suspendu fermées');
+  r = await call('POST', '/auth/login', { email: 'chloe@exemple.fr', password: STRONG }); assert.equal(r.status, 403); assert.match(r.data.error, /suspendu/);
+  r = await call('POST', '/auth/login', { email: 'chloe@exemple.fr', password: 'Mauvais-mot-de-passe-1' }); assert.equal(r.status, 401, 'suspension jamais révélée sans le bon mot de passe');
+  r = await call('GET', '/admin/users?status=suspended', undefined, AD); assert.equal(r.data.total, 1); assert.equal(r.data.counts.suspended, 1);
+  r = await call('GET', '/admin/security', undefined, AD); assert.equal(r.data.suspended[0].email, 'chloe@exemple.fr'); assert.ok(r.data.blocklist.some((b) => b.pattern === 'chloe@exemple.fr'));
+  assert.equal((await call('POST', '/auth/signup', { email: 'Chloe@Exemple.fr', password: STRONG })).status, 403, 'adresse bloquée à l’inscription');
+  assert.equal((await call('POST', '/admin/blocklist', { pattern: 'spam' }, AD)).status, 400);
+  r = await call('POST', '/admin/blocklist', { pattern: '@Spam.example', reason: 'robots' }, AD); assert.equal(r.status, 201); const blockId = r.data.entry.id;
+  assert.equal((await call('POST', '/admin/blocklist', { pattern: '@spam.example' }, AD)).status, 409);
+  assert.equal((await call('POST', '/auth/signup', { email: 'robot@spam.example', password: STRONG })).status, 403, 'domaine bloqué');
+  assert.equal((await call('DELETE', `/admin/blocklist/${blockId}`, {}, AD)).status, 200);
+  assert.equal((await call('POST', '/auth/signup', { email: 'robot@spam.example', password: STRONG })).status, 201, 'domaine débloqué');
+  r = await call('POST', `/admin/users/${C.user.id}/unsuspend`, {}, AD); assert.equal(r.data.user.suspended, false);
+  assert.equal((await call('POST', '/auth/login', { email: 'chloe@exemple.fr', password: STRONG })).status, 200, 'connexion rétablie');
+  // Planificateur : une demande en file d'un compte suspendu ne part pas ; elle part après la réactivation.
+  r = await call('POST', `/admin/users/${A.user.id}/suspend`, { reason: 'vérification d’identité' }, AD); assert.equal(r.status, 200);
+  assert.equal((await call('POST', `/admin/requests/${r1.id}/resend`, {}, AD)).data.request.status, 'queued');
+  await wait(300); await call('POST', '/admin/tick', {}, AD);
+  assert.equal((await call('GET', `/admin/requests/${r1.id}`, undefined, AD)).data.request.status, 'queued', 'aucun envoi pendant la suspension');
+  await call('POST', `/admin/users/${A.user.id}/unsuspend`, {}, AD); await call('POST', '/admin/tick', {}, AD);
+  assert.equal((await call('GET', `/admin/requests/${r1.id}`, undefined, AD)).data.request.status, 'sent', 'envoi repris après réactivation');
+  step('suspension : motif, date, sessions fermées, connexion refusée sans oracle, envois en pause ; liste de blocage (adresse, domaine)');
+
+  /* ---------- 11. Accès support en lecture seule ---------- */
+  assert.equal((await call('POST', `/admin/users/${A.user.id}/impersonate`, {}, AD)).status, 400, 'motif obligatoire');
+  assert.equal((await call('POST', `/admin/users/${admin.user.id}/impersonate`, { reason: 'test' }, AD)).status, 400);
+  await call('POST', `/admin/users/${B.user.id}/role`, { role: 'admin' }, AD);
+  assert.equal((await call('POST', `/admin/users/${B.user.id}/impersonate`, { reason: 'test' }, AD)).status, 400, 'jamais sur un autre administrateur');
+  await call('POST', `/admin/users/${B.user.id}/role`, { role: 'user' }, AD);
+  r = await call('POST', `/admin/users/${A.user.id}/impersonate`, { reason: 'ticket 42' }, AD);
+  assert.equal(r.status, 200); assert.ok(r.cookie && r.cookie !== admin.cookie);
+  assert.ok(Date.parse(r.data.expires_at) - Date.now() <= 30 * 60000 + 2000, 'trente minutes au plus');
+  const S = { cookie: r.cookie };
+  r = await call('GET', '/me', undefined, S); assert.equal(r.data.user.email, 'alice@exemple.fr'); assert.equal(r.data.impersonation.admin_email, 'admin@test.fr');
+  r = await call('GET', '/dashboard', undefined, S); assert.equal(r.status, 200); assert.ok(r.data.events.some((e) => /Accès support/.test(e.message)), 'l’abonné voit l’accès dans son journal');
+  const pidA = r.data.profiles[0].id;
+  for (const [m, p, b] of [['PUT', `/profiles/${pidA}`, { first_name: 'X' }], ['POST', '/auth/password', { current: STRONG, next: 'Autre-mot-de-passe-9' }], ['POST', '/mandate', { full_name: 'Alice Martin', accepted: true }], ['DELETE', '/mandate', {}], ['POST', '/billing/cancel', {}], ['DELETE', '/account', { password: STRONG }], ['POST', '/auth/logout-all', {}]]) {
+    r = await call(m, p, b, S); assert.equal(r.status, 403, `lecture seule : ${m} ${p}`); assert.match(r.data.error, /lecture seule/);
+  }
+  assert.equal((await call('GET', '/export', undefined, S)).status, 403, 'export complet réservé à l’administration');
+  assert.equal((await call('GET', '/admin/stats', undefined, S)).status, 403, 'pas de droits admin pendant l’accès');
+  r = await call('GET', `/admin/users/${A.user.id}`, undefined, AD); assert.ok(r.data.sessions.some((x) => x.support_by === 'admin@test.fr'));
+  r = await call('POST', '/auth/impersonate/stop', {}, S); assert.equal(r.data.admin, true);
+  assert.equal((await call('GET', '/me', undefined, { cookie: r.cookie })).data.user.role, 'admin', 'retour à la session administrateur');
+  assert.equal((await call('GET', '/me', undefined, S)).data.user, null, 'session support fermée');
+  r = await call('POST', `/admin/users/${A.user.id}/impersonate`, { reason: 'ticket 43' }, AD);
+  r = await call('POST', '/auth/logout', {}, { cookie: r.cookie }); assert.equal(r.data.admin, true, 'se déconnecter ramène à l’administration');
+  assert.equal((await call('GET', '/admin/stats', undefined, AD)).status, 200, 'session administrateur intacte');
+  step('accès support : motif, 30 min, jamais sur un admin, lecture seule (7 actions refusées, export exclu), retour à l’admin, trace côté abonné');
+
+  /* ---------- 12. Sessions, notes, message, adresse, export, annonce ---------- */
+  const A3 = (await call('POST', '/auth/login', { email: 'alice@exemple.fr', password: STRONG })).cookie;
+  r = await call('GET', `/admin/users/${A.user.id}`, undefined, AD);
+  const rawId = A3.split('=')[1].split('.')[0];
+  assert.ok(!JSON.stringify(r.data).includes(rawId), 'identifiant de session jamais exposé'); assert.ok(r.data.sessions.every((x) => /^[A-Za-z0-9_-]{16}$/.test(x.handle) && !('id' in x)));
+  const target = r.data.sessions[0];
+  assert.equal((await call('DELETE', `/admin/users/${A.user.id}/sessions/${target.handle}`, {}, AD)).status, 200);
+  assert.equal((await call('GET', '/me', undefined, { cookie: A3 })).data.user, null, 'session fermée');
+  assert.equal((await call('DELETE', `/admin/users/${A.user.id}/sessions/${target.handle}`, {}, AD)).status, 404);
+  assert.equal((await call('POST', `/admin/users/${A.user.id}/notes`, { body: ' ' }, AD)).status, 400);
+  r = await call('POST', `/admin/users/${A.user.id}/notes`, { body: 'Appel le 10/10 : souhaite ajouter son conjoint.' }, AD); assert.equal(r.status, 201);
+  const noteId = r.data.note.id;
+  assert.equal((await call('GET', `/admin/users/${A.user.id}`, undefined, AD)).data.notes[0].admin_email, 'admin@test.fr');
+  assert.equal((await call('DELETE', `/admin/notes/${noteId}`, {}, AD)).status, 200);
+  r = await call('POST', `/admin/users/${A.user.id}/message`, { subject: 'Suivi de votre demande Acxiom', body: 'Bonjour Alice, votre demande chez Acxiom est confirmée.' }, AD); assert.equal(r.data.mode, 'outbox');
+  r = await call('GET', `/admin/mails?user=${A.user.id}&q=Suivi de votre demande`, undefined, AD); assert.equal(r.data.total, 1);
+  assert.equal((await call('POST', `/admin/users/${A.user.id}/email`, { email: 'chloe@exemple.fr' }, AD)).status, 400, 'adresse bloquée');
+  assert.equal((await call('POST', `/admin/users/${A.user.id}/email`, { email: 'bruno@exemple.fr' }, AD)).status, 409, 'adresse déjà prise');
+  r = await call('POST', `/admin/users/${A.user.id}/email`, { email: 'Alice.Martin@exemple.fr' }, AD); assert.equal(r.data.user.email, 'alice.martin@exemple.fr');
+  assert.equal((await call('POST', '/auth/login', { email: 'alice.martin@exemple.fr', password: STRONG })).status, 200, 'connexion avec la nouvelle adresse');
+  await wait(100);
+  r = await call('GET', `/admin/mails?q=${encodeURIComponent('adresse de connexion')}`, undefined, AD); assert.equal(r.data.mails[0].to_addr, 'alice@exemple.fr', 'ancienne adresse prévenue');
+  r = await call('GET', `/admin/users/${A.user.id}/export`, undefined, AD);
+  assert.match(r.headers.get('content-disposition'), /attachment/); assert.ok(r.data.requests.length >= 50); noSecrets(r.data, '/admin/users/:id/export');
+  assert.equal((await call('PUT', '/admin/announcement', { text: '' }, AD)).status, 400);
+  r = await call('PUT', '/admin/announcement', { text: 'Maintenance ce soir de 22 h à 23 h.', level: 'warn' }, AD); assert.equal(r.data.announcement.level, 'warn');
+  assert.equal((await call('GET', '/config')).data.announcement.text, 'Maintenance ce soir de 22 h à 23 h.');
+  await call('DELETE', '/admin/announcement', {}, AD); assert.equal((await call('GET', '/config')).data.announcement, null);
+  step('sessions (poignées sans identifiant, fermeture), notes, message, changement d’adresse (ancienne prévenue), export par l’admin, annonce');
+
+  /* ---------- 13. Suppression d'un compte et journal d'audit ---------- */
   assert.equal((await call('DELETE', `/admin/users/${admin.user.id}`, {}, AD)).status, 400, 'pas d’auto-suppression depuis l’administration');
   r = await call('DELETE', `/admin/users/${B.user.id}`, { reason: 'demande écrite' }, AD); assert.equal(r.status, 200);
   r = await call('GET', '/me', undefined, BC); assert.equal(r.data.user, null, 'sessions du compte supprimé détruites');
@@ -218,7 +308,7 @@ try {
   assert.equal((await call('DELETE', `/admin/users/${B.user.id}`, {}, AD)).status, 400, 'déjà supprimé');
   r = await call('GET', '/admin/audit?per=100', undefined, AD);
   const actions = new Set(r.data.entries.map((e) => e.action));
-  for (const a of ['system.tick', 'user.role', 'user.subscription', 'user.logout_all', 'user.launch', 'request.outcome', 'request.resend', 'request.bulk', 'broker.update', 'broker.create', 'broker.test_mail', 'broker.deactivate', 'contact.handled', 'export.csv', 'user.delete']) assert.ok(actions.has(a), `audit : ${a}`);
+  for (const a of ['system.tick', 'user.role', 'user.subscription', 'user.logout_all', 'user.launch', 'request.outcome', 'request.resend', 'request.bulk', 'broker.update', 'broker.create', 'broker.test_mail', 'broker.deactivate', 'contact.handled', 'export.csv', 'user.delete', 'user.suspend', 'user.unsuspend', 'blocklist.add', 'blocklist.remove', 'user.impersonate', 'user.impersonate_stop', 'user.session_revoke', 'user.note', 'note.delete', 'user.message', 'user.email', 'user.export', 'settings.announcement']) assert.ok(actions.has(a), `audit : ${a}`);
   assert.ok(r.data.entries.every((e) => e.admin_email === 'admin@test.fr' && e.created_at));
   r = await call('GET', '/admin/audit?action=broker.', undefined, AD); assert.ok(r.data.entries.length >= 4 && r.data.entries.every((e) => e.action.startsWith('broker.')));
   r = await call('GET', `/admin/audit?target=${B.user.id}`, undefined, AD); assert.ok(r.data.entries.some((e) => e.action === 'user.delete' && e.details.reason === 'demande écrite'));

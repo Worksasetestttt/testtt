@@ -1,6 +1,6 @@
 // Tableau de bord d'un abonné : compteurs, exposition (valeur courante et historique sur 12 semaines),
 // répartition par catégorie et par sensibilité, demandes du cycle courant, journal, échéances.
-import { q } from './db.js';
+import { q, now } from './db.js';
 import { ref } from './scheduler.js';
 import { publicUser, parseProfile } from './util.js';
 
@@ -35,6 +35,17 @@ function count(b, r) {
   else if (r.status === 'refused') b.refused += 1;
   else if (r.status === 'queued') b.queued += 1;
   else b.in_progress += 1; // sent | in_progress
+}
+
+// Export RGPD (art. 15 et 20) d'un compte : utilisé par l'abonné (/api/export) et par l'administration.
+export function exportData(u) {
+  return {
+    exported_at: now(), user: publicUser(u),
+    profiles: q.all('SELECT * FROM profiles WHERE user_id = ?', u.id).map(parseProfile),
+    requests: q.all('SELECT r.*, b.name AS broker FROM requests r JOIN brokers b ON b.id = r.broker_id WHERE r.user_id = ?', u.id),
+    events: q.all('SELECT * FROM events WHERE user_id = ? ORDER BY id', u.id),
+    mails: q.all('SELECT to_addr, subject, body, created_at FROM mails WHERE user_id = ? ORDER BY id', u.id),
+  };
 }
 
 export function buildDashboard(u, requestedProfileId) {

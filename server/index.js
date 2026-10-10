@@ -104,6 +104,15 @@ app.use('/api', (req, res, next) => {
   }
   next();
 });
+// Accès support (un administrateur consulte le compte d'un abonné) : lecture seule. Seuls le retour à l'administration
+// et la déconnexion sont permis ; l'export complet passe par l'administration, où il est journalisé.
+const SUPPORT_ALLOWED = new Set(['/api/auth/impersonate/stop', '/api/auth/logout']);
+app.use('/api', (req, res, next) => {
+  if (!req.impersonator) return next();
+  const p = req.originalUrl.split('?')[0].toLowerCase().replace(/\/+$/, '');
+  if ((UNSAFE.has(req.method) && !SUPPORT_ALLOWED.has(p)) || p === '/api/export') return res.status(403).json({ error: 'Accès support en lecture seule : cette action est réservée à l’abonné.' });
+  next();
+});
 // Corps : toujours un objet JSON simple (absent → {}), jamais un tableau, une chaîne ou null.
 app.use('/api', (req, res, next) => {
   if (!UNSAFE.has(req.method)) return next();

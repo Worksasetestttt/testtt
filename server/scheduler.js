@@ -23,7 +23,9 @@ const MAX_ATTEMPTS = Math.max(1, Number(process.env.SEND_MAX_ATTEMPTS) || 6);  /
 export const STATUSES = ['queued', 'sent', 'in_progress', 'action_required', 'done', 'refused', 'error'];
 
 export const ref = (r) => `OUBLI-${r.token}`;
-const isEligible = (u) => !!(u && !u.deleted_at && u.mandate_signed_at && !u.mandate_revoked_at
+// Compte suspendu par l'administration : plus aucun envoi tant que la suspension court (même règle que auth.js).
+const suspended = (u) => !!(u.suspended_at && (!u.suspended_until || u.suspended_until > now()));
+const isEligible = (u) => !!(u && !u.deleted_at && !suspended(u) && u.mandate_signed_at && !u.mandate_revoked_at
   && (u.subscription_status === 'active' || (u.subscription_status === 'canceled' && u.subscription_ends_at && u.subscription_ends_at > now())));
 // Sécurité : en SMTP réel, jamais d’envoi vers un contact non vérifié par l’administrateur.
 const canMail = (b) => !!b && b.active === 1 && (mailMode !== 'smtp' || b.contact_verified === 1 || ALLOW_UNVERIFIED);

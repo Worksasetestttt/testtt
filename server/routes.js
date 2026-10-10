@@ -7,14 +7,15 @@ import { q, now, logEvent, db } from './db.js';
 import {
   hashPassword, verifyPassword, verifyDecoy, passwordProblem, createSession, destroySession, destroyOtherSessions,
   requireAuth, requireAdmin, rateLimit, isAdminEmail, promoteIfAdmin, loginLockRemaining, noteLoginFailure, clearLoginFailures, fmtWait,
+  isSuspended, isBlockedEmail, endImpersonation,
 } from './auth.js';
 import { sendMail, mailMode } from './mailer.js';
 import { welcomeMail, mandateText, MANDATE_VERSION } from './templates.js';
 import { PLANS, billingMode, startCheckout, cancelSubscription, verifyStripeSignature, handleStripeEvent } from './billing.js';
 import { launchProfile, applyOutcome, tick, DEMO } from './scheduler.js';
 import { EMAIL, publicUser, parseProfile, wrap, isId, str, strList, oneOf } from './util.js';
-import { buildDashboard } from './dashboard.js';
-import { admin } from './admin.js';
+import { buildDashboard, exportData } from './dashboard.js';
+import { admin, auditAs, currentAnnouncement } from './admin.js';
 
 export const api = express.Router();
 const fresh = (req) => q.get('SELECT * FROM users WHERE id = ?', req.user.id);
@@ -27,13 +28,14 @@ const tooMany = (res, seconds) => { res.setHeader('Retry-After', String(seconds)
 const isoDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v) && new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10) === v;
 
 api.get('/health', (_req, res) => res.json({ ok: true, mail: mailMode, billing: billingMode, demo: DEMO, time: now() }));
-api.get('/config', (_req, res) => res.json({ plans: PLANS, billing: billingMode, mail: mailMode, demo: DEMO, mandate_version: MANDATE_VERSION, brokers: q.get('SELECT COUNT(*) AS c FROM brokers WHERE active = 1').c }));
+api.get('/config', (_req, res) => res.json({ plans: PLANS, billing: billingMode, mail: mailMode, demo: DEMO, mandate_version: MANDATE_VERSION, brokers: q.get('SELECT COUNT(*) AS c FROM brokers WHERE active = 1').c, announcement: currentAnnouncement() }));
 
 /* ---------- Authentification ---------- */
 api.post('/auth/signup', rateLimit({ windowMs: 60 * 60000, max: 20 }), wrap(async (req, res) => {
   const email = str(req.body.email, 'email', 160).toLowerCase();
   const password = req.body.password;
   if (!EMAIL.test(email)) return bad(res, 'Adresse e-mail invalide.');
+  if (isBlockedEmail(email)) return bad(res, 'Inscription impossible avec cette adresse.', 403);
   const problem = passwordProblem(password, email);
   if (problem) return bad(res, problem);
   if ((req.body.plan !== undefined && req.body.plan !== null && typeof req.body.plan !== 'string') || (req.body.billing !== undefined && req.body.billing !== null && typeof req.body.billing !== 'string')) return bad(res, 'Offre invalide.');
@@ -62,17 +64,22 @@ api.post('/auth/login', rateLimit({ max: 50 }), wrap(async (req, res) => {
   const ok = user ? await verifyPassword(password, user.password_hash) : await verifyDecoy(password);
   if (!ok) { noteLoginFailure(email); return bad(res, 'E-mail ou mot de passe incorrect.', 401); }
   clearLoginFailures(email);
+  // Mot de passe correct seulement : la suspension n'est jamais révélée à qui ne connaît pas le mot de passe.
+  if (isSuspended(user)) return bad(res, 'Ce compte est suspendu. Pour toute question, écrivez au support.', 403);
   promoteIfAdmin(user);
   createSession(res, user, req);
   res.json({ user: publicUser(user) });
 }));
-api.post('/auth/logout', (req, res) => { destroySession(req, res); res.json({ ok: true }); });
+// Pendant un accès support, se déconnecter ramène l'administrateur à sa propre session.
+const stopSupport = (req, res) => { auditAs(req.impersonator.id, 'user.impersonate_stop', req.user.id, {}, req.ip); return { ok: true, ...endImpersonation(req, res) }; };
+api.post('/auth/logout', (req, res) => { if (req.impersonator) return res.json(stopSupport(req, res)); destroySession(req, res); res.json({ ok: true }); });
+api.post('/auth/impersonate/stop', (req, res) => (req.impersonator ? res.json(stopSupport(req, res)) : bad(res, 'Aucun accès support en cours.')));
 // Déconnecte tous les autres appareils (la session courante est conservée).
 api.post('/auth/logout-all', requireAuth, (req, res) => res.json({ ok: true, revoked: destroyOtherSessions(req.user.id, req.sessionId) }));
 api.get('/me', (req, res) => {
   if (!req.user) return res.json({ user: null, profiles: [] });
   const u = fresh(req);
-  res.json({ user: publicUser(u), profiles: q.all('SELECT * FROM profiles WHERE user_id = ? ORDER BY is_primary DESC, created_at', u.id).map(parseProfile) });
+  res.json({ user: publicUser(u), profiles: q.all('SELECT * FROM profiles WHERE user_id = ? ORDER BY is_primary DESC, created_at', u.id).map(parseProfile), impersonation: req.impersonator ? { admin_email: req.impersonator.email, expires_at: req.sessionExpiresAt } : null });
 });
 api.post('/auth/password', requireAuth, rateLimit({ max: 10 }), wrap(async (req, res) => {
   const current = req.body.current, next = req.body.next;
@@ -257,13 +264,7 @@ api.post('/contact', rateLimit({ windowMs: 60 * 60000, max: 10 }), (req, res) =>
 api.get('/export', requireAuth, rateLimit({ max: 10 }), (req, res) => {
   const u = fresh(req);
   res.setHeader('Content-Disposition', 'attachment; filename="oubli-export.json"');
-  res.json({
-    exported_at: now(), user: publicUser(u),
-    profiles: q.all('SELECT * FROM profiles WHERE user_id = ?', u.id).map(parseProfile),
-    requests: q.all('SELECT r.*, b.name AS broker FROM requests r JOIN brokers b ON b.id = r.broker_id WHERE r.user_id = ?', u.id),
-    events: q.all('SELECT * FROM events WHERE user_id = ? ORDER BY id', u.id),
-    mails: q.all('SELECT to_addr, subject, body, created_at FROM mails WHERE user_id = ? ORDER BY id', u.id),
-  });
+  res.json(exportData(u));
 });
 api.delete('/account', requireAuth, rateLimit({ max: 5 }), wrap(async (req, res) => {
   const u = fresh(req);

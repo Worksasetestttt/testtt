@@ -2,7 +2,7 @@
 // verrouillage par compte, limitation de débit en mémoire avec nettoyage périodique.
 import crypto from 'node:crypto';
 import { promisify } from 'node:util';
-import { q, now, db } from './db.js';
+import { q, now, db, ensureColumn } from './db.js';
 
 const PROD = process.env.NODE_ENV === 'production';
 const SECRET = process.env.SESSION_SECRET || (PROD ? '' : 'dev-secret-change-me');
@@ -23,6 +23,15 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)
 const sessionCols = new Set(db.prepare('PRAGMA table_info(sessions)').all().map((c) => c.name));
 if (!sessionCols.has('ip')) db.exec('ALTER TABLE sessions ADD COLUMN ip TEXT');
 if (!sessionCols.has('last_seen_at')) db.exec('ALTER TABLE sessions ADD COLUMN last_seen_at TEXT');
+// Accès support : session ouverte par un administrateur sur le compte d'un abonné (lecture seule, voir index.js).
+ensureColumn('sessions', 'impersonator_id', 'TEXT');
+ensureColumn('sessions', 'return_session_id', 'TEXT');
+// Suspension d'un compte par l'administration (date de fin facultative).
+ensureColumn('users', 'suspended_at', 'TEXT');
+ensureColumn('users', 'suspended_until', 'TEXT');
+ensureColumn('users', 'suspended_reason', 'TEXT');
+// Adresses (nom@domaine) et domaines (@domaine) refusés à l'inscription.
+db.exec('CREATE TABLE IF NOT EXISTS blocked_emails (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL UNIQUE, reason TEXT, created_by TEXT, created_at TEXT NOT NULL)');
 
 /* ---------- Mots de passe ---------- */
 const scrypt = promisify(crypto.scrypt);
@@ -100,6 +109,34 @@ export function createSession(res, user, req) {
   res.setHeader('Set-Cookie', cookieValue(`${id}.${sign(id)}`, SESSION_DAYS * 86400));
   return id;
 }
+/* ---------- Accès support (un administrateur consulte le compte d'un abonné) ---------- */
+export const SUPPORT_MINUTES = 30;
+// Ouvre une session de 30 minutes sur le compte cible ; la session de l'administrateur est conservée pour le retour.
+export function startImpersonation(res, target, req) {
+  const id = crypto.randomBytes(24).toString('base64url'), created = now();
+  const expires = new Date(Date.now() + SUPPORT_MINUTES * 60000).toISOString();
+  q.run('INSERT INTO sessions (id, user_id, created_at, expires_at, user_agent, ip, last_seen_at, impersonator_id, return_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    id, target.id, created, expires, String(req.headers['user-agent'] || '').slice(0, 200), String(req.ip || '').slice(0, 64), created, req.user.id, req.sessionId);
+  res.setHeader('Set-Cookie', cookieValue(`${id}.${sign(id)}`, SUPPORT_MINUTES * 60));
+  return { expires_at: expires };
+}
+// Ferme l'accès support et rend sa session à l'administrateur si elle est encore valide.
+export function endImpersonation(req, res) {
+  const s = q.get('SELECT impersonator_id, return_session_id FROM sessions WHERE id = ?', req.sessionId);
+  q.run('DELETE FROM sessions WHERE id = ?', req.sessionId);
+  req.sessionId = null;
+  const back = s?.return_session_id ? q.get('SELECT id FROM sessions WHERE id = ? AND user_id = ? AND impersonator_id IS NULL AND expires_at > ?', s.return_session_id, s.impersonator_id, now()) : null;
+  res.setHeader('Set-Cookie', back ? cookieValue(`${back.id}.${sign(back.id)}`, SESSION_DAYS * 86400) : cookieValue('', 0));
+  return { admin: !!back };
+}
+
+/* ---------- Suspension et liste de blocage ---------- */
+export const isSuspended = (u) => !!(u && u.suspended_at && (!u.suspended_until || u.suspended_until > now()));
+export function isBlockedEmail(email) {
+  const e = String(email ?? '').toLowerCase().trim(), at = e.lastIndexOf('@');
+  return at > 0 && !!q.get('SELECT 1 FROM blocked_emails WHERE pattern = ? OR pattern = ?', e, e.slice(at));
+}
+
 export function destroySession(req, res) {
   if (req.sessionId) q.run('DELETE FROM sessions WHERE id = ?', req.sessionId);
   req.sessionId = null;
@@ -118,7 +155,7 @@ setInterval(() => { try { purgeExpiredSessions(); } catch (e) { console.error('[
 
 // Un cookie absent, malformé ou falsifié donne simplement un visiteur anonyme (jamais d'erreur 500).
 export function attachUser(req, _res, next) {
-  req.user = null; req.sessionId = null;
+  req.user = null; req.sessionId = null; req.impersonator = null;
   try {
     const raw = parseCookies(req.headers.cookie)[COOKIE];
     if (!raw) return next();
@@ -135,9 +172,15 @@ export function attachUser(req, _res, next) {
     if (!(createdMs + SESSION_DAYS * 86400000 > nowMs)) { q.run('DELETE FROM sessions WHERE id = ?', id); return next(); }
     const u = q.get('SELECT * FROM users WHERE id = ? AND deleted_at IS NULL', s.user_id);
     if (!u) { q.run('DELETE FROM sessions WHERE id = ?', id); return next(); }
-    req.user = u; req.sessionId = id;
+    let imp = null;
+    if (s.impersonator_id) {
+      // L'accès support cesse dès que l'administrateur perd son rôle ; il n'est jamais prolongé.
+      imp = q.get(`SELECT id, email FROM users WHERE id = ? AND role = 'admin' AND deleted_at IS NULL`, s.impersonator_id);
+      if (!imp) { q.run('DELETE FROM sessions WHERE id = ?', id); return next(); }
+    } else if (isSuspended(u)) { q.run('DELETE FROM sessions WHERE id = ?', id); return next(); }
+    req.user = u; req.sessionId = id; req.impersonator = imp; req.sessionExpiresAt = s.expires_at;
     const seen = Date.parse(s.last_seen_at || s.created_at);
-    if (!(seen + REFRESH_MS > nowMs)) q.run('UPDATE sessions SET expires_at = ?, last_seen_at = ? WHERE id = ?', expiryFor(createdMs, nowMs), nowIso, id);
+    if (!imp && !(seen + REFRESH_MS > nowMs)) q.run('UPDATE sessions SET expires_at = ?, last_seen_at = ? WHERE id = ?', expiryFor(createdMs, nowMs), nowIso, id);
   } catch (e) {
     console.error('[auth] cookie ignoré :', e.message);
     req.user = null; req.sessionId = null;

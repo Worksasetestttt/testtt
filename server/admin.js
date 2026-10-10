@@ -12,6 +12,8 @@ import * as scheduler from './scheduler.js';
 import { sendMail, mailMode } from './mailer.js';
 import { PLANS, billingMode, cancelSubscription } from './billing.js';
 import { EMAIL, clean, parseProfile, wrap } from './util.js';
+import { isSuspended, isBlockedEmail, startImpersonation, SUPPORT_MINUTES } from './auth.js';
+import { exportData } from './dashboard.js';
 
 const { applyOutcome, tick, launchProfile, ref, DEMO } = scheduler;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -31,6 +33,15 @@ CREATE TABLE IF NOT EXISTS admin_audit (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_admin_audit_target ON admin_audit(target);
+CREATE TABLE IF NOT EXISTS admin_notes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  admin_id TEXT NOT NULL,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_admin_notes_user ON admin_notes(user_id);
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
 `);
 // Suivi des messages de contact (colonne additive, sans effet sur le reste de l'application).
 if (!db.prepare('PRAGMA table_info(contacts)').all().some((c) => c.name === 'handled_at')) db.exec('ALTER TABLE contacts ADD COLUMN handled_at TEXT');
@@ -62,16 +73,37 @@ function paging(query, def = 25) {
   return { per, page, offset: (page - 1) * per };
 }
 const pageMeta = (total, p) => ({ total, page: p.page, per: p.per, pages: Math.max(1, Math.ceil(total / p.per)) });
-function audit(req, action, target, details = {}) {
-  q.run('INSERT INTO admin_audit (admin_id, action, target, details, ip, created_at) VALUES (?, ?, ?, ?, ?, ?)', req.user.id, action, target == null ? null : String(target), JSON.stringify(details), String(req.ip || '').slice(0, 64), now());
+// Journal d'audit. auditAs sert aussi hors du routeur (fin d'un accès support, routes.js).
+export function auditAs(adminId, action, target, details = {}, ip = '') {
+  q.run('INSERT INTO admin_audit (admin_id, action, target, details, ip, created_at) VALUES (?, ?, ?, ?, ?, ?)', adminId, action, target == null ? null : String(target), JSON.stringify(details), String(ip || '').slice(0, 64), now());
 }
+const audit = (req, action, target, details = {}) => auditAs(req.user.id, action, target, details, req.ip);
 const adminUser = (u) => ({
   id: u.id, email: u.email, role: u.role, plan: u.plan, billing: u.billing,
   subscription_status: u.subscription_status, subscription_ends_at: u.subscription_ends_at, billing_mode: u.billing_mode,
   stripe_customer: mask(u.stripe_customer_id), stripe_subscription: mask(u.stripe_subscription_id),
   mandate_signed_at: u.mandate_signed_at, mandate_name: u.mandate_name, mandate_version: u.mandate_version, mandate_revoked_at: u.mandate_revoked_at,
   created_at: u.created_at, deleted_at: u.deleted_at,
+  suspended: isSuspended(u), suspended_at: u.suspended_at, suspended_until: u.suspended_until, suspended_reason: u.suspended_reason,
 });
+const SUSPENDED_SQL = '(u.suspended_at IS NOT NULL AND (u.suspended_until IS NULL OR u.suspended_until > ?))';
+// Sessions : jamais l'identifiant brut, seulement une empreinte courte qui sert de poignée pour la fermeture.
+const handleOf = (id) => crypto.createHash('sha256').update(String(id)).digest('base64url').slice(0, 16);
+function device(ua) {
+  const s = String(ua || '');
+  const os = /iPhone|iPad/.test(s) ? 'iOS' : /Android/.test(s) ? 'Android' : /Mac OS X/.test(s) ? 'macOS' : /Windows/.test(s) ? 'Windows' : /Linux/.test(s) ? 'Linux' : '';
+  const br = /Edg\//.test(s) ? 'Edge' : /Firefox\//.test(s) ? 'Firefox' : /Chrome\//.test(s) ? 'Chrome' : /Safari\//.test(s) ? 'Safari' : /node|curl|undici/i.test(s) ? 'Script' : '';
+  return [br, os].filter(Boolean).join(' · ') || 'Appareil inconnu';
+}
+const publicSession = (s, currentId) => ({
+  handle: handleOf(s.id), user_id: s.user_id, email: s.email, created_at: s.created_at, last_seen_at: s.last_seen_at || s.created_at, expires_at: s.expires_at,
+  ip: s.ip, device: device(s.user_agent), user_agent: String(s.user_agent || '').slice(0, 120), support_by: s.impersonator_email || null, current: s.id === currentId,
+});
+const SESSION_COLS = 's.id, s.user_id, s.created_at, s.last_seen_at, s.expires_at, s.ip, s.user_agent, a.email AS impersonator_email';
+const sessionsOf = (userId, currentId) => q.all(`SELECT ${SESSION_COLS} FROM sessions s LEFT JOIN users a ON a.id = s.impersonator_id WHERE s.user_id = ? AND s.expires_at > ? ORDER BY COALESCE(s.last_seen_at, s.created_at) DESC`, userId, now()).map((x) => publicSession(x, currentId));
+const endOfDay = (v) => isoDate(/^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? `${v}T23:59:59.000Z` : v);
+const fmtDay = (iso) => new Date(iso).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+const BLOCK_PATTERN = (p) => EMAIL.test(p) || (p.startsWith('@') && DOMAIN.test(p.slice(1)));
 const getUser = (id) => (UUID.test(String(id)) ? q.get('SELECT * FROM users WHERE id = ?', id) : null);
 function getRequest(id) {
   const s = String(id || '').replace(/^OUBLI-/i, '');
@@ -125,6 +157,8 @@ admin.get('/stats', (_req, res) => {
     },
     contacts_open: q.get('SELECT COUNT(*) AS c FROM contacts WHERE handled_at IS NULL').c,
     newsletter: q.get('SELECT COUNT(*) AS c FROM newsletter').c,
+    suspended: q.get(`SELECT COUNT(*) AS c FROM users u WHERE u.deleted_at IS NULL AND ${SUSPENDED_SQL}`, now()).c,
+    support_sessions: q.get('SELECT COUNT(*) AS c FROM sessions WHERE impersonator_id IS NOT NULL AND expires_at > ?', now()).c,
     scheduler: { ...(lastTickAt() ? { last_tick_at: lastTickAt() } : {}), last_manual_tick_at: lastManualTickAt, interval_ms: Number(process.env.SCHEDULER_INTERVAL_MS || (DEMO ? 20000 : 60000)) },
     mail_mode: mailMode, billing_mode: billingMode, demo: DEMO, generated_at: now(),
   });
@@ -139,6 +173,7 @@ admin.get('/users', (req, res) => {
   const status = clean(req.query.status, 20);
   if (status === 'deleted') where.push('u.deleted_at IS NOT NULL');
   else if (status === 'admin') where.push(`u.role = 'admin' AND u.deleted_at IS NULL`);
+  else if (status === 'suspended') { where.push(`u.deleted_at IS NULL AND ${SUSPENDED_SQL}`); params.push(now()); }
   else { if (SUBS.includes(status)) { where.push('u.subscription_status = ?'); params.push(status); } if (status !== 'all') where.push('u.deleted_at IS NULL'); }
   const plan = clean(req.query.plan, 20);
   if (PLANS[plan]) { where.push('u.plan = ?'); params.push(plan); }
@@ -155,7 +190,7 @@ admin.get('/users', (req, res) => {
   res.json({
     users: rows.map((u) => ({ ...adminUser(u), name: (u.name || '').trim() || null, profiles_n: u.profiles_n, requests_n: u.requests_n, done_n: u.done_n, action_required_n: u.action_required_n })),
     ...pageMeta(total, p),
-    counts: { all: q.get('SELECT COUNT(*) AS c FROM users WHERE deleted_at IS NULL').c, active: c.active || 0, past_due: c.past_due || 0, canceled: c.canceled || 0, none: c.none || 0, admin: q.get(`SELECT COUNT(*) AS c FROM users WHERE role = 'admin' AND deleted_at IS NULL`).c, deleted: q.get('SELECT COUNT(*) AS c FROM users WHERE deleted_at IS NOT NULL').c },
+    counts: { all: q.get('SELECT COUNT(*) AS c FROM users WHERE deleted_at IS NULL').c, active: c.active || 0, past_due: c.past_due || 0, canceled: c.canceled || 0, none: c.none || 0, admin: q.get(`SELECT COUNT(*) AS c FROM users WHERE role = 'admin' AND deleted_at IS NULL`).c, suspended: q.get(`SELECT COUNT(*) AS c FROM users u WHERE u.deleted_at IS NULL AND ${SUSPENDED_SQL}`, now()).c, deleted: q.get('SELECT COUNT(*) AS c FROM users WHERE deleted_at IS NOT NULL').c },
   });
 });
 admin.get('/users/:id', (req, res) => {
@@ -169,6 +204,8 @@ admin.get('/users/:id', (req, res) => {
     requests: q.all(`SELECT r.id, r.token, r.status, r.cycle, r.created_at, r.sent_at, r.due_at, r.completed_at, r.note, b.name AS broker, (p.first_name || ' ' || p.last_name) AS profile FROM requests r JOIN brokers b ON b.id = r.broker_id JOIN profiles p ON p.id = r.profile_id WHERE r.user_id = ? ORDER BY CASE r.status WHEN 'action_required' THEN 0 WHEN 'refused' THEN 1 ELSE 2 END, r.created_at DESC LIMIT 60`, u.id).map((r) => ({ ...r, ref: ref(r) })),
     events: q.all('SELECT id, type, message, request_id, profile_id, created_at FROM events WHERE user_id = ? ORDER BY id DESC LIMIT 30', u.id),
     sessions_n: q.get('SELECT COUNT(*) AS c FROM sessions WHERE user_id = ? AND expires_at > ?', u.id, now()).c,
+    sessions: sessionsOf(u.id, req.sessionId),
+    notes: q.all('SELECT n.id, n.body, n.created_at, a.email AS admin_email FROM admin_notes n LEFT JOIN users a ON a.id = n.admin_id WHERE n.user_id = ? ORDER BY n.id DESC LIMIT 100', u.id),
     mails_n: q.get('SELECT COUNT(*) AS c FROM mails WHERE user_id = ?', u.id).c,
     audit: q.all('SELECT a.id, a.action, a.details, a.created_at, ad.email AS admin_email FROM admin_audit a LEFT JOIN users ad ON ad.id = a.admin_id WHERE a.target = ? ORDER BY a.id DESC LIMIT 20', u.id).map((a) => ({ ...a, details: JSON.parse(a.details || '{}') })),
   });
@@ -184,7 +221,7 @@ admin.post('/users/:id/role', (req, res) => {
   audit(req, 'user.role', u.id, { from: u.role, to: role });
   res.json({ user: adminUser(q.get('SELECT * FROM users WHERE id = ?', u.id)) });
 });
-admin.post('/users/:id/subscription', (req, res) => {
+admin.post('/users/:id/subscription', wrap(async (req, res) => {
   const u = getUser(req.params.id);
   if (!u || u.deleted_at) return bad(res, 'Compte introuvable.', 404);
   const b = req.body, status = String(b.status || '');
@@ -195,16 +232,22 @@ admin.post('/users/:id/subscription', (req, res) => {
   if (b.ends_at !== undefined) { if (b.ends_at === null || b.ends_at === '') ends = null; else { ends = isoDate(b.ends_at); if (!ends) return bad(res, 'Date de fin invalide.'); } }
   if (status === 'active') { if (!plan) return bad(res, 'Choisissez une offre pour activer l’abonnement.'); billing = billing || 'monthly'; ends = null; }
   if (status === 'none') ends = null;
+  // Un abonnement payé par Stripe se résilie chez Stripe (sinon les prélèvements continueraient) ; fin = fin de période.
+  let viaStripe = false;
+  if (status === 'canceled' && u.billing_mode === 'stripe' && u.stripe_subscription_id && u.subscription_status !== 'canceled') {
+    try { ends = (await cancelSubscription(u)).ends_at; viaStripe = true; }
+    catch (e) { console.error(`[admin] résiliation Stripe impossible (${req.id}) :`, e.message); return bad(res, 'Stripe n’a pas confirmé la résiliation : rien n’a été modifié. Réessayez dans quelques instants.', 502); }
+  }
   const mode = status === 'active' ? (u.billing_mode === 'stripe' ? 'stripe' : 'manual') : u.billing_mode;
   q.run('UPDATE users SET subscription_status = ?, plan = ?, billing = ?, subscription_ends_at = ?, billing_mode = ? WHERE id = ?', status, plan, billing, ends, mode, u.id);
   const fmt = (iso) => new Date(iso).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
   const msg = status === 'active' ? `Abonnement ${PLANS[plan].name} (${billing === 'annual' ? 'annuel' : 'mensuel'}) activé par l’équipe Oubli.`
     : status === 'canceled' ? `Abonnement résilié par l’équipe Oubli${ends ? ` ; accès maintenu jusqu’au ${fmt(ends)}` : ''}.`
     : status === 'past_due' ? 'Abonnement marqué « paiement en attente » par l’équipe Oubli.' : 'Abonnement retiré par l’équipe Oubli.';
-  logEvent(u.id, 'billing', msg);
-  audit(req, 'user.subscription', u.id, { from: { status: u.subscription_status, plan: u.plan, billing: u.billing, ends_at: u.subscription_ends_at }, to: { status, plan, billing, ends_at: ends }, note: clean(b.note, 200) || undefined });
+  if (!viaStripe) logEvent(u.id, 'billing', msg);
+  audit(req, 'user.subscription', u.id, { from: { status: u.subscription_status, plan: u.plan, billing: u.billing, ends_at: u.subscription_ends_at }, to: { status, plan, billing, ends_at: ends }, stripe: viaStripe || undefined, note: clean(b.note, 200) || undefined });
   res.json({ user: adminUser(q.get('SELECT * FROM users WHERE id = ?', u.id)) });
-});
+}));
 admin.post('/users/:id/logout-all', (req, res) => {
   const u = getUser(req.params.id);
   if (!u) return bad(res, 'Compte introuvable.', 404);
@@ -222,6 +265,107 @@ admin.post('/users/:id/launch', wrap(async (req, res) => {
   setTimeout(() => tick(), 10);
   res.json({ created });
 }));
+/* ---------- Suspension, accès support, sessions, notes, message, adresse, export ---------- */
+admin.post('/users/:id/suspend', (req, res) => {
+  const u = getUser(req.params.id);
+  if (!u || u.deleted_at) return bad(res, 'Compte introuvable.', 404);
+  if (u.id === req.user.id) return bad(res, 'Vous ne pouvez pas suspendre votre propre compte.');
+  if (u.role === 'admin') return bad(res, 'Retirez d’abord le rôle administrateur de ce compte.');
+  const reason = clean(req.body.reason, 300);
+  if (reason.length < 3) return bad(res, 'Indiquez le motif de la suspension (il est journalisé).');
+  let until = null;
+  if (req.body.until) { until = endOfDay(req.body.until); if (!until || until <= now()) return bad(res, 'La date de fin de suspension doit être dans le futur.'); }
+  q.run('UPDATE users SET suspended_at = ?, suspended_until = ?, suspended_reason = ? WHERE id = ?', now(), until, reason, u.id);
+  const sessions = Number(q.run('DELETE FROM sessions WHERE user_id = ?', u.id).changes || 0);
+  const blocked = req.body.block_email === true && !!q.run('INSERT OR IGNORE INTO blocked_emails (pattern, reason, created_by, created_at) VALUES (?, ?, ?, ?)', u.email.toLowerCase(), `Suspension : ${reason}`, req.user.id, now()).changes;
+  logEvent(u.id, 'account', `Compte suspendu par l’équipe Oubli${until ? ` jusqu’au ${fmtDay(until)}` : ''} : aucune demande ne part pendant la suspension.`);
+  audit(req, 'user.suspend', u.id, { reason, until: until || undefined, sessions, blocked: blocked || undefined });
+  res.json({ user: adminUser(q.get('SELECT * FROM users WHERE id = ?', u.id)), sessions });
+});
+admin.post('/users/:id/unsuspend', (req, res) => {
+  const u = getUser(req.params.id);
+  if (!u || u.deleted_at) return bad(res, 'Compte introuvable.', 404);
+  if (!u.suspended_at) return bad(res, 'Ce compte n’est pas suspendu.');
+  q.run('UPDATE users SET suspended_at = NULL, suspended_until = NULL, suspended_reason = NULL WHERE id = ?', u.id);
+  logEvent(u.id, 'account', 'Compte réactivé par l’équipe Oubli : les demandes reprennent.');
+  audit(req, 'user.unsuspend', u.id, { was: u.suspended_reason });
+  res.json({ user: adminUser(q.get('SELECT * FROM users WHERE id = ?', u.id)) });
+});
+// Accès au compte : lecture seule (index.js), 30 minutes, motif obligatoire, jamais sur un autre administrateur.
+admin.post('/users/:id/impersonate', (req, res) => {
+  const u = getUser(req.params.id);
+  if (!u || u.deleted_at) return bad(res, 'Compte introuvable.', 404);
+  if (u.id === req.user.id) return bad(res, 'C’est votre propre compte.');
+  if (u.role === 'admin') return bad(res, 'L’accès au compte d’un autre administrateur n’est pas autorisé.');
+  const reason = clean(req.body.reason, 200);
+  if (reason.length < 3) return bad(res, 'Indiquez le motif de l’accès (il est journalisé et visible par l’abonné).');
+  const s = startImpersonation(res, u, req);
+  audit(req, 'user.impersonate', u.id, { reason, minutes: SUPPORT_MINUTES });
+  logEvent(u.id, 'account', 'Accès support : un membre de l’équipe Oubli a consulté votre dossier, en lecture seule.');
+  res.json({ ok: true, expires_at: s.expires_at });
+});
+admin.delete('/users/:id/sessions/:handle', (req, res) => {
+  const u = getUser(req.params.id);
+  if (!u) return bad(res, 'Compte introuvable.', 404);
+  const s = q.all('SELECT id FROM sessions WHERE user_id = ?', u.id).find((x) => handleOf(x.id) === req.params.handle);
+  if (!s) return bad(res, 'Session introuvable ou déjà fermée.', 404);
+  if (s.id === req.sessionId) return bad(res, 'Pour fermer votre session en cours, déconnectez-vous.');
+  q.run('DELETE FROM sessions WHERE id = ?', s.id);
+  audit(req, 'user.session_revoke', u.id, {});
+  res.json({ ok: true });
+});
+admin.post('/users/:id/notes', (req, res) => {
+  const u = getUser(req.params.id);
+  if (!u) return bad(res, 'Compte introuvable.', 404);
+  const body = clean(req.body.body, 2000);
+  if (!body) return bad(res, 'La note est vide.');
+  const id = Number(q.run('INSERT INTO admin_notes (user_id, admin_id, body, created_at) VALUES (?, ?, ?, ?)', u.id, req.user.id, body, now()).lastInsertRowid);
+  audit(req, 'user.note', u.id, { note_id: id });
+  res.status(201).json({ note: q.get('SELECT n.id, n.body, n.created_at, a.email AS admin_email FROM admin_notes n LEFT JOIN users a ON a.id = n.admin_id WHERE n.id = ?', id) });
+});
+admin.delete('/notes/:id', (req, res) => {
+  if (!INT.test(req.params.id)) return bad(res, 'Note introuvable.', 404);
+  const n = q.get('SELECT * FROM admin_notes WHERE id = ?', Number(req.params.id));
+  if (!n) return bad(res, 'Note introuvable.', 404);
+  q.run('DELETE FROM admin_notes WHERE id = ?', n.id);
+  audit(req, 'note.delete', n.user_id, { note_id: n.id });
+  res.json({ ok: true });
+});
+admin.post('/users/:id/message', wrap(async (req, res) => {
+  const u = getUser(req.params.id);
+  if (!u || u.deleted_at) return bad(res, 'Compte introuvable.', 404);
+  const subject = clean(req.body.subject, 160), body = String(req.body.body ?? '').trim().slice(0, 5000);
+  if (subject.length < 3) return bad(res, 'Objet trop court.');
+  if (body.length < 5) return bad(res, 'Message trop court.');
+  try {
+    const r = await sendMail({ to: u.email, subject, text: `${body}\n\n— L’équipe Oubli`, user_id: u.id });
+    audit(req, 'user.message', u.id, { subject, mode: r.mode });
+    res.json({ ok: true, mode: r.mode });
+  } catch (e) { console.error(`[admin] message non envoyé (${req.id}) :`, e.message); bad(res, 'Le message n’a pas pu être envoyé.', 502); }
+}));
+admin.post('/users/:id/email', wrap(async (req, res) => {
+  const u = getUser(req.params.id);
+  if (!u || u.deleted_at) return bad(res, 'Compte introuvable.', 404);
+  const email = clean(req.body.email, 160).toLowerCase();
+  if (!EMAIL.test(email)) return bad(res, 'Adresse e-mail invalide.');
+  if (email === u.email) return bad(res, 'C’est déjà l’adresse du compte.');
+  if (isBlockedEmail(email)) return bad(res, 'Cette adresse est dans la liste de blocage.');
+  if (q.get('SELECT id FROM users WHERE email = ?', email)) return bad(res, 'Un compte existe déjà avec cette adresse.', 409);
+  q.run('UPDATE users SET email = ? WHERE id = ?', email, u.id);
+  logEvent(u.id, 'account', `Adresse de connexion remplacée par ${email} par l’équipe Oubli.`);
+  audit(req, 'user.email', u.id, { from: u.email, to: email });
+  // L'ancienne adresse est prévenue : c'est la seule défense si le changement n'a pas été demandé par l'abonné.
+  sendMail({ to: u.email, subject: 'Votre adresse de connexion Oubli a été modifiée', text: `Bonjour,\n\nÀ votre demande, l’adresse de connexion de votre compte Oubli est désormais ${email}.\nSi vous n’êtes pas à l’origine de ce changement, répondez immédiatement à ce message.\n\n— L’équipe Oubli`, user_id: u.id }).catch(() => {});
+  res.json({ user: adminUser(q.get('SELECT * FROM users WHERE id = ?', u.id)) });
+}));
+admin.get('/users/:id/export', (req, res) => {
+  const u = getUser(req.params.id);
+  if (!u || u.deleted_at) return bad(res, 'Compte introuvable.', 404);
+  audit(req, 'user.export', u.id, {});
+  res.setHeader('Content-Disposition', `attachment; filename="oubli-export-${u.id.slice(0, 8)}.json"`);
+  res.json(exportData(u));
+});
+
 admin.delete('/users/:id', wrap(async (req, res) => {
   const u = getUser(req.params.id);
   if (!u) return bad(res, 'Compte introuvable.', 404);
@@ -475,6 +619,52 @@ admin.get('/export.csv', (req, res) => {
   res.send(toCsv(headers, rows));
 });
 
+/* ---------- Sécurité : suspensions, liste de blocage, accès support, sessions ---------- */
+admin.get('/security', (req, res) => {
+  const t = now();
+  res.json({
+    suspended: q.all(`SELECT u.id, u.email, u.suspended_at, u.suspended_until, u.suspended_reason FROM users u WHERE u.deleted_at IS NULL AND ${SUSPENDED_SQL} ORDER BY u.suspended_at DESC LIMIT 200`, t),
+    blocklist: q.all('SELECT b.id, b.pattern, b.reason, b.created_at, a.email AS created_by_email FROM blocked_emails b LEFT JOIN users a ON a.id = b.created_by ORDER BY b.id DESC LIMIT 500'),
+    impersonations: q.all(`SELECT a.id, a.details, a.created_at, ad.email AS admin_email, u.email AS user_email, a.target FROM admin_audit a LEFT JOIN users ad ON ad.id = a.admin_id LEFT JOIN users u ON u.id = a.target WHERE a.action = 'user.impersonate' ORDER BY a.id DESC LIMIT 20`).map((x) => ({ ...x, details: JSON.parse(x.details || '{}') })),
+    sessions: q.all(`SELECT ${SESSION_COLS}, u.email FROM sessions s JOIN users u ON u.id = s.user_id LEFT JOIN users a ON a.id = s.impersonator_id WHERE s.expires_at > ? ORDER BY COALESCE(s.last_seen_at, s.created_at) DESC LIMIT 50`, t).map((x) => publicSession(x, req.sessionId)),
+    sessions_total: q.get('SELECT COUNT(*) AS c FROM sessions WHERE expires_at > ?', t).c,
+  });
+});
+admin.post('/blocklist', (req, res) => {
+  const pattern = clean(req.body.pattern, 160).toLowerCase();
+  if (!BLOCK_PATTERN(pattern)) return bad(res, 'Saisissez une adresse (nom@domaine.fr) ou un domaine précédé de @ (@domaine.fr).');
+  if (q.get('SELECT id FROM blocked_emails WHERE pattern = ?', pattern)) return bad(res, 'Cette adresse ou ce domaine est déjà bloqué.', 409);
+  const id = Number(q.run('INSERT INTO blocked_emails (pattern, reason, created_by, created_at) VALUES (?, ?, ?, ?)', pattern, clean(req.body.reason, 200) || null, req.user.id, now()).lastInsertRowid);
+  audit(req, 'blocklist.add', id, { pattern });
+  res.status(201).json({ entry: q.get('SELECT id, pattern, reason, created_at FROM blocked_emails WHERE id = ?', id) });
+});
+admin.delete('/blocklist/:id', (req, res) => {
+  if (!INT.test(req.params.id)) return bad(res, 'Entrée introuvable.', 404);
+  const b = q.get('SELECT * FROM blocked_emails WHERE id = ?', Number(req.params.id));
+  if (!b) return bad(res, 'Entrée introuvable.', 404);
+  q.run('DELETE FROM blocked_emails WHERE id = ?', b.id);
+  audit(req, 'blocklist.remove', b.id, { pattern: b.pattern });
+  res.json({ ok: true });
+});
+
+/* ---------- Annonce affichée dans l'application (bandeau) ---------- */
+export function currentAnnouncement() {
+  const r = q.get(`SELECT value FROM settings WHERE key = 'announcement'`);
+  try { const a = r ? JSON.parse(r.value) : null; return a && a.text ? { text: String(a.text), level: a.level === 'warn' ? 'warn' : 'info' } : null; } catch { return null; }
+}
+admin.put('/announcement', (req, res) => {
+  const text = clean(req.body.text, 280), level = req.body.level === 'warn' ? 'warn' : 'info';
+  if (text.length < 3) return bad(res, 'Annonce trop courte.');
+  q.run(`INSERT INTO settings (key, value, updated_at) VALUES ('announcement', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, JSON.stringify({ text, level }), now());
+  audit(req, 'settings.announcement', null, { text, level });
+  res.json({ announcement: currentAnnouncement() });
+});
+admin.delete('/announcement', (req, res) => {
+  q.run(`DELETE FROM settings WHERE key = 'announcement'`);
+  audit(req, 'settings.announcement', null, { removed: true });
+  res.json({ announcement: null });
+});
+
 /* ---------- Système ---------- */
 admin.get('/system', (_req, res) => {
   const pages = db.prepare('PRAGMA page_count').get(), size = db.prepare('PRAGMA page_size').get();
@@ -493,6 +683,7 @@ admin.get('/system', (_req, res) => {
       sessions: q.get('SELECT COUNT(*) AS c FROM sessions WHERE expires_at > ?', now()).c, brokers: q.get('SELECT COUNT(*) AS c FROM brokers').c, brokers_active: q.get('SELECT COUNT(*) AS c FROM brokers WHERE active = 1').c,
       newsletter: q.get('SELECT COUNT(*) AS c FROM newsletter').c, contacts: q.get('SELECT COUNT(*) AS c FROM contacts').c, contacts_open: q.get('SELECT COUNT(*) AS c FROM contacts WHERE handled_at IS NULL').c, audit: q.get('SELECT COUNT(*) AS c FROM admin_audit').c,
     },
+    announcement: currentAnnouncement(),
     env: Object.fromEntries(['NODE_ENV', 'APP_URL', 'SESSION_SECRET', 'DATABASE_PATH', 'OUTBOX_DIR', 'SMTP_URL', 'MAIL_FROM', 'MAIL_REPLY_TO', 'ALLOW_UNVERIFIED_CONTACTS', 'INBOUND_TOKEN', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'ADMIN_EMAILS', 'COMPANY_NAME', 'COMPANY_ADDRESS', 'SCHEDULER_INTERVAL_MS', 'TRUST_PROXY', 'DEMO_MODE'].map((k) => [k, present(k)])),
   });
 });
