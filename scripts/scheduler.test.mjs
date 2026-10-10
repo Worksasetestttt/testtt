@@ -74,7 +74,11 @@ async function member(s, { launch = true, first = 'Léa', last = 'Moreau' } = {}
   await s.call('PUT', `/profiles/${me.data.profiles[0].id}`, { first_name: first, last_name: last }, cookie);
   await s.call('POST', '/mandate', { full_name: `${first} ${last}`, accepted: true }, cookie);
   assert.equal((await s.call('POST', `/admin/users/${me.data.user.id}/subscription`, { status: 'active', plan: 'individuel' }, await adminOf(s))).status, 200);
-  if (launch) assert.ok((await s.call('POST', '/requests/launch', {}, cookie)).data.created > 0, 'demandes lancées');
+  if (launch) {
+    // Un passage du planificateur peut avoir lancé le profil juste avant : seul compte qu'il ait ses demandes.
+    assert.equal((await s.call('POST', '/requests/launch', {}, cookie)).status, 200);
+    assert.ok((await s.call('GET', '/dashboard', undefined, cookie)).data.counters.total > 0, 'demandes lancées');
+  }
   return { cookie, id: me.data.user.id, email, pid: me.data.profiles[0].id };
 }
 // Laisse partir les passages programmés après un lancement, puis deux passages manuels.

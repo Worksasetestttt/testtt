@@ -304,8 +304,9 @@ admin.post('/users/:id/subscription', wrap(async (req, res) => {
     : status === 'past_due' ? 'Abonnement marqué « paiement en attente » par l’équipe Oubli.' : 'Abonnement retiré par l’équipe Oubli.';
   if (!viaStripe) logEvent(u.id, 'billing', msg);
   audit(req, 'user.subscription', u.id, { from: { status: u.subscription_status, plan: u.plan, billing: u.billing, ends_at: u.subscription_ends_at }, to: { status, plan, billing, ends_at: ends }, stripe: viaStripe || undefined, note: clean(b.note, 200) || undefined });
-  // Abonnement (de nouveau) en cours : les courtiers ajoutés au registre entre-temps reçoivent leur demande.
-  if (status === 'active' || status === 'canceled') { scheduler.requestFullScan(); setTimeout(() => tick(), 10); }
+  // Abonnement (de nouveau) en cours : les courtiers ajoutés au registre entre-temps reçoivent leur demande au prochain
+  // passage (pas de passage immédiat : il devancerait le lancement que l'abonné ou l'équipe fait juste après).
+  if (status === 'active' || status === 'canceled') scheduler.requestFullScan();
   res.json({ user: adminUser(q.get('SELECT * FROM users WHERE id = ?', u.id)) });
 }));
 admin.post('/users/:id/logout-all', (req, res) => {
@@ -349,7 +350,7 @@ admin.post('/users/:id/unsuspend', (req, res) => {
   q.run('UPDATE users SET suspended_at = NULL, suspended_until = NULL, suspended_reason = NULL WHERE id = ?', u.id);
   logEvent(u.id, 'account', 'Compte réactivé par l’équipe Oubli : les demandes reprennent.');
   audit(req, 'user.unsuspend', u.id, { was: u.suspended_reason });
-  scheduler.requestFullScan(); setTimeout(() => tick(), 10);   // courtiers ajoutés au registre pendant la suspension
+  scheduler.requestFullScan();   // courtiers ajoutés au registre pendant la suspension : au prochain passage
   res.json({ user: adminUser(q.get('SELECT * FROM users WHERE id = ?', u.id)) });
 });
 // Accès au compte : lecture seule (index.js), 30 minutes, motif obligatoire, jamais sur un autre administrateur.
