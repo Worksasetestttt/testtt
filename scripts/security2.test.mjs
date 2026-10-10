@@ -1,5 +1,6 @@
 // Tests de sécurité, seconde série (audit) : découverte des sites ajoutés (expressions à coût quadratique, durée totale
-// d'une lecture, adresses IPv6 qui encapsulent une IPv4 privée) et limitation de débit (casse et barre finale du chemin).
+// d’une lecture, adresses IPv6 qui encapsulent une IPv4 privée) et limitation de débit (casse et barre finale du chemin,
+// rotation d’adresses IPv6).
 // Les groupes réseau démarrent leurs propres serveurs sur des ports libres, avec une base et une boîte d'envoi temporaires.
 import { spawn } from 'node:child_process';
 import http from 'node:http';
@@ -110,6 +111,18 @@ try {
   for (const p of ['/Contact', '/contact/', '/CONTACT', '//API/contact', '//Api/Contact/']) assert.equal((await call(A, 'POST', p, msg(p))).status, 429, `variante ${p}`);
   assert.equal((await call(A, 'POST', '/newsletter', { email: 'n@test.fr' })).status, 200, 'les autres routes gardent leur propre compteur');
   step('limitation de débit : /api/Contact, /api/contact/, /API/contact partagent le compteur de /api/contact');
+
+  /* ---------- 5. Limitation de débit : une adresse IPv6 compte pour tout son /64 ---------- */
+  // Un hôte IPv6 dispose d'ordinaire d'un /64 entier (2^64 adresses) : compter par adresse permettait d'en changer à chaque
+  // requête. Serveur derrière un proxy de confiance (TRUST_PROXY=1) pour simuler plusieurs clients par X-Forwarded-For.
+  const P = await startServer('proxy', { TRUST_PROXY: '1' });
+  const from = (ip) => ({ headers: { 'x-forwarded-for': ip } });
+  for (let i = 1; i <= 10; i++) assert.equal((await call(P, 'POST', '/contact', msg(i), from(`2001:db8:abcd:12::${i.toString(16)}`))).status, 200, `adresse ${i}`);
+  assert.equal((await call(P, 'POST', '/contact', msg(11), from('2001:db8:abcd:12:ffff:1:2:3'))).status, 429, 'même /64, autre adresse');
+  assert.equal((await call(P, 'POST', '/contact', msg(12), from('2001:DB8:ABCD:0012:0:0:0:99'))).status, 429, 'même /64, autre écriture');
+  assert.equal((await call(P, 'POST', '/contact', msg(13), from('2001:db8:abcd:13::1'))).status, 200, 'autre /64');
+  for (let i = 1; i <= 10; i++) assert.equal((await call(P, 'POST', '/contact', msg(i), from(`203.0.113.${i}`))).status, 200, `IPv4 distincte ${i}`);
+  step('limitation de débit : la rotation d’adresses dans un même /64 IPv6 ne contourne pas le plafond');
 
   for (const s of servers) assert.ok(!/TypeError|RangeError|→ 500/.test(s.err), `erreurs serveur :\n${s.err}`);
   console.log(`✔ Sécurité (seconde série) validée (${passed} groupes de vérifications).`);
