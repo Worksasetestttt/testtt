@@ -45,7 +45,7 @@ try {
   r = await call('POST', '/billing/cancel'); assert.equal(r.status, 200);
   r = await call('GET', '/export'); assert.ok(Array.isArray(r.data.requests));
   r = await call('DELETE', '/account', { password: 'motdepasse-solide' }); assert.equal(r.status, 200);
-  r = await call('GET', '/me'); assert.equal(r.status, 401);
+  r = await call('GET', '/me'); assert.equal(r.status, 200); assert.equal(r.data.user, null, 'session détruite');
   assert.ok(fs.readdirSync(path.join(tmp, 'outbox')).length >= 100, 'courriers écrits dans la boîte d’envoi');
   console.log('✔ Parcours complet validé (inscription → profil → mandat → abonnement → demandes → réponse → résiliation → export → suppression).');
 } catch (e) { console.error('✘ Échec :', e.message); process.exitCode = 1; }
