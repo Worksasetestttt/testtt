@@ -79,6 +79,7 @@ async function sendQueued() {
   const rows = q.all(`SELECT * FROM requests WHERE status = 'queued' AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ORDER BY created_at LIMIT ?`, t, BATCH);
   let sent = 0;
   for (const r of rows) {
+    if (stopped) break;   // arrêt du serveur : on s’interrompt entre deux courriers
     beat = Date.now();
     try {
       // Relecture avant chaque envoi : une demande abandonnée (mandat révoqué, profil supprimé) pendant le passage n’est pas traitée.
@@ -105,6 +106,7 @@ async function followUps() {
   const t = now();
   const rows = q.all(`SELECT * FROM requests WHERE status IN ('sent', 'in_progress') AND followup_sent_at IS NULL AND due_at IS NOT NULL AND due_at <= ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ORDER BY due_at LIMIT ?`, t, t, BATCH);
   for (const r of rows) {
+    if (stopped) break;
     beat = Date.now();
     try {
       const user = q.get('SELECT * FROM users WHERE id = ?', r.user_id);

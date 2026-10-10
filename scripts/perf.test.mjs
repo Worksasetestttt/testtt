@@ -3,8 +3,8 @@
 // invalidation quand un fichier change), puis, sur un serveur réel : santé profonde, compression de l'API (et ses
 // exceptions : webhook, petites réponses, téléchargements, HEAD), ETag et 304 du tableau de bord, versionnement et cache
 // des pages et ressources, sauvegardes (fichier, rotation, audit), arrêt propre (requête en cours menée à terme, code 0,
-// base fermée) ; enfin un second serveur au planificateur figé (SMTP muet) : santé 503, sauvegarde refusée dans un
-// dossier public, arrêt borné malgré le passage bloqué.
+// base fermée) ; un deuxième serveur au planificateur figé (SMTP muet) : santé 503, sauvegarde refusée dans un dossier
+// public, arrêt borné malgré le passage bloqué ; un troisième au SMTP lent : arrêt entre deux courriers d'un lot.
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -79,7 +79,39 @@ async function member(call, email) {
   return c;
 }
 
-let main = null, second = null, mini = null, blackhole = null;
+// Serveur SMTP minimal qui accepte chaque message après `delayMs` (envoi lent mais réussi).
+function slowSmtp(delayMs) {
+  let accepted = 0;
+  const sockets = new Set();
+  const server = net.createServer((sock) => {
+    sockets.add(sock); sock.on('close', () => sockets.delete(sock)); sock.on('error', () => {});
+    sock.setEncoding('utf8');
+    let buf = '', data = false;
+    sock.write('220 smtp.test ESMTP\r\n');
+    sock.on('data', (chunk) => {
+      buf += chunk;
+      for (;;) {
+        if (data) {
+          const end = buf.indexOf('\r\n.\r\n');
+          if (end < 0) return;
+          buf = buf.slice(end + 5); data = false;
+          setTimeout(() => { accepted += 1; if (!sock.destroyed) sock.write('250 2.0.0 OK\r\n'); }, delayMs);
+          continue;
+        }
+        const i = buf.indexOf('\r\n');
+        if (i < 0) return;
+        const cmd = buf.slice(0, Math.min(4, i)).toUpperCase(); buf = buf.slice(i + 2);
+        if (cmd === 'EHLO' || cmd === 'HELO') sock.write('250 smtp.test\r\n');
+        else if (cmd === 'DATA') { data = true; sock.write('354 OK\r\n'); }
+        else if (cmd === 'QUIT') { sock.end('221 OK\r\n'); return; }
+        else sock.write('250 OK\r\n');   // MAIL, RCPT, RSET, NOOP
+      }
+    });
+  });
+  return { server, count: () => accepted, close: () => { for (const s of sockets) s.destroy(); server.close(); } };
+}
+
+let main = null, second = null, third = null, mini = null, blackhole = null, slow = null;
 const holes = new Set();
 try {
   /* ---------- 1. Négociation, ETag, santé (unitaire) ---------- */
@@ -350,15 +382,41 @@ try {
   second = null;
   step('planificateur figé : santé 503 (scheduler stale, sans secret) ; sauvegarde refusée dans assets/ ; arrêt borné, sortie 0');
 
+  /* ---------- 10. Arrêt pendant un lot d'envois (SMTP lent) : interruption entre deux courriers ---------- */
+  slow = slowSmtp(250);
+  const smtpPort = await freePort();
+  await new Promise((res) => slow.server.listen(smtpPort, '127.0.0.1', res));
+  const PORT3 = await freePort(), DB3 = path.join(tmp, 'batch.sqlite');
+  third = startServer(PORT3, { DATABASE_PATH: DB3, OUTBOX_DIR: path.join(tmp, 'outbox3'), SMTP_URL: `smtp://127.0.0.1:${smtpPort}`, ALLOW_UNVERIFIED_CONTACTS: 'true', MAIL_TIMEOUT_MS: '10000', SHUTDOWN_TIMEOUT_MS: '5000' });
+  await waitHealthy(PORT3);
+  await member(client(PORT3), 'lot@exemple.fr');   // 50 demandes : un lot d'environ 12 s à 250 ms par courrier
+  for (let i = 0; i < 100 && slow.count() < 4; i++) await wait(50);
+  assert.ok(slow.count() >= 4, 'le lot a commencé');
+  const t3 = Date.now();
+  third.proc.kill('SIGTERM');
+  const exit3 = await Promise.race([third.exited, wait(8000).then(() => ({ timeout: true }))]);
+  assert.deepEqual(exit3, { code: 0, signal: null }, `sortie : ${JSON.stringify(exit3)}`);
+  assert.ok(Date.now() - t3 < 3000, `le planificateur s’arrête entre deux courriers (${Date.now() - t3} ms)`);
+  assert.doesNotMatch(third.log(), /délai dépassé/);
+  third = null;
+  const db3 = new DatabaseSync(DB3, { readOnly: true });
+  const by = Object.fromEntries(db3.prepare('SELECT status, COUNT(*) AS n FROM requests GROUP BY status').all().map((x) => [x.status, x.n]));
+  const mailed = db3.prepare('SELECT COUNT(*) AS n FROM mails WHERE request_id IS NOT NULL AND error IS NULL').get().n;
+  db3.close();
+  assert.ok(by.sent >= 3 && by.sent < 50 && by.sent + by.queued >= 50, `lot interrompu : ${JSON.stringify(by)}`);
+  assert.equal(mailed, by.sent, 'chaque courrier parti est enregistré comme envoyé (état cohérent)');
+  step('arrêt pendant un lot d’envois : le planificateur s’interrompt entre deux courriers, état cohérent, sans attendre la limite');
+
   console.log(`✔ Performance et fiabilité validées (${passed} groupes de vérifications).`);
 } catch (e) {
   console.error('✘ Échec :', e.message);
-  for (const s of [main, second]) if (s && s.log().trim()) console.error(s.log().split('\n').slice(-15).join('\n'));
+  for (const s of [main, second, third]) if (s && s.log().trim()) console.error(s.log().split('\n').slice(-15).join('\n'));
   process.exitCode = 1;
 } finally {
-  for (const s of [main, second]) if (s) s.proc.kill('SIGKILL');
+  for (const s of [main, second, third]) if (s) s.proc.kill('SIGKILL');
   for (const s of holes) s.destroy();
   if (blackhole) blackhole.close();
+  if (slow) slow.close();
   if (mini) mini.close();
   fs.rmSync(PUBLIC_BACKUPS, { recursive: true, force: true });
   fs.rmSync(tmp, { recursive: true, force: true });

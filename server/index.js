@@ -184,9 +184,10 @@ server.keepAliveTimeout = 5000;
 
 // Arrêt propre (SIGTERM, SIGINT, exception non interceptée) : /api/health passe à 503, plus de nouvelle connexion,
 // planificateur, rapports et sauvegardes arrêtés ; les requêtes en cours (et un passage du planificateur en cours) ont
-// SHUTDOWN_TIMEOUT_MS pour finir (10 s par défaut, 3 s au plus après une exception), puis les connexions restantes sont
-// coupées, la base est fermée (PRAGMA optimize) et le processus sort. Un second signal force la sortie immédiate.
-const SHUTDOWN_MS = Math.max(100, Number(process.env.SHUTDOWN_TIMEOUT_MS) || 10000);
+// SHUTDOWN_TIMEOUT_MS pour finir (8 s par défaut, sous les 10 s de docker stop ; 3 s au plus après une exception), puis les
+// connexions restantes sont coupées, la base est fermée (PRAGMA optimize) et le processus sort. Un second signal force la
+// sortie immédiate.
+const SHUTDOWN_MS = Math.max(100, Number(process.env.SHUTDOWN_TIMEOUT_MS) || 8000);
 function shutdown(code, signal) {
   if (isDraining()) { if (signal) { console.error(`[arrêt] second ${signal} : sortie immédiate.`); process.exit(code); } return; }
   markDraining();
