@@ -64,13 +64,15 @@ async function layout(page, name, width) {
   await page.setViewportSize({ width, height: 900 }); await wait(200);
   if (bad.length) note(`${name} : débordement à ${bad.join(', ')}`); else ok(`${name} : aucun débordement de 360 à 1280 px`);
   if (width <= 400) {
-    const small = await page.evaluate(() => [...document.querySelectorAll('main button, main a, main input, main select, dialog[open] button, dialog[open] a, dialog[open] input, dialog[open] summary')].filter((e) => {
+    const small = await page.evaluate(() => [...document.querySelectorAll('header a, header button, main button, main a, main input, main select, main summary, dialog[open] button, dialog[open] a, dialog[open] input, dialog[open] summary')].filter((e) => {
       if (!e.offsetParent && getComputedStyle(e).position !== 'fixed') return false;
-      const r = e.getBoundingClientRect(); if (!r.width) return false;
       if (e.classList.contains('row__open')) return false;   // toute la ligne est la cible
+      // Case à cocher ou bouton radio dans son libellé : c'est le libellé entier qu'on touche.
+      const box = e.matches('input[type=checkbox], input[type=radio]') && e.closest('label') ? e.closest('label') : e;
+      const r = box.getBoundingClientRect(); if (!r.width) return false;
       const after = getComputedStyle(e, '::after'); const ext = after && after.content !== 'none' && after.position === 'absolute';
       return !ext && (r.height < 43.5 || r.width < 24);
-    }).map((e) => (e.id || e.className || e.tagName) + ' ' + Math.round(e.getBoundingClientRect().width) + '×' + Math.round(e.getBoundingClientRect().height)).slice(0, 10));
+    }).map((e) => (e.id || e.className || e.tagName) + ' « ' + (e.textContent || e.name || '').trim().slice(0, 24) + ' » ' + Math.round(e.getBoundingClientRect().width) + '×' + Math.round(e.getBoundingClientRect().height)).slice(0, 10));
     if (small.length) note(`${name} : cibles tactiles sous 44 px : ${small.join(', ')}`); else ok(`${name} : cibles tactiles d’au moins 44 px`);
   }
 }
@@ -80,6 +82,22 @@ async function scenario(browser, width) {
   const ctx = await browser.newContext({ viewport: { width, height: 900 } }), page = await ctx.newPage(), errors = [];
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); }); page.on('pageerror', (e) => errors.push(e.message));
   page.on('response', (r) => { if (r.status() >= 400) errors.push(`HTTP ${r.status()} ${new URL(r.url()).pathname}`); });
+  for (const route of ['login', 'signup', 'forgot', 'reset']) {
+    await page.goto(`${BASE}/app/?auth=${width}#${route}`); await page.waitForSelector('.auth'); await shot(page, `${route}-${width}`, true);
+    await layout(page, `#${route}`, width);
+  }
+  const octx = await browser.newContext({ viewport: { width, height: 900 } }), op = await octx.newPage();
+  op.on('pageerror', (e) => errors.push('ouverture : ' + e.message));
+  await op.goto(BASE + '/app/#login'); await op.waitForSelector('#login-form');
+  await api(op, 'POST', '/auth/signup', { email: `lea.${width}@exemple.fr`, password: STRONG, plan: 'individuel' });
+  const opid = (await api(op, 'GET', '/me')).data.profiles[0].id;
+  await api(op, 'PUT', '/profiles/' + opid, { first_name: 'Léa', last_name: 'Fontaine' });
+  await api(op, 'POST', '/mandate', { full_name: 'Léa Fontaine', accepted: true });
+  await op.goto(`${BASE}/app/?offre=${width}#onboarding`); await op.waitForSelector('.keybox__sum'); await op.click('.keybox__sum');
+  if (!(await op.$('#key-input:visible'))) note('le bloc « Vous avez une clé d’activation ? » ne s’ouvre pas');
+  await shot(op, `offre-${width}`, true);
+  await layout(op, 'ouverture : offre et clé d’activation', width);
+  await octx.close();
   await page.goto(BASE + '/app/#login'); await page.waitForSelector('#login-form');
   await api(page, 'POST', '/auth/signup', { email: `ines.${width}@exemple.fr`, password: STRONG, plan: 'famille' });
   const pid = (await api(page, 'GET', '/me')).data.profiles[0].id;
@@ -125,9 +143,8 @@ async function scenario(browser, width) {
   if (!polls.includes(304)) note(`rafraîchissement sans réponse 304 (${polls.join(', ') || 'aucune requête'})`); else ok('rafraîchissement conditionnel : 304 quand rien ne change');
   for (const route of ['report', 'dossier', 'billing', 'settings']) {
     await page.goto(BASE + '/app/#' + route); await wait(1000); await shot(page, `${route}-${width}`, true);
-    if (await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)) note(`#${route} : débordement horizontal`);
+    await layout(page, `#${route}`, width);
   }
-  ok('rapport, dossier, abonnement, paramètres affichés');
   // Administration
   await ap.setViewportSize({ width, height: 900 });
   ap.on('console', (m) => { if (m.type() === 'error') errors.push('admin : ' + m.text()); }); ap.on('pageerror', (e) => errors.push('admin : ' + e.message));
@@ -135,6 +152,9 @@ async function scenario(browser, width) {
   const tabs = await ap.$$eval('.adm__tab', (a) => a.map((x) => x.getAttribute('href')));
   for (const t of tabs) { await ap.goto(BASE + '/app/' + t); await wait(700); if (await ap.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)) note(`admin ${t} : débordement horizontal`); }
   ok(`${tabs.length} onglets d’administration affichés`);
+  const uid = (await api(page, 'GET', '/me')).data.user.id;
+  await ap.goto(`${BASE}/app/#admin?tab=users&id=${uid}`); await ap.waitForSelector('.adm-back', { timeout: 10000 }); await wait(500); await shot(ap, `admin-user-${width}`, true);
+  await layout(ap, 'administration : fiche du compte', width);
   const errs = [...new Set(errors)];
   if (errs.length) note('erreurs console ou HTTP : ' + errs.join(' | ')); else ok('aucune erreur console ni HTTP');
   await actx.close(); await ctx.close();
