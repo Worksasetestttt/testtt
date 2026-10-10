@@ -157,14 +157,22 @@ ensureColumn('brokers', 'discovered_at', 'TEXT');
 ensureColumn('brokers', 'added_by', 'TEXT');
 ensureColumn('brokers', 'created_at', 'TEXT');
 ensureColumn('requests', 'source_url', 'TEXT');         // page où figure la fiche, citée dans le courrier
+// Réponse entrante à vérifier par l'équipe (routes.js, /api/inbound) : effacement ou refus annoncé par un expéditeur qui
+// n'est ni le courtier ni son contact vérifié. Interne : jamais montré à l'abonné ni exporté.
+ensureColumn('requests', 'review_at', 'TEXT');
+ensureColumn('requests', 'review_outcome', 'TEXT');     // done | refused (lecture automatique de la réponse)
+ensureColumn('requests', 'review_from', 'TEXT');        // adresse de l'expéditeur
+// Réservation d'une demande pendant l'envoi de son courrier (scheduler.js, claim) : une seule instance l'envoie.
+ensureColumn('requests', 'claimed_at', 'TEXT');
 // Rapport mensuel par e-mail (reports.js) : activé par défaut, désactivable dans les paramètres.
 ensureColumn('users', 'monthly_report', 'INTEGER NOT NULL DEFAULT 1');
 ensureColumn('users', 'last_report_at', 'TEXT');
 
 // Refus enregistrés avant que le refus ne programme un nouveau cycle : la dernière demande refusée par un courtier actif
-// (hors arrêt par révocation du mandat) reçoit sa date de nouvelle demande. Sans effet une fois ce cycle créé.
+// (hors arrêts avant envoi : mandat révoqué, courtier retiré du registre) reçoit sa date de nouvelle demande. Sans effet
+// une fois ce cycle créé.
 db.exec(`UPDATE requests SET next_check_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+' || (SELECT recheck_days FROM brokers b WHERE b.id = requests.broker_id) || ' days')
-  WHERE status = 'refused' AND next_check_at IS NULL AND COALESCE(note, '') NOT LIKE 'Mandat révoqué%'
+  WHERE status = 'refused' AND next_check_at IS NULL AND COALESCE(note, '') NOT LIKE 'Mandat révoqué%' AND COALESCE(note, '') NOT LIKE 'Courtier retiré%'
     AND EXISTS (SELECT 1 FROM brokers b WHERE b.id = requests.broker_id AND b.active = 1)
     AND NOT EXISTS (SELECT 1 FROM requests r2 WHERE r2.profile_id = requests.profile_id AND r2.broker_id = requests.broker_id AND r2.cycle > requests.cycle)`);
 
@@ -189,6 +197,9 @@ CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
 CREATE INDEX IF NOT EXISTS idx_requests_broker ON requests(profile_id, broker_id, cycle);
 CREATE INDEX IF NOT EXISTS idx_requests_due ON requests(due_at);
 CREATE INDEX IF NOT EXISTS idx_requests_next_check ON requests(next_check_at);
+CREATE INDEX IF NOT EXISTS idx_brokers_registry ON brokers(id) WHERE custom = 0 AND active = 1;
+CREATE INDEX IF NOT EXISTS idx_requests_review ON requests(review_at) WHERE review_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_requests_unsent ON requests(broker_id) WHERE status IN ('queued', 'error');
 CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_mails_request ON mails(request_id);
 CREATE INDEX IF NOT EXISTS idx_mails_user ON mails(user_id);

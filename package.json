@@ -9,7 +9,7 @@
     "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env server/index.js",
     "dev": "node --watch --disable-warning=ExperimentalWarning --env-file-if-exists=.env server/index.js",
     "admin": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env scripts/admin-cli.mjs",
-    "test": "node --disable-warning=ExperimentalWarning scripts/smoke.mjs && node --disable-warning=ExperimentalWarning scripts/security.test.mjs && node --disable-warning=ExperimentalWarning scripts/admin.test.mjs && node --disable-warning=ExperimentalWarning scripts/sites.test.mjs && node --disable-warning=ExperimentalWarning scripts/features.test.mjs && node --disable-warning=ExperimentalWarning scripts/security2.test.mjs && node --disable-warning=ExperimentalWarning scripts/account.test.mjs && node --disable-warning=ExperimentalWarning scripts/keys.test.mjs && node --disable-warning=ExperimentalWarning scripts/perf.test.mjs && node --disable-warning=ExperimentalWarning scripts/regressions.test.mjs && node --disable-warning=ExperimentalWarning scripts/billing.test.mjs && node --disable-warning=ExperimentalWarning scripts/twofactor.test.mjs",
+    "test": "node --disable-warning=ExperimentalWarning scripts/smoke.mjs && node --disable-warning=ExperimentalWarning scripts/security.test.mjs && node --disable-warning=ExperimentalWarning scripts/admin.test.mjs && node --disable-warning=ExperimentalWarning scripts/sites.test.mjs && node --disable-warning=ExperimentalWarning scripts/features.test.mjs && node --disable-warning=ExperimentalWarning scripts/security2.test.mjs && node --disable-warning=ExperimentalWarning scripts/account.test.mjs && node --disable-warning=ExperimentalWarning scripts/keys.test.mjs && node --disable-warning=ExperimentalWarning scripts/perf.test.mjs && node --disable-warning=ExperimentalWarning scripts/regressions.test.mjs && node --disable-warning=ExperimentalWarning scripts/billing.test.mjs && node --disable-warning=ExperimentalWarning scripts/twofactor.test.mjs && node --disable-warning=ExperimentalWarning scripts/scheduler.test.mjs",
     "test:security": "node --disable-warning=ExperimentalWarning scripts/security.test.mjs",
     "test:admin": "node --disable-warning=ExperimentalWarning scripts/admin.test.mjs",
     "test:sites": "node --disable-warning=ExperimentalWarning scripts/sites.test.mjs",
@@ -21,6 +21,7 @@
     "test:regressions": "node --disable-warning=ExperimentalWarning scripts/regressions.test.mjs",
     "test:billing": "node --disable-warning=ExperimentalWarning scripts/billing.test.mjs",
     "test:twofactor": "node --disable-warning=ExperimentalWarning scripts/twofactor.test.mjs",
+    "test:scheduler": "node --disable-warning=ExperimentalWarning scripts/scheduler.test.mjs",
     "test:ui": "node scripts/ui.audit.cjs"
   },
   "dependencies": {

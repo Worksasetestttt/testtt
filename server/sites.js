@@ -115,7 +115,8 @@ export function relaunchRequest(user, r, input) {
 
 /* ---------- Recherche du contact (arrière-plan) ---------- */
 const running = new Set();
-export function runDiscovery(brokerId, { force = false } = {}) {
+// discover est injectable (tests) : par défaut, lecture du site lui-même (sitediscovery.js).
+export function runDiscovery(brokerId, { force = false, discover = discoverContact } = {}) {
   const b = q.get('SELECT * FROM brokers WHERE id = ? AND custom = 1', brokerId);
   if (!b || running.has(b.id)) return Promise.resolve(null);
   if (!DISCOVERY) { q.run(`UPDATE brokers SET discovery_status = 'skipped' WHERE id = ? AND discovery_status = 'pending'`, b.id); setTimeout(() => tick(), 10); return Promise.resolve(null); }
@@ -126,21 +127,23 @@ export function runDiscovery(brokerId, { force = false } = {}) {
   }
   running.add(b.id);
   q.run(`UPDATE brokers SET discovery_status = 'pending' WHERE id = ?`, b.id);
-  return discoverContact(b.domain)
+  // Le contact a pu être saisi par l'équipe pendant la recherche (PUT /api/admin/brokers/:id) : la fin de la recherche ne
+  // l'écrase pas, ne le déclare pas « introuvable » et ne prévient personne. Chaque écriture n'a donc lieu que si le
+  // contact est encore celui du départ, vérifié dans la même instruction (aucune saisie ne se glisse entre les deux).
+  const unchanged = (sql, ...params) => q.run(`${sql} WHERE id = ? AND contact_email = ? AND contact_source IS ?`, ...params, b.id, b.contact_email, b.contact_source).changes > 0;
+  return discover(b.domain)
     .then((r) => {
       const fresh = q.get('SELECT * FROM brokers WHERE id = ?', b.id);
       if (!fresh) return r;
-      if (r.email && (force || fresh.contact_source !== 'admin')) {
-        q.run(`UPDATE brokers SET contact_email = ?, contact_source = 'site', contact_page = ?, contact_verified = 0, discovery_status = 'found', discovered_at = ? WHERE id = ?`, r.email, r.page, now(), b.id);
-        notify(b.id, `Contact trouvé sur ${fresh.name} (${r.email}) : la demande d’effacement part.`);
-      } else {
-        q.run(`UPDATE brokers SET discovery_status = 'not_found', discovered_at = ? WHERE id = ?`, now(), b.id);
+      if (r.email) {
+        if (unchanged(`UPDATE brokers SET contact_email = ?, contact_source = 'site', contact_page = ?, contact_verified = 0, discovery_status = 'found', discovered_at = ?`, r.email, r.page, now())) notify(b.id, `Contact trouvé sur ${fresh.name} (${r.email}) : la demande d’effacement part.`);
+      } else if (unchanged(`UPDATE brokers SET discovery_status = 'not_found', discovered_at = ?`, now())) {
         notify(b.id, mailMode === 'smtp' ? `Aucune adresse publiée sur ${fresh.name} : notre équipe vérifie le contact avant l’envoi.` : `Aucune adresse publiée sur ${fresh.name} : la demande part vers l’adresse présumée ${fresh.contact_email}.`);
       }
       return r;
     })
     .catch((e) => {
-      q.run(`UPDATE brokers SET discovery_status = 'failed', discovered_at = ? WHERE id = ?`, now(), b.id);
+      unchanged(`UPDATE brokers SET discovery_status = 'failed', discovered_at = ?`, now());
       console.error(`[sites] recherche du contact de ${b.domain} :`, e.message);
       return null;
     })

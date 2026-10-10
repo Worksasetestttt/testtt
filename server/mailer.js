@@ -10,7 +10,7 @@ import { MAIL_ADDRESS } from './util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OUTBOX = path.resolve(process.env.OUTBOX_DIR || path.join(__dirname, '..', 'data', 'outbox'));
-const SEND_TIMEOUT_MS = Math.max(1000, Number(process.env.MAIL_TIMEOUT_MS) || 30000);
+export const SEND_TIMEOUT_MS = Math.max(1000, Number(process.env.MAIL_TIMEOUT_MS) || 30000);
 
 // Un en-tête ne contient jamais de retour à la ligne : neutralise toute injection d’en-têtes.
 const header = (v) => String(v ?? '').replace(/[\r\n\t\0]+/g, ' ').trim();

@@ -16,7 +16,7 @@ import { launchProfile, applyOutcome, tick, ref, DEMO, schedulerState } from './
 import { EMAIL, MAIL_ADDRESS, publicUser, parseProfile, wrap, isId, str, strList, oneOf, HttpError } from './util.js';
 import { buildDashboard, exportData, complaintReady } from './dashboard.js';
 import { addSite, relaunchRequest } from './sites.js';
-import { admin, auditAs, currentAnnouncement, toCsv, classifyReply } from './admin.js';
+import { admin, auditAs, currentAnnouncement, toCsv, classifyReply, senderAddress, trustedSender, flagReview, clearReview } from './admin.js';
 import { account, sendAdminVerification } from './account.js';
 import { redeemKey, cancelRefusal } from './keys.js';
 import { evaluateHealth } from './health.js';
@@ -305,7 +305,8 @@ api.post('/requests/:id/relaunch', requireAuth, rateLimit({ windowMs: 60 * 60000
 api.get('/requests.csv', requireAuth, rateLimit({ max: 30 }), (req, res) => {
   const d = buildDashboard(fresh(req), isId(req.query.profile_id) ? req.query.profile_id : undefined);
   const STATUS = { queued: 'À envoyer', sent: 'Envoyée', in_progress: 'En cours', action_required: 'Action requise', done: 'Effacée', refused: 'Refusée', error: 'Erreur d’envoi', stopped: 'Arrêtée (mandat révoqué)' };
-  const rows = d.requests.map((r) => ({ courtier: r.broker, domaine: r.domain, categorie: r.category, statut: STATUS[r.status] || r.status, base_legale: r.legal_basis === 'ccpa' ? 'CCPA' : r.legal_basis === 'both' ? 'RGPD et CCPA' : 'RGPD', cycle: r.cycle, envoyee_le: r.sent_at || '', echeance: r.due_at || '', effacee_le: r.completed_at || '', reverification: r.next_check_at || '', fiche: r.source_url || '', reference: r.ref }));
+  const statut = (r) => (r.status === 'stopped' && r.stop_reason === 'broker' ? 'Arrêtée (courtier retiré du registre)' : STATUS[r.status] || r.status);
+  const rows = d.requests.map((r) => ({ courtier: r.broker, domaine: r.domain, categorie: r.category, statut: statut(r), base_legale: r.legal_basis === 'ccpa' ? 'CCPA' : r.legal_basis === 'both' ? 'RGPD et CCPA' : 'RGPD', cycle: r.cycle, envoyee_le: r.sent_at || '', echeance: r.due_at || '', effacee_le: r.completed_at || '', reverification: r.next_check_at || '', fiche: r.source_url || '', reference: r.ref }));
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="oubli-demandes-${now().slice(0, 10)}.csv"`);
   res.send(toCsv(['courtier', 'domaine', 'categorie', 'statut', 'base_legale', 'cycle', 'envoyee_le', 'echeance', 'effacee_le', 'reverification', 'fiche', 'reference'], rows));
@@ -374,17 +375,31 @@ const inboundTokenOk = (given) => {
   const a = crypto.createHash('sha256').update(given).digest(), b = crypto.createHash('sha256').update(INBOUND_TOKEN).digest();
   return crypto.timingSafeEqual(a, b);
 };
+// Réponse : outcome (lecture automatique), applied (la demande a changé), status (son statut après traitement) et review
+// (réponse signalée à l'équipe : effacement ou refus annoncé par un expéditeur qui n'est ni le courtier ni son contact
+// vérifié ; la demande passe au plus « en cours », l'équipe tranche dans l'administration).
 api.post('/inbound', rateLimit({ windowMs: 60000, max: 120 }), wrap(async (req, res) => {
   if (!inboundTokenOk(req.get('x-inbound-token'))) return bad(res, 'Jeton manquant ou invalide.', 401);
   const subject = str(req.body.subject, 'subject', 1000), body = str(req.body.text, 'text', 200000) || str(req.body.body, 'body', 200000);
+  const from = str(req.body.from, 'from', 320);
   const text = `${subject}\n${body}`;
   const m = text.match(/OUBLI-([A-F0-9]{10})/i);
   if (!m) return res.status(202).json({ matched: false });
   const r = q.get('SELECT * FROM requests WHERE token = ?', m[1].toUpperCase());
   if (!r) return res.status(202).json({ matched: false });
   const outcome = classifyReply(text);
-  const out = await applyOutcome(r, outcome, `réponse reçue de ${str(req.body.from, 'from', 120)}`);
-  res.json({ matched: true, outcome, applied: !!out?.applied });
+  const definitive = outcome === 'done' || outcome === 'refused';
+  const broker = q.get('SELECT * FROM brokers WHERE id = ?', r.broker_id);
+  const statusNow = () => q.get('SELECT status FROM requests WHERE id = ?', r.id)?.status;
+  if (definitive && !trustedSender(from, broker)) {
+    if (r.status === outcome) return res.json({ matched: true, outcome, applied: false, review: false, status: r.status });   // déjà enregistré
+    const out = await applyOutcome(r, 'in_progress', 'Réponse reçue : vérification en cours par notre équipe.', { message: `Réponse reçue au sujet de la demande à ${broker?.name || 'ce courtier'} : notre équipe la vérifie avant de l’enregistrer.` });
+    flagReview(r.id, outcome, senderAddress(from) || from);
+    return res.json({ matched: true, outcome, applied: !!out?.applied, review: true, status: statusNow() });
+  }
+  const out = await applyOutcome(r, outcome, `réponse reçue de ${from.slice(0, 120)}`);
+  if (out?.applied && definitive) clearReview(r.id);   // résultat venu du courtier lui-même : plus rien à vérifier
+  res.json({ matched: true, outcome, applied: !!out?.applied, review: false, status: statusNow() });
 }));
 
 /* ---------- Divers : newsletter, contact, export RGPD, suppression ---------- */

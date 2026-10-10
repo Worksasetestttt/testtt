@@ -114,6 +114,7 @@ function getRequest(id) {
 }
 const getBroker = (id) => (INT.test(String(id)) ? q.get('SELECT * FROM brokers WHERE id = ?', Number(id)) : null);
 const statusCounts = (rows) => { const o = Object.fromEntries(STATUSES.map((s) => [s, 0])); rows.forEach((r) => { o[r.status] = r.n; }); return o; };
+const reviewCount = () => q.get('SELECT COUNT(*) AS c FROM requests WHERE review_at IS NOT NULL').c;
 const lastTickAt = () => (typeof scheduler.lastTickAt === 'string' ? scheduler.lastTickAt : typeof scheduler.lastTickAt === 'function' ? scheduler.lastTickAt() : null);
 // Lecture automatique d'une réponse de courtier, partagée par le webhook /api/inbound (routes.js) et la qualification
 // par le support. Seul le texte nouveau compte : les lignes citées (« > »), tout ce qui suit un en-tête de citation
@@ -137,6 +138,31 @@ export const classifyReply = (text) => {
   for (const [outcome, re] of REPLY_RULES) if (re.test(t)) return outcome;
   return 'in_progress';
 };
+// Expéditeur d'une réponse entrante (« Service RGPD <dpo@courtier.fr> » ou « dpo@courtier.fr ») : l'adresse entre les
+// derniers chevrons, sinon le champ entier ; null si ce n'est pas exactement une adresse (liste, commentaire, nom seul).
+export function senderAddress(from) {
+  const s = String(from ?? '').trim();
+  const m = s.match(/<([^<>]*)>\s*$/);
+  const addr = (m ? m[1] : s).trim().toLowerCase();
+  if (!/^[^\s@<>()[\],;:"\\]+@[a-z0-9.-]+\.[a-z0-9-]{2,}$/.test(addr)) return null;
+  return addr.slice(addr.lastIndexOf('@') + 1).split('.').some((l) => !l) ? null : addr;
+}
+// Un effacement ou un refus ne s'applique de lui-même que s'il vient du domaine du courtier (ou d'un sous-domaine), ou
+// du domaine de son adresse de contact vérifiée par l'équipe (pagesjaunes.fr répond depuis solocal.com). Ce contrôle ne
+// vaut que si le fournisseur d'e-mail entrant rejette les expéditeurs usurpés (SPF, DKIM, DMARC) : « from » est
+// l'expéditeur du message tel qu'il le transmet.
+export function trustedSender(from, broker) {
+  const addr = senderAddress(from);
+  if (!addr || !broker) return false;
+  const host = addr.slice(addr.lastIndexOf('@') + 1), domain = String(broker.domain || '').toLowerCase();
+  if (domain && (host === domain || host.endsWith(`.${domain}`))) return true;
+  const contact = broker.contact_verified === 1 ? String(broker.contact_email || '').toLowerCase() : '';
+  return !!contact && host === contact.slice(contact.lastIndexOf('@') + 1);
+}
+// Demande « à vérifier » : réponse d'un expéditeur non reconnu, lue comme un effacement ou un refus. Interne (jamais
+// montré à l'abonné) ; levé par une décision de l'équipe ou par un résultat venu du courtier lui-même.
+export const flagReview = (id, outcome, from) => q.run('UPDATE requests SET review_at = ?, review_outcome = ?, review_from = ? WHERE id = ?', now(), outcome, String(from || '').slice(0, 160) || null, id);
+export const clearReview = (id) => q.run('UPDATE requests SET review_at = NULL, review_outcome = NULL, review_from = NULL WHERE id = ? AND review_at IS NOT NULL', id).changes > 0;
 
 /* ---------- Vue d'ensemble ---------- */
 admin.get('/stats', (_req, res) => {
@@ -177,6 +203,7 @@ admin.get('/stats', (_req, res) => {
     newsletter: q.get('SELECT COUNT(*) AS c FROM newsletter').c,
     suspended: q.get(`SELECT COUNT(*) AS c FROM users u WHERE u.deleted_at IS NULL AND ${SUSPENDED_SQL}`, now()).c,
     support_sessions: q.get('SELECT COUNT(*) AS c FROM sessions WHERE impersonator_id IS NOT NULL AND expires_at > ?', now()).c,
+    review: reviewCount(),   // réponses entrantes à vérifier (badge de l'onglet)
     keys: { ...keyCounts(), subscriptions: keySubscriptions() },
     scheduler: { ...(lastTickAt() ? { last_tick_at: lastTickAt() } : {}), last_manual_tick_at: lastManualTickAt, interval_ms: Number(process.env.SCHEDULER_INTERVAL_MS || (DEMO ? 20000 : 60000)) },
     mail_mode: mailMode, billing_mode: billingMode, demo: DEMO, generated_at: now(),
@@ -272,6 +299,9 @@ admin.post('/users/:id/subscription', wrap(async (req, res) => {
     : status === 'past_due' ? 'Abonnement marqué « paiement en attente » par l’équipe Oubli.' : 'Abonnement retiré par l’équipe Oubli.';
   if (!viaStripe) logEvent(u.id, 'billing', msg);
   audit(req, 'user.subscription', u.id, { from: { status: u.subscription_status, plan: u.plan, billing: u.billing, ends_at: u.subscription_ends_at }, to: { status, plan, billing, ends_at: ends }, stripe: viaStripe || undefined, note: clean(b.note, 200) || undefined });
+  // Abonnement (de nouveau) en cours : les courtiers ajoutés au registre entre-temps reçoivent leur demande au prochain
+  // passage (pas de passage immédiat : il devancerait le lancement que l'abonné ou l'équipe fait juste après).
+  if (status === 'active' || status === 'canceled') scheduler.requestFullScan();
   res.json({ user: adminUser(q.get('SELECT * FROM users WHERE id = ?', u.id)) });
 }));
 admin.post('/users/:id/logout-all', (req, res) => {
@@ -315,6 +345,7 @@ admin.post('/users/:id/unsuspend', (req, res) => {
   q.run('UPDATE users SET suspended_at = NULL, suspended_until = NULL, suspended_reason = NULL WHERE id = ?', u.id);
   logEvent(u.id, 'account', 'Compte réactivé par l’équipe Oubli : les demandes reprennent.');
   audit(req, 'user.unsuspend', u.id, { was: u.suspended_reason });
+  scheduler.requestFullScan();   // courtiers ajoutés au registre pendant la suspension : au prochain passage
   res.json({ user: adminUser(q.get('SELECT * FROM users WHERE id = ?', u.id)) });
 });
 // Accès au compte : lecture seule (index.js), 30 minutes, motif obligatoire, jamais sur un autre administrateur.
@@ -417,17 +448,18 @@ admin.delete('/users/:id', wrap(async (req, res) => {
 
 /* ---------- Demandes ---------- */
 const REQ_BASE = 'FROM requests r JOIN brokers b ON b.id = r.broker_id JOIN users u ON u.id = r.user_id JOIN profiles p ON p.id = r.profile_id';
-const REQ_COLS = `r.id, r.token, r.status, r.cycle, r.created_at, r.sent_at, r.due_at, r.followup_sent_at, r.completed_at, r.next_check_at, r.note, b.id AS broker_id, b.name AS broker, b.slug AS broker_slug, b.legal_basis, u.id AS user_id, u.email, p.id AS profile_id, (p.first_name || ' ' || p.last_name) AS profile`;
+const REQ_COLS = `r.id, r.token, r.status, r.cycle, r.created_at, r.sent_at, r.due_at, r.followup_sent_at, r.completed_at, r.next_check_at, r.note, r.review_at, r.review_outcome, r.review_from, b.id AS broker_id, b.name AS broker, b.slug AS broker_slug, b.legal_basis, u.id AS user_id, u.email, p.id AS profile_id, (p.first_name || ' ' || p.last_name) AS profile`;
 const SORTS = {
   created_desc: 'r.created_at DESC', created_asc: 'r.created_at ASC', sent_desc: 'r.sent_at DESC NULLS LAST', due_asc: 'r.due_at ASC NULLS LAST',
   status: `CASE r.status WHEN 'error' THEN 0 WHEN 'action_required' THEN 1 WHEN 'refused' THEN 2 WHEN 'in_progress' THEN 3 WHEN 'sent' THEN 4 WHEN 'queued' THEN 5 ELSE 6 END, r.created_at DESC`,
-  broker: 'b.name ASC, r.created_at DESC', user: 'u.email ASC, r.created_at DESC',
+  broker: 'b.name ASC, r.created_at DESC', user: 'u.email ASC, r.created_at DESC', review: 'r.review_at DESC NULLS LAST, r.created_at DESC',
 };
 admin.get('/requests', (req, res) => {
   const p = paging(req.query);
   const where = [], params = [];
   const status = clean(req.query.status, 20);
   if (status === 'open') where.push(`r.status IN ('queued', 'sent', 'in_progress', 'action_required')`);
+  else if (status === 'review') where.push('r.review_at IS NOT NULL');   // réponses entrantes à vérifier (expéditeur non reconnu)
   else if (STATUSES.includes(status)) { where.push('r.status = ?'); params.push(status); }
   const broker = clean(req.query.broker, 60);
   if (INT.test(broker)) { where.push('b.id = ?'); params.push(Number(broker)); } else if (SLUG.test(broker)) { where.push('b.slug = ?'); params.push(broker); }
@@ -439,7 +471,7 @@ admin.get('/requests', (req, res) => {
   const base = `${REQ_BASE}${where.length ? ' WHERE ' + where.join(' AND ') : ''}`;
   const total = q.get(`SELECT COUNT(*) AS c ${base}`, ...params).c; fit(p, total);
   const rows = q.all(`SELECT ${REQ_COLS} ${base} ORDER BY ${SORTS[sort]} LIMIT ? OFFSET ?`, ...params, p.per, p.offset);
-  res.json({ requests: rows.map((r) => ({ ...r, ref: ref(r) })), ...pageMeta(total, p), sort, counts: statusCounts(q.all('SELECT status, COUNT(*) AS n FROM requests GROUP BY status')) });
+  res.json({ requests: rows.map((r) => ({ ...r, ref: ref(r) })), ...pageMeta(total, p), sort, counts: { ...statusCounts(q.all('SELECT status, COUNT(*) AS n FROM requests GROUP BY status')), review: reviewCount() } });
 });
 admin.get('/requests/:id', (req, res) => {
   const r = getRequest(req.params.id);
@@ -462,16 +494,21 @@ admin.post('/requests/:id/outcome', wrap(async (req, res) => {
   const note = clean(req.body.note, 300);
   const out = await applyOutcome(r, outcome, note);
   if (out?.error) return bad(res, out.error, 409);
-  audit(req, 'request.outcome', r.id, { token: r.token, from: r.status, to: outcome, note: note || undefined });
+  const reviewed = clearReview(r.id);   // décision de l'équipe : la réponse à vérifier est traitée
+  audit(req, 'request.outcome', r.id, { token: r.token, from: r.status, to: outcome, note: note || undefined, reviewed: reviewed || undefined });
   res.json({ ok: true, request: { id: r.id, token: r.token, status: q.get('SELECT status FROM requests WHERE id = ?', r.id).status } });
 }));
 admin.post('/requests/:id/resend', (req, res) => {
   const r = getRequest(req.params.id);
   if (!r) return bad(res, 'Demande introuvable.', 404);
+  // Courtier désactivé : la demande resterait « à envoyer » (puis serait de nouveau arrêtée par le planificateur).
+  if (!q.get('SELECT active FROM brokers WHERE id = ?', r.broker_id)?.active) return bad(res, 'Ce courtier est désactivé : réactivez-le avant de renvoyer la demande.');
   // Nouvel envoi immédiat : compteur d'échecs et recul remis à zéro (sinon une demande en erreur y retombe au premier
-  // échec, et une demande en recul attend la fin du délai).
-  q.run(`UPDATE requests SET status = 'queued', sent_at = NULL, due_at = NULL, followup_sent_at = NULL, completed_at = NULL, next_check_at = NULL, attempts = 0, next_attempt_at = NULL, last_error = NULL, note = ? WHERE id = ?`, 'Nouvel envoi demandé par l’équipe Oubli.', r.id);
+  // échec, et une demande en recul attend la fin du délai). La réservation d'un envoi interrompu est levée : un courrier
+  // parti avant la panne ne dispense pas du renvoi demandé.
+  q.run(`UPDATE requests SET status = 'queued', sent_at = NULL, due_at = NULL, followup_sent_at = NULL, completed_at = NULL, next_check_at = NULL, attempts = 0, next_attempt_at = NULL, last_error = NULL, claimed_at = NULL, note = ? WHERE id = ?`, 'Nouvel envoi demandé par l’équipe Oubli.', r.id);
   logEvent(r.user_id, 'queued', `Nouvel envoi programmé vers ${q.get('SELECT name FROM brokers WHERE id = ?', r.broker_id)?.name || 'le courtier'} (cycle ${r.cycle}).`, { profile_id: r.profile_id, request_id: r.id });
+  clearReview(r.id);
   audit(req, 'request.resend', r.id, { token: r.token, from: r.status });
   setTimeout(() => tick(), 10);
   res.json({ ok: true, request: { id: r.id, token: r.token, status: 'queued' } });
@@ -489,16 +526,25 @@ admin.post('/requests/bulk', wrap(async (req, res) => {
     if (!r) { missing.push(String(id).slice(0, 40)); continue; }
     const out = await applyOutcome(r, outcome, note);
     if (out?.error) { ignored.push(ref(r)); continue; }   // demande close ou jamais envoyée : réponse sans objet
+    clearReview(r.id);
     updated += 1;
   }
   audit(req, 'request.bulk', null, { outcome, updated, missing: missing.length, ignored: ignored.length || undefined, note: note || undefined });
   res.json({ ok: true, updated, missing, ignored });
 }));
+// Réponse à vérifier jugée sans suite (message sans rapport, doublon) : le signalement est levé, la demande reste en l'état.
+admin.delete('/requests/:id/review', (req, res) => {
+  const r = getRequest(req.params.id);
+  if (!r) return bad(res, 'Demande introuvable.', 404);
+  if (!clearReview(r.id)) return bad(res, 'Cette demande n’a pas de réponse à vérifier.');
+  audit(req, 'request.review_dismiss', r.id, { token: r.token, outcome: r.review_outcome, sender: r.review_from || undefined });
+  res.json({ ok: true, request: { id: r.id, token: r.token, status: r.status } });
+});
 
 /* ---------- Courtiers ---------- */
 const BROKER_STATS = `(SELECT COUNT(*) FROM requests r WHERE r.broker_id = b.id AND r.sent_at IS NOT NULL) AS sent,
   (SELECT COUNT(*) FROM requests r WHERE r.broker_id = b.id AND r.status = 'done') AS done,
-  (SELECT COUNT(*) FROM requests r WHERE r.broker_id = b.id AND r.status = 'refused') AS refused,
+  (SELECT COUNT(*) FROM requests r WHERE r.broker_id = b.id AND r.status = 'refused' AND COALESCE(r.note, '') NOT LIKE 'Mandat révoqué%' AND COALESCE(r.note, '') NOT LIKE 'Courtier retiré%') AS refused,
   (SELECT COUNT(*) FROM requests r WHERE r.broker_id = b.id AND r.status = 'action_required') AS action_required,
   (SELECT COUNT(*) FROM requests r WHERE r.broker_id = b.id AND r.status IN ('sent', 'in_progress')) AS pending,
   (SELECT ROUND(AVG(julianday(r.completed_at) - julianday(r.sent_at)), 1) FROM requests r WHERE r.broker_id = b.id AND r.status = 'done' AND r.sent_at IS NOT NULL AND r.completed_at IS NOT NULL) AS avg_days_to_done`;
@@ -546,15 +592,21 @@ admin.put('/brokers/:id', (req, res) => {
   if (!keys.length) return bad(res, 'Rien à modifier.');
   q.run(`UPDATE brokers SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`, ...keys.map((k) => v[k]), b.id);
   const changes = Object.fromEntries(keys.filter((k) => v[k] !== b[k]).map((k) => [k, { from: b[k], to: v[k] }]));
-  audit(req, 'broker.update', b.id, { slug: b.slug, changes });
-  res.json({ broker: brokerRow(b.id) });
+  // Case « Actif » décochée : comme la désactivation. Recochée : les demandes arrêtées repartent dans un nouveau cycle
+  // (recherche complète au prochain passage, lancé tout de suite), comme après une nouvelle signature du mandat.
+  const stopped = v.active === 0 && b.active ? scheduler.stopRemovedBrokerRequests(b.id) : undefined;
+  if (v.active === 1 && !b.active) { scheduler.requestFullScan(); setTimeout(() => tick(), 10); }
+  audit(req, 'broker.update', b.id, { slug: b.slug, changes, stopped });
+  res.json({ broker: brokerRow(b.id), ...(stopped === undefined ? {} : { stopped }) });
 });
+// Désactivation : plus aucune nouvelle demande, et les demandes jamais envoyées (en file ou en erreur) sont arrêtées.
 admin.delete('/brokers/:id', (req, res) => {
   const b = getBroker(req.params.id);
   if (!b) return bad(res, 'Courtier introuvable.', 404);
   q.run('UPDATE brokers SET active = 0 WHERE id = ?', b.id);
-  audit(req, 'broker.deactivate', b.id, { slug: b.slug });
-  res.json({ ok: true, broker: brokerRow(b.id) });
+  const stopped = scheduler.stopRemovedBrokerRequests(b.id);
+  audit(req, 'broker.deactivate', b.id, { slug: b.slug, stopped });
+  res.json({ ok: true, broker: brokerRow(b.id), stopped });
 });
 // Relance la recherche du contact d'un site ajouté par un abonné (la réponse attend la fin de la recherche).
 admin.post('/brokers/:id/discover', wrap(async (req, res) => {

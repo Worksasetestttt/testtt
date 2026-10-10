@@ -406,7 +406,7 @@
   function sigNext(d) { var c = d.counters, u = d.user; return JSON.stringify([d.onboarding, c.total, c.action_required, c.refused, c.done, c.active, u.subscription_status, u.subscription_ends_at, u.billing_mode, u.mandate_revoked_at, d.next_check_at, readOnly(), d.requests.filter(function (r) { return r.status === 'refused'; }).map(function (r) { return r.next_check_at; }).join()]); }
 
   /* Synthèse : anneau des statuts (exposition au centre), tuiles qui filtrent la liste, frise du cycle légal. */
-  var PART = { done: 'effacées', action_required: 'en attente de votre vérification', in_progress: 'en attente de réponse', queued: 'à envoyer', stopped: 'arrêtées (mandat révoqué)', refused: 'refusées' };
+  var PART = { done: 'effacées', action_required: 'en attente de votre vérification', in_progress: 'en attente de réponse', queued: 'à envoyer', stopped: 'arrêtées', refused: 'refusées' };
   function donut(d) {
     var c = d.counters, total = c.active || 0, R = 62, C = 2 * Math.PI * R, off = 0, segs = '';
     var parts = [['done', c.done], ['action_required', c.action_required], ['in_progress', c.in_progress], ['queued', c.queued + (c.error || 0)], ['stopped', c.stopped || 0], ['refused', c.refused]].filter(function (p) { return p[1] > 0; });
@@ -415,7 +415,9 @@
       var len = C * p[1] / total, dash = Math.max(0.5, len - gap);
       segs += '<circle class="donut__seg donut__seg--' + p[0] + '" cx="80" cy="80" r="' + R + '" stroke-dasharray="' + dash.toFixed(2) + ' ' + (C - dash).toFixed(2) + '" stroke-dashoffset="' + (-off).toFixed(2) + '"/>'; off += len;
     });
-    var label = 'Exposition estimée' + NBSP + ': ' + (total ? d.exposure + NNBSP + '%. ' + parts.map(function (p) { return p[1] + NBSP + PART[p[0]]; }).join(', ') + ', sur ' + total + '.' : 'pas encore de demande.');
+    var why = d.requests.filter(function (r) { return r.status === 'stopped'; }).map(function (r) { return r.stop_reason === 'broker' ? 'courtier retiré' : 'mandat révoqué'; });
+    var stoppedPart = why.length && why.every(function (w) { return w === why[0]; }) ? PART.stopped + ' (' + why[0] + ')' : PART.stopped;
+    var label = 'Exposition estimée' + NBSP + ': ' + (total ? d.exposure + NNBSP + '%. ' + parts.map(function (p) { return p[1] + NBSP + (p[0] === 'stopped' ? stoppedPart : PART[p[0]]); }).join(', ') + ', sur ' + total + '.' : 'pas encore de demande.');
     return '<svg class="donut" viewBox="0 0 160 160" role="img" aria-label="' + esc(label) + '"><circle class="donut__track" cx="80" cy="80" r="' + R + '"/><g transform="rotate(-90 80 80)">' + segs + '</g><text class="donut__n" x="80" y="80">' + (total ? d.exposure + NNBSP + '%' : '—') + '</text><text class="donut__l" x="80" y="104">exposition</text></svg>';
   }
   function scoreText(d) {
@@ -491,9 +493,12 @@
     if (state.filter === 'in_progress') return '<div class="empty empty--state"><span class="mono">Aucune demande en cours</span><p>' + (c.active && c.done === c.active ? 'Tous les courtiers ont confirmé l’effacement.' : 'Rien en attente de réponse.') + '</p></div>';
     return '<div class="empty empty--state"><p>Aucune demande dans cette catégorie.</p></div>';
   }
+  // Demande arrêtée avant son envoi (statut virtuel stopped) : mandat révoqué, ou courtier (site) retiré du registre.
+  // short : libellé de la colonne « Suivi », assez court pour garder la grille des lignes.
+  function stopWhy(r, short) { return r.stop_reason === 'broker' ? (r.custom ? (short ? 'site retiré' : 'site retiré du service') : (short ? 'retiré du registre' : 'courtier retiré du registre')) : 'mandat révoqué'; }
   function whenHtml(r) {
     if (r.status === 'done') return '<span>Effacée le ' + fmtDay(r.completed_at) + '</span><small>' + (r.next_check_at ? 'revérification le ' + fmtDay(r.next_check_at) : basisLabel(r)) + '</small>';
-    if (r.status === 'stopped') return '<span>Demande arrêtée</span><small>mandat révoqué</small>';
+    if (r.status === 'stopped') return '<span>Demande arrêtée</span><small>' + stopWhy(r, true) + '</small>';
     if (r.status === 'refused') return '<span>Refus du courtier</span><small>' + (r.next_check_at ? 'nouvelle demande le ' + fmtDay(r.next_check_at) : basisLabel(r)) + '</small>';
     if (r.status === 'action_required') return '<span>Vérification à faire</span><small>' + (r.sent_at ? 'demande du ' + fmtDay(r.sent_at) : basisLabel(r)) + '</small>';
     if (r.status === 'error') return '<span>Envoi en attente</span><small>contact en cours de vérification</small>';
@@ -653,7 +658,9 @@
     var ccpa = r.legal_basis === 'ccpa', motive = r.note && !/^(Refus du courtier|réponse reçue de|Mandat révoqué)/i.test(r.note) ? r.note : '';
     switch (r.status) {
       case 'queued': return r.custom && r.site && r.site.status === 'searching' ? 'Nous cherchons le contact du site' + NBSP + '; la demande part dès qu’il est connu.' : r.custom && r.site && r.site.status === 'review' ? 'Notre équipe vérifie l’adresse de contact du site avant l’envoi.' : 'La demande est prête' + NBSP + ': elle part dans la minute.';
-      case 'stopped': return 'Demande arrêtée avant son envoi' + NBSP + ': vous avez révoqué le mandat. Elle repartira dans un nouveau cycle dès que vous le signerez de nouveau.';
+      case 'stopped': return r.stop_reason === 'broker'
+        ? (r.custom ? 'Ce site a été retiré du service par notre équipe' : 'Ce courtier a été retiré de notre registre') + NBSP + ': la demande ne lui a pas été envoyée. Ce n’est pas un refus de sa part' + NBSP + '; une nouvelle demande partira ' + (r.custom ? 's’il est rétabli.' : 's’il y revient.')
+        : 'Demande arrêtée avant son envoi' + NBSP + ': vous avez révoqué le mandat. Elle repartira dans un nouveau cycle dès que vous le signerez de nouveau.';
       case 'error': return 'L’envoi a échoué plusieurs fois' + NBSP + ': notre équipe vérifie l’adresse du courtier, puis la demande repart.';
       case 'sent': return 'Le courtier a jusqu’au ' + fmtDate(r.due_at) + ' pour répondre (' + (ccpa ? '45' + NBSP + 'jours, CCPA' : 'un mois, article' + NBSP + '12 du RGPD') + '). Sans réponse, nous le relançons.';
       case 'in_progress': return r.followup_sent_at ? 'Délai légal dépassé' + NBSP + ': nous avons relancé le courtier le ' + fmtDate(r.followup_sent_at) + (r.complaint ? '. Sans réponse depuis, vous pouvez déposer une plainte.' : '.') : 'Le courtier traite la demande' + (r.due_at ? NBSP + '; réponse attendue avant le ' + fmtDate(r.due_at) : '') + '.';
@@ -666,7 +673,7 @@
   function requestSteps(r) {
     var answered = r.status === 'done' || r.status === 'refused', s = [];
     s.push(['Demande préparée', fmtDay(r.created_at), 'done']);
-    if (r.status === 'stopped') s.push(['Envoi arrêté', 'mandat révoqué', 'skip'], ['Nouvelle demande', 'dès la nouvelle signature du mandat', 'todo']);
+    if (r.status === 'stopped') s.push(['Envoi arrêté', stopWhy(r), 'skip'], ['Nouvelle demande', r.stop_reason !== 'broker' ? 'dès la nouvelle signature du mandat' : r.custom ? 'si le site est rétabli' : 's’il revient au registre', 'todo']);
     else {
       s.push(['Envoyée au courtier', r.sent_at ? fmtWhen(r.sent_at) : r.status === 'error' ? 'envoi en échec' : r.custom && r.site && r.site.status === 'searching' ? 'dès que le contact est connu' : 'dans la minute', r.sent_at ? 'done' : 'current']);
       if (r.status === 'action_required') s.push(['Vérification demandée', 'à faire de votre côté', 'current']);
