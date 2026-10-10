@@ -17,6 +17,7 @@ import { EMAIL, publicUser, parseProfile, wrap, isId, str, strList, oneOf } from
 import { buildDashboard, exportData, complaintReady } from './dashboard.js';
 import { addSite, relaunchRequest } from './sites.js';
 import { admin, auditAs, currentAnnouncement, toCsv } from './admin.js';
+import { account } from './account.js';
 
 export const api = express.Router();
 const fresh = (req) => q.get('SELECT * FROM users WHERE id = ?', req.user.id);
@@ -94,6 +95,8 @@ api.post('/auth/password', requireAuth, rateLimit({ max: 10 }), wrap(async (req,
   logEvent(u.id, 'account', 'Mot de passe modifié ; les autres sessions ont été déconnectées.');
   res.json({ ok: true });
 }));
+// Mot de passe oublié (/auth/forgot, /auth/reset) et appareils connectés (/sessions) : voir server/account.js.
+api.use(account);
 
 /* ---------- Profils (personnes protégées) ---------- */
 const ownProfile = (req) => (isId(req.params.id) ? q.get('SELECT * FROM profiles WHERE id = ? AND user_id = ?', req.params.id, req.user.id) : null);

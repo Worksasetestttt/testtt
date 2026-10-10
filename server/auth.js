@@ -250,9 +250,10 @@ function clientKey(ip) {
   const groups = rest === undefined ? h : [...h, ...Array(Math.max(0, 8 - h.length - t.length - (rest.includes('.') ? 1 : 0))).fill('0'), ...t];
   return `${groups.slice(0, 4).map((g) => parseInt(g, 16).toString(16)).join(':')}::/64`;
 }
-export function rateLimit({ windowMs = 15 * 60000, max = 30, name } = {}) {
+// by(req) : clé de comptage à la place du client (ex. empreinte de l'adresse visée, quelle que soit l'IP de l'appelant).
+export function rateLimit({ windowMs = 15 * 60000, max = 30, name, by } = {}) {
   return (req, res, next) => {
-    const key = `${name || routeKey(req)}|${clientKey(req.ip)}`;
+    const key = `${name || routeKey(req)}|${by ? by(req) : clientKey(req.ip)}`;
     const t = Date.now();
     let b = buckets.get(key);
     if (!b || t >= b.reset) b = { n: 0, reset: t + windowMs };

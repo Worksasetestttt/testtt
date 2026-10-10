@@ -167,6 +167,35 @@ h1 em, h2 em { font-style: italic; font-weight: 400; }
 .offer { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); margin-bottom: 26px; font-size: .95rem; flex-wrap: wrap; }
 .offer strong { font-weight: 600; }
 
+/* ---------- Mot de passe oublié, réinitialisation, appareils connectés ---------- */
+.auth__forgot { display: flex; justify-content: flex-end; margin-top: 6px; }
+.auth__link { display: inline-flex; align-items: center; min-height: 44px; color: var(--accent-2); text-underline-offset: 3px; }
+.auth__forgot .auth__link { font-size: .92rem; }
+.auth .msg:not(:empty) { margin-bottom: 14px; }
+#reset-box > .sheet:first-child { margin-top: 28px; }
+.auth__state { display: grid; gap: 14px; }
+.auth__state h2 { font-size: 1.5rem; }
+.auth__state p { color: var(--muted); }
+.auth__state .hint { font-size: .9rem; }
+.auth__state .btn { margin-top: 6px; }
+.auth__email { color: var(--text); overflow-wrap: anywhere; }
+.devices { display: grid; }
+.device { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px 20px; align-items: center; padding: 16px 0; border-top: 1px solid var(--border); }
+.device:first-child { border-top: 0; padding-top: 0; }
+.device:last-child { padding-bottom: 0; }
+.device__main { min-width: 0; }
+.device__name { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.device__name strong { font-weight: 600; overflow-wrap: anywhere; }
+.device__meta { color: var(--muted); font-size: .88rem; margin-top: 2px; }
+.device .btn { position: relative; }
+.devices__note { color: var(--muted); font-size: .92rem; }
+.devices + .devices__note { margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--border); }
+@media (max-width: 767px) {
+  .device { grid-template-columns: minmax(0, 1fr); }
+  .device .btn { justify-self: start; height: 44px; }
+  #devices-foot .btn { height: 44px; }
+}
+
 /* ---------- Onboarding : rail d'étapes à gauche, feuille à droite ---------- */
 .onb { display: grid; grid-template-columns: 240px 1fr; gap: 48px; align-items: start; }
 .rail { position: sticky; top: calc(var(--nav-h) + 32px); display: flex; flex-direction: column; }

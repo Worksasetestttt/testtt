@@ -41,10 +41,13 @@ const withTimeout = (p, ms) => new Promise((resolve, reject) => {
 });
 
 let seq = 0;
-export async function sendMail({ to, subject, text, html, headers = {}, request_id = null, user_id = null }) {
+// redact : secrets (jeton d’un lien de réinitialisation…) envoyés au destinataire mais jamais conservés en clair dans la
+// table mails, que lisent l’administration et l’export RGPD. Le message réellement envoyé n’est pas modifié.
+export async function sendMail({ to, subject, text, html, headers = {}, request_id = null, user_id = null, redact = [] }) {
   const addr = header(to), subj = header(subject), body = String(text ?? '');
+  const stored = (Array.isArray(redact) ? redact : []).filter((s) => typeof s === 'string' && s.length >= 8).reduce((b, s) => b.split(s).join('[masqué]'), body);
   const extra = Object.fromEntries(Object.entries(headers || {}).filter(([k]) => /^[a-z0-9-]+$/i.test(k)).map(([k, v]) => [k, header(v)]));
-  const record = (message_id, error) => q.run('INSERT INTO mails (request_id, user_id, to_addr, subject, body, mode, message_id, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', request_id, user_id, addr, subj, body, mailMode, message_id, error, now());
+  const record = (message_id, error) => q.run('INSERT INTO mails (request_id, user_id, to_addr, subject, body, mode, message_id, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', request_id, user_id, addr, subj, stored, mailMode, message_id, error, now());
   try {
     if (!ADDRESS.test(addr) || addr.length > 254) throw new Error(`Adresse destinataire invalide : « ${addr || '—'} »`);
     if (!subj) throw new Error('Objet du message manquant.');

@@ -34,7 +34,7 @@
     var init = { method: opts.method || (opts.body ? 'POST' : 'GET'), headers: {}, credentials: 'same-origin' };
     if (opts.body !== undefined) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(opts.body); }
     return fetch('/api' + path, init).then(function (r) {
-      return r.text().then(function (t) { var d; try { d = t ? JSON.parse(t) : {}; } catch (e) { d = { error: 'Réponse invalide du serveur.' }; } if (!r.ok) { var err = new Error(d.error || ('Erreur ' + r.status)); err.status = r.status; throw err; } return d; });
+      return r.text().then(function (t) { var d; try { d = t ? JSON.parse(t) : {}; } catch (e) { d = { error: 'Réponse invalide du serveur.' }; } if (!r.ok) { var err = new Error(d.error || ('Erreur ' + r.status)); err.status = r.status; err.code = d.code || null; throw err; } return d; });
     });
   }
   function params() { var h = location.hash.slice(1), i = h.indexOf('?'); var out = { route: i < 0 ? h : h.slice(0, i), q: {} }; if (i >= 0) new URLSearchParams(h.slice(i + 1)).forEach(function (v, k) { out.q[k] = v; }); return out; }
@@ -101,8 +101,8 @@
   views.login = function (q) {
     return '<section class="auth"><div class="auth__mark">' + MARK + '</div><h1>Bon retour.</h1><p class="lead">Connectez-vous pour suivre vos demandes.</p>' +
       '<form id="login-form" class="sheet" novalidate><div class="sheet__body"><div class="fields">' + field('email', 'Adresse e-mail', q.email || '', { extra: 'type="email" autocomplete="email" required' }) + field('password', 'Mot de passe', '', { extra: 'type="password" autocomplete="current-password" required' }) +
-      '</div>' + msgEl('msg-login-form', 'margin-top:16px') + '<button class="btn btn--block" type="submit">Se connecter</button></div></form>' +
-      '<p class="switch">Pas encore de dossier' + NBSP + '? <a href="#signup">Créer un compte</a></p></section>';
+      '</div><p class="auth__forgot"><a class="auth__link" href="#forgot" id="forgot-link">Mot de passe oublié' + NBSP + '?</a></p>' + msgEl('msg-login-form', 'margin-top:8px') + '<button class="btn btn--block" type="submit">Se connecter</button></div></form>' +
+      '<p class="switch">Pas encore de dossier' + NBSP + '? <a class="auth__link" href="#signup">Créer un compte</a></p></section>';
   };
   views.signup = function (q) {
     var plan = state.config && state.config.plans[q.plan] ? q.plan : 'individuel';
@@ -112,8 +112,59 @@
       (p ? '<div class="offer"><span><span class="mono">Offre</span><br><strong>' + esc(p.name) + '</strong>' + SEP + 'sans engagement</span><span><strong>' + money(p.monthly) + '</strong><small class="mono--plain mono">/mois</small></span></div>' : '') +
       '<div class="fields">' + field('email', 'Adresse e-mail', q.email || '', { extra: 'type="email" autocomplete="email" required' }) + field('password', 'Mot de passe', '', { extra: 'type="password" autocomplete="new-password" minlength="10" required' }, 'Au moins 10' + NBSP + 'caractères.') +
       '</div>' + msgEl('msg-signup-form', 'margin-top:16px') + '<button class="btn btn--block" type="submit">Créer mon compte <span class="btn__arrow" aria-hidden="true">→</span></button></div></form>' +
-      '<p class="switch">Déjà un compte' + NBSP + '? <a href="#login">Se connecter</a></p></section>';
+      '<p class="switch">Déjà un compte' + NBSP + '? <a class="auth__link" href="#login">Se connecter</a></p></section>';
   };
+
+  /* ---------- mot de passe oublié ---------- */
+  /* Le serveur répond la même chose que le compte existe ou non : l'écran de confirmation reste neutre. */
+  views.forgot = function () {
+    var email = state.forgotEmail || ''; state.forgotEmail = '';
+    return '<section class="auth"><div class="auth__mark">' + MARK + '</div><h1>Mot de passe oublié' + NBSP + '?</h1><p class="lead">Indiquez l’adresse de votre compte' + NBSP + ': nous vous envoyons un lien pour choisir un nouveau mot de passe.</p>' +
+      '<div id="forgot-box">' + forgotForm(email) + '</div><p class="switch"><a class="auth__link" href="#login">Retour à la connexion</a></p></section>';
+  };
+  function forgotForm(email) {
+    return '<form id="forgot-form" class="sheet" novalidate><div class="sheet__body"><div class="fields">' + field('email', 'Adresse e-mail', email, { extra: 'type="email" autocomplete="email" required' }) + '</div>' +
+      msgEl('msg-forgot-form', 'margin-top:16px') + '<button class="btn btn--block" type="submit">Recevoir le lien</button></div></form>';
+  }
+  function forgotDone(email) {
+    return '<div class="sheet"><div class="sheet__body auth__state"><h2 id="auth-state-h" tabindex="-1">Vérifiez votre boîte de réception</h2>' +
+      '<p>Si un compte Oubli est associé à <strong class="auth__email">' + esc(email) + '</strong>, un e-mail vient de partir avec un lien pour choisir un nouveau mot de passe. Le lien est valable une heure et ne sert qu’une fois.</p>' +
+      '<p class="hint">Rien reçu d’ici quelques minutes' + NBSP + '? Regardez dans les courriers indésirables et vérifiez l’adresse saisie.</p>' +
+      '<button class="btn btn--outline btn--block" type="button" id="forgot-again" data-email="' + esc(email) + '">Faire une nouvelle demande</button></div></div>';
+  }
+  var RESET_TOKEN = /^[A-Za-z0-9_-]{43}$/;
+  views.reset = function (q) {
+    var ok = RESET_TOKEN.test(q.token || '');
+    return '<section class="auth"><div class="auth__mark">' + MARK + '</div><h1>Nouveau mot de passe</h1><div id="reset-box">' +
+      (ok ? '<p class="lead">Choisissez le nouveau mot de passe de votre compte. Par sécurité, tous vos appareils seront déconnectés.</p>' + resetForm() : resetState('incomplete')) +
+      '</div><p class="switch"><a class="auth__link" href="#login">Retour à la connexion</a></p></section>';
+  };
+  function resetForm() {
+    return '<form id="reset-form" class="sheet" novalidate><div class="sheet__body"><div class="fields">' +
+      field('password', 'Nouveau mot de passe', '', { extra: 'type="password" autocomplete="new-password" minlength="10" required' }, 'Au moins 10' + NBSP + 'caractères, sans votre adresse e-mail.') +
+      field('confirm', 'Confirmez le mot de passe', '', { extra: 'type="password" autocomplete="new-password" minlength="10" required' }) + '</div>' +
+      msgEl('msg-reset-form', 'margin-top:16px') + '<button class="btn btn--block" type="submit">Enregistrer le mot de passe</button></div></form>';
+  }
+  /* Lien inutilisable (incomplet, expiré, déjà servi, remplacé) ou compte suspendu après le changement (message du serveur). */
+  var RESET_STATES = {
+    incomplete: ['Ce lien est incomplet', 'L’adresse ouverte ne contient pas de jeton de réinitialisation valide. Ouvrez le lien complet depuis l’e-mail reçu, ou demandez-en un nouveau.'],
+    expired: ['Ce lien a expiré', 'Un lien de réinitialisation n’est valable qu’une heure. Demandez-en un nouveau' + NBSP + ': il arrive en quelques instants.'],
+    used: ['Ce lien a déjà servi', 'Un lien de réinitialisation ne sert qu’une fois. Si vous venez de choisir un nouveau mot de passe, connectez-vous avec lui' + NBSP + '; sinon, demandez un nouveau lien.'],
+    invalid: ['Ce lien n’est plus valable', 'Il a peut-être été remplacé par un lien plus récent' + NBSP + ': utilisez le dernier e-mail reçu, ou demandez un nouveau lien.'],
+    suspended: ['Mot de passe changé', ''],
+  };
+  function resetState(code, message) {
+    var dead = code !== 'suspended', s = RESET_STATES[code] || RESET_STATES.invalid, title = s[0], text = message || s[1];
+    return '<div class="sheet"><div class="sheet__body auth__state"><h2 id="auth-state-h" tabindex="-1">' + title + '</h2><p>' + esc(text) + '</p>' +
+      (dead ? '<a class="btn btn--block" href="#forgot">Recevoir un nouveau lien</a>' : '<a class="btn btn--outline btn--block" href="#login">Retour à la connexion</a>') + '</div></div>';
+  }
+  /* Remplace le contenu d'une zone (formulaire → état) : le focus va au titre, le message suit en annonce polie. */
+  function swapState(box, html) {
+    box.innerHTML = html;
+    var h = $('#auth-state-h', box), p = $('.auth__state > p', box);
+    if (h) h.focus();
+    if (p) announce(p.textContent);
+  }
 
   views.onboarding = function () {
     var u = state.user, p = state.profiles[0] || {};
@@ -673,10 +724,88 @@
   views.settings = function () {
     return '<div class="page-head"><div><span class="mono">Paramètres</span><h1>Votre compte, vos données, vos droits.</h1></div></div><div class="stack">' +
       '<form class="sheet" id="pwd-form" novalidate><div class="sheet__head"><h2>Mot de passe</h2></div><div class="sheet__body"><div class="fields">' + field('current', 'Mot de passe actuel', '', { extra: 'type="password" autocomplete="current-password" required' }) + field('next', 'Nouveau mot de passe', '', { extra: 'type="password" autocomplete="new-password" minlength="10" required' }, 'Au moins 10' + NBSP + 'caractères. Les autres sessions seront déconnectées.') + '</div>' + msgEl('msg-pwd-form', 'margin-top:16px') + '</div><div class="sheet__foot"><button class="btn btn--outline" type="submit">Changer le mot de passe</button></div></form>' +
+      '<section class="sheet" id="devices" aria-labelledby="devices-h"><div class="sheet__head"><h2 id="devices-h" tabindex="-1">Appareils connectés</h2><span class="mono" id="devices-count"></span></div><div class="sheet__body" id="devices-body"><p class="devices__note"><span class="spinner"></span> Chargement des appareils…</p></div>' +
+      '<div class="sheet__foot" id="devices-foot" hidden><button class="btn btn--outline btn--sm" type="button" id="revoke-others">Déconnecter les autres appareils</button><span class="mono">Une session dure 30' + NBSP + 'jours au plus</span></div></section>' +
       '<section class="sheet" aria-labelledby="notif-h"><div class="sheet__head"><h2 id="notif-h">Notifications</h2></div><div class="sheet__body"><label class="check"><input type="checkbox" id="pref-report"' + (state.user.monthly_report !== false ? ' checked' : '') + '> <span>Recevoir chaque mois un rapport par e-mail' + NBSP + ': effacements confirmés, demandes en cours, vérifications à faire.</span></label><p class="hint notif-hint">Les alertes «' + NBSP + 'action requise' + NBSP + '» restent envoyées' + NBSP + ': elles demandent une intervention de votre part.</p></div></section>' +
       '<section class="sheet" aria-labelledby="data-h"><div class="sheet__head"><h2 id="data-h">Vos données chez Oubli</h2></div><div class="sheet__body"><p class="lead">Nous appliquons à nous-mêmes ce que nous demandons aux courtiers' + NBSP + ': export complet en un clic, suppression définitive sur demande.</p></div><div class="sheet__foot"><a class="btn btn--outline" href="/api/export" download="oubli-export.json">Exporter mes données (JSON)</a><span class="mono">RGPD art. 15 &amp; 20</span></div></section>' +
       '<form class="sheet" id="delete-form" novalidate><div class="sheet__head"><h2>Supprimer le compte</h2></div><div class="sheet__body"><p class="lead" style="margin-bottom:22px">Résilie l’abonnement, supprime vos profils, vos demandes et le journal. Irréversible.</p><div class="fields">' + field('password', 'Mot de passe', '', { extra: 'type="password" autocomplete="current-password" required' }) + '</div>' + msgEl('msg-delete-form', 'margin-top:16px') + '</div><div class="sheet__foot"><button class="btn btn--danger" type="submit">Supprimer définitivement</button><span class="mono">RGPD art. 17</span></div></form></div>';
   };
+
+  /* ---------- appareils connectés (Paramètres) ---------- */
+  /* Une session n'est connue ici que par sa poignée (empreinte) ; sa dernière activité est connue à l'heure près. */
+  function deviceMeta(s) {
+    function t(iso, txt) { return '<time datetime="' + esc(iso) + '">' + txt + '</time>'; }
+    var since = (s.support ? 'Ouvert le ' : 'Connecté le ') + t(s.created_at, fmtDate(s.created_at));
+    var act = s.support ? 'lecture seule, jusqu’à ' + t(s.expires_at, new Date(s.expires_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }))
+      : s.current ? 'actif en ce moment'
+      : Date.now() - Date.parse(s.last_seen_at) < 3600000 ? 'actif dans l’heure'
+      : 'dernière activité le ' + t(s.last_seen_at, fmtWhen(s.last_seen_at));
+    return since + SEP + act;
+  }
+  function devicesHtml(list) {
+    var others = list.filter(function (s) { return !s.current; }).length;
+    return '<ul class="devices" role="list">' + list.map(function (s) {
+      return '<li class="device"><div class="device__main"><p class="device__name"><strong>' + esc(s.device) + '</strong>' + (s.current ? '<span class="chip chip--active">Cet appareil</span>' : '') + '</p><p class="device__meta">' + deviceMeta(s) + '</p></div>' +
+        (s.current ? '' : '<button class="btn btn--outline btn--sm" type="button" data-session="' + esc(s.handle) + '" data-device="' + esc(s.device) + '">Déconnecter<span class="vh"> ' + esc(s.device) + ', connecté le ' + fmtDate(s.created_at) + '</span></button>') + '</li>';
+    }).join('') + '</ul>' + (others ? '' : '<p class="devices__note">Aucun autre appareil n’est connecté à votre compte.</p>');
+  }
+  /* focus (facultatif) : rang du bouton « Déconnecter » à reprendre après une révocation ; à défaut, le titre de la section. */
+  function loadDevices(focus) {
+    return api('/sessions').then(function (r) {
+      var body = $('#devices-body'); if (!body || params().route !== 'settings') return;
+      var list = r.sessions || [], others = list.filter(function (s) { return !s.current; }).length;
+      body.innerHTML = devicesHtml(list);
+      $('#devices-count').textContent = plural(list.length, 'appareil', 'appareils');
+      $('#devices-foot').hidden = !others;
+      if (typeof focus === 'number') { var bs = $$('[data-session]', body); (bs[Math.min(focus, bs.length - 1)] || $('#devices-h')).focus(); }
+    }).catch(function (e) {
+      if (e.status === 401) { resetSession(); go('login'); return; }
+      var body = $('#devices-body'); if (body) body.innerHTML = '<p class="notice" role="alert">' + esc(e.message) + '</p>';
+    });
+  }
+
+  /* ---------- interactions : mot de passe oublié, réinitialisation, appareils ---------- */
+  document.addEventListener('submit', function (e) {
+    var f = e.target;
+    if (f.id !== 'forgot-form' && f.id !== 'reset-form') return;
+    e.preventDefault();
+    if (f._busy) return;
+    if (f.id === 'forgot-form') {
+      var em = $('#f-email', f), email = em.value.trim();
+      if (!email) { showMsg(f, 'Indiquez l’adresse e-mail de votre compte.', true, null, em); return; }
+      busy(f, true); showMsg(f, '');
+      api('/auth/forgot', { body: { email: email } }).then(function () { swapState($('#forgot-box'), forgotDone(email)); }).catch(function (err) { showMsg(f, typo(err.message), true, null, em); }).finally(function () { busy(f, false); });
+    } else {
+      var pw = $('#f-password', f), pw2 = $('#f-confirm', f);
+      if (!pw.value) { showMsg(f, 'Choisissez un nouveau mot de passe.', true, null, pw); return; }
+      if (pw.value !== pw2.value) { showMsg(f, 'Les deux mots de passe ne correspondent pas.', true, null, pw2); return; }
+      busy(f, true); showMsg(f, '');
+      api('/auth/reset', { body: { token: params().q.token || '', password: pw.value } }).then(function (r) {
+        if (!r.signed_in) { swapState($('#reset-box'), resetState('suspended', r.message)); return; }
+        state.dash = null; state.profileId = null;
+        return loadMe().then(function () { toast('Mot de passe changé. Vous êtes connecté.'); location.replace('#' + home()); });   // le lien sort de l'historique
+      }).catch(function (err) {
+        if (/^(invalid|expired|used)$/.test(err.code || '')) { swapState($('#reset-box'), resetState(err.code)); return; }
+        showMsg(f, typo(err.message), true, null, pw);   // messages de la politique de mot de passe (auth.js) : espace insécable avant « : »
+      }).finally(function () { busy(f, false); });
+    }
+  });
+  document.addEventListener('click', function (e) {
+    var t = e.target.closest('button, a'); if (!t || t.getAttribute('aria-disabled') === 'true') return;
+    if (t.id === 'forgot-link') { var le = $('#f-email'); state.forgotEmail = le ? le.value.trim() : ''; }   // adresse reprise, sans passer par l'URL
+    else if (t.id === 'forgot-again') { var box = $('#forgot-box'); box.innerHTML = forgotForm(t.getAttribute('data-email') || ''); $('#f-email', box).focus(); }
+    else if (t.hasAttribute('data-session')) {
+      var rank = $$('#devices-body [data-session]').indexOf(t), label = t.getAttribute('data-device');
+      lock(t, true);
+      api('/sessions/' + encodeURIComponent(t.getAttribute('data-session')), { method: 'DELETE' }).then(function () { toast('Appareil déconnecté' + NBSP + ': ' + label + '.'); return loadDevices(rank); })
+        .catch(function (err) { toast(typo(err.message), true); lock(t, false); if (err.status === 404) loadDevices(rank); });
+    }
+    else if (t.id === 'revoke-others') {
+      lock(t, true);
+      api('/sessions/revoke-others', { method: 'POST' }).then(function (r) { toast(r.revoked > 1 ? r.revoked + NBSP + 'appareils déconnectés.' : r.revoked ? 'Un appareil déconnecté.' : 'Aucun autre appareil n’était connecté.'); return loadDevices(0); })
+        .catch(function (err) { toast(typo(err.message), true); }).finally(function () { lock(t, false); });
+    }
+  });
 
   /* Vue admin : le code d'administration (app/admin.js + app/admin.css) n'est chargé que pour les administrateurs. */
   var plugins = {}, adminLoaded = false;
@@ -693,8 +822,10 @@
     var p = params(), route = p.route || (state.user ? 'dashboard' : 'login');
     clearInterval(pollTimer); closeDrawer();
     if (route === 'billing-success') { toast('Paiement confirmé. Les demandes partent automatiquement.'); location.hash = 'dashboard'; return; }
-    if (!state.user && !/^(login|signup)$/.test(route)) { location.hash = 'login' + (location.hash.indexOf('?') > 0 ? location.hash.slice(location.hash.indexOf('?')) : ''); return; }
-    if (state.user && /^(login|signup)$/.test(route)) { location.hash = home(); return; }
+    // Sans session : connexion, inscription, mot de passe oublié et réinitialisation. Avec une session, #reset reste ouvert
+    // (le lien reçu par e-mail vaut pour son compte, qui peut être un autre que celui connecté).
+    if (!state.user && !/^(login|signup|forgot|reset)$/.test(route)) { location.hash = 'login' + (location.hash.indexOf('?') > 0 ? location.hash.slice(location.hash.indexOf('?')) : ''); return; }
+    if (state.user && /^(login|signup|forgot)$/.test(route)) { location.hash = home(); return; }
     if (state.user && route === 'dashboard' && !onboardingDone() && !(state.dash && state.dash.counters.total)) { if (!state.user.mandate_signed_at || !state.profiles[0].first_name) { location.hash = 'onboarding'; return; } }
     if (route === 'admin' && (!state.user || state.user.role !== 'admin')) { location.hash = 'dashboard'; return; }
     if (!views[route]) { location.hash = state.user ? 'dashboard' : 'login'; return; }
@@ -709,6 +840,7 @@
     if (route === 'dashboard') { drawChart(); loadDash(null, true); pollTimer = setInterval(function () { if (!document.hidden && Date.now() >= retryAt) loadDash(); }, 6000); }
     if (route === 'onboarding' || route === 'dossier') loadMandateText();
     if (route === 'report') loadReport();
+    if (route === 'settings') loadDevices();
     if (plugins[route]) plugins[route](q || {});
   }
   /* Requête du tableau de bord : une seule à la fois (sauf demande explicite), la plus récente l'emporte. En cas d'échec,
