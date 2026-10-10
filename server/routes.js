@@ -162,7 +162,7 @@ api.post('/mandate', requireAuth, (req, res) => {
   // (sans effet tant que l'abonnement n'est pas en cours ; idempotent sinon).
   const signed = fresh(req);
   let relaunched = 0;
-  for (const p of q.all('SELECT * FROM profiles WHERE user_id = ?', u.id)) relaunched += launchProfile(signed, p).created;
+  for (const pr of q.all('SELECT * FROM profiles WHERE user_id = ?', u.id)) relaunched += launchProfile(signed, pr).created;
   if (relaunched) setTimeout(() => tick(), 10);
   res.json({ ok: true, signed_at: signed.mandate_signed_at, relaunched });
 });

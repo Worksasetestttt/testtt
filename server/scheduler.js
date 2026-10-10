@@ -5,7 +5,8 @@
 //   · action_required → in_progress (vérification fournie par l’abonné, routes.js)
 //   · done | refused → nouveau cycle (nouvelle demande queued, cycle + 1) quand next_check_at est atteint ; un refus
 //     programme ce nouvel envoi après recheck_days jours, et l’abonné peut relancer plus tôt (sites.js, relaunchRequest)
-//   · queued → error après SEND_MAX_ATTEMPTS échecs d’envoi (recul exponentiel entre deux essais) ; error → queued via applyOutcome(r, 'queued')
+//   · queued → error après SEND_MAX_ATTEMPTS échecs d’envoi (recul exponentiel entre deux essais) ; error → queued par le
+//     renvoi de l’administration (admin.js, essais et recul remis à zéro) ou applyOutcome(r, 'queued')
 //   · queued → refused quand le mandat est révoqué (routes.js) ; ces demandes sont relancées dans un nouveau cycle après re-signature.
 //   · une réponse « en cours » ou « vérification demandée » ne s’applique qu’à une demande en attente du courtier
 //     (sent, in_progress, action_required) : jamais à une demande en file, en erreur, effacée ou refusée (applyOutcome).
