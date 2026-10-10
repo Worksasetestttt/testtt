@@ -113,14 +113,14 @@ export function revokeKey(id, adminId) {
 }
 
 /* ---------- Activation par l’abonné ---------- */
-// Un abonnement payé (carte ou simulé), un paiement en attente ou un abonnement activé par l’équipe n’est jamais
-// remplacé par une clé : l’abonné saurait mal ce qu’il paie encore. Retourne le message de refus, ou null.
+// Un abonnement payé par carte, un paiement en attente ou un abonnement activé par l’équipe n’est jamais remplacé par
+// une clé : l’abonné saurait mal ce qu’il paie encore. Un abonnement simulé (sans Stripe : rien n’est payé) l’est,
+// sinon une clé ne pourrait pas s’essayer sur un compte de test déjà abonné. Retourne le message de refus, ou null.
 export function redeemRefusal(u) {
   const active = u.subscription_status === 'active';
   if (active && u.billing_mode === 'stripe') return `Votre abonnement est payé par carte${NB}: résiliez-le d’abord sur la page Abonnement${NB}; la clé prendra le relais à la fin de la période déjà payée.`;
-  if (active && u.billing_mode === 'simulated') return `Un abonnement simulé est déjà actif sur ce compte${NB}: résiliez-le d’abord sur la page Abonnement, puis activez la clé.`;
   if (u.subscription_status === 'past_due' && u.billing_mode === 'stripe') return `Un paiement par carte est en attente de régularisation${NB}: mettez à jour votre moyen de paiement ou écrivez au support avant d’activer une clé.`;
-  if (active && u.billing_mode !== 'key') return `Votre abonnement a été activé par l’équipe Oubli${NB}: aucune clé n’est nécessaire.`;
+  if (active && u.billing_mode !== 'key' && u.billing_mode !== 'simulated') return `Votre abonnement a été activé par l’équipe Oubli${NB}: aucune clé n’est nécessaire.`;
   return null;
 }
 // « Résilier » ne s’applique pas à un abonnement offert : aucun paiement à arrêter, aucun renouvellement, une date de
@@ -173,6 +173,10 @@ export function redeemKey(userId, input) {
     const ends = addDays(base, k.days);
     // Une clé Famille fait passer à l’offre Famille ; une clé Individuel ne retire pas l’offre Famille en cours.
     const plan = k.plan === 'famille' || ((keyRunning || paidRunning) && u.plan === 'famille') ? 'famille' : k.plan;
+    // Offre trop petite pour le dossier (même règle que le paiement, billing.js) : les proches en trop resteraient
+    // protégés sans être couverts. La transaction est annulée : la clé n’est pas consommée.
+    const n = q.get('SELECT COUNT(*) AS c FROM profiles WHERE user_id = ?', userId).c, members = PLANS[plan]?.members || 1;
+    if (n > members) throw new HttpError(409, `Votre dossier protège ${n}${NB}personnes${NB}: l’offre ${PLANS[plan].name} en couvre ${members === 1 ? 'une seule' : members}. Retirez d’abord ${n - members === 1 ? 'un proche' : `${n - members} proches`} depuis la page Dossier, puis activez la clé.`);
     try {
       q.run('INSERT INTO key_redemptions (key_id, user_id, redeemed_at, ends_at) VALUES (?, ?, ?, ?)', k.id, userId, at, ends);
     } catch (e) {

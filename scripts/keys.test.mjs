@@ -197,13 +197,19 @@ try {
   assert.ok(journal(lea.id).some((m) => /^Abonnement Famille prolongé par clé jusqu’au/.test(m))); assert.equal(r.data.onboarding.max_profiles, 5);
   step('cumul : +90 jours après la fin en cours, passage à Famille, puis +10 jours sans perdre Famille');
 
-  /* ---------- 8. Refus : abonnement payé (carte, simulé), paiement en attente, abonnement de l'équipe ---------- */
+  /* ---------- 8. Refus : abonnement payé par carte, paiement en attente, abonnement de l'équipe, dossier trop grand ---------- */
+  // Abonnement simulé (sans Stripe, rien n'est payé) : la clé le remplace aussitôt.
   const sim = await actor('simule@exemple.fr');
   assert.equal((await sim.call('POST', '/billing/checkout', { plan: 'individuel' })).status, 200);
   const K4 = take();
-  r = await sim.redeem(K4.key); assert.equal(r.status, 409); assert.match(r.data.error, /simulé.*résiliez/);
-  assert.equal((await sim.call('POST', '/billing/cancel', {})).status, 200);
-  r = await sim.redeem(K4.key); assert.equal(r.status, 200, 'après la résiliation, la clé s’active'); assert.ok(near(r.data.ends_at, Date.now() + 30 * DAY));
+  r = await sim.redeem(K4.key); assert.equal(r.status, 200, 'abonnement simulé remplacé par la clé'); assert.ok(near(r.data.ends_at, Date.now() + 30 * DAY));
+  assert.equal(r.data.user.billing_mode, 'key');
+  // Dossier de deux personnes et clé Individuel : refus expliqué, clé non consommée.
+  const fam = await actor('famille-simulee@exemple.fr');
+  assert.equal((await fam.call('POST', '/billing/checkout', { plan: 'famille' })).status, 200);
+  assert.equal((await fam.call('POST', '/profiles', { first_name: 'Noé', last_name: 'Roux' })).status, 201);
+  const K6 = take();
+  r = await fam.redeem(K6.key); assert.equal(r.status, 409); assert.match(r.data.error, /protège 2\u00a0personnes/); assert.equal(uses(K6.id), 0, 'un refus ne consomme pas la clé');
   const card = await actor('carte@exemple.fr');
   db.prepare(`UPDATE users SET plan = 'individuel', billing = 'monthly', subscription_status = 'active', billing_mode = 'stripe', stripe_customer_id = 'cus_keys', stripe_subscription_id = 'sub_keys' WHERE id = ?`).run(card.id);
   const K5 = take();
@@ -219,7 +225,7 @@ try {
   db.prepare(`UPDATE users SET subscription_status = 'canceled', subscription_ends_at = ? WHERE id = ?`).run(paidEnd, card.id);
   r = await card.redeem(K5.key); assert.equal(r.status, 200); assert.equal(r.data.ends_at, plusDays(paidEnd, 30));
   const cardEnds = r.data.ends_at;
-  step('refus avec explication : carte, simulé, paiement en attente, équipe ; après résiliation, la clé suit la période payée');
+  step('refus avec explication : carte, paiement en attente, équipe, dossier trop grand ; simulé remplacé ; après résiliation, la clé suit la période payée');
 
   /* ---------- 9. Webhooks Stripe tardifs : l'abonnement offert en cours n'est pas écrasé ---------- */
   const ts = Math.floor(Date.now() / 1000);
@@ -352,6 +358,28 @@ try {
   const kcRow = r.data.keys.find((k) => k.id === KC.id);
   assert.equal(kcRow.uses, 1); assert.deepEqual([kcRow.redemptions[0].deleted, kcRow.redemptions[0].email], [true, null]);
   step('administration : filtres et compteurs, pagination, recherche, lot, révocation (409, 404), audit, revenu hors clés, fiche, export, compte supprimé');
+
+  /* ---------- 15 bis. Ligne de commande (npm run admin) : clés et rôle administrateur sans passer par le panel ---------- */
+  const cli = (...args) => new Promise((resolve) => {
+    const p = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'scripts/admin-cli.mjs', ...args], { env: { ...env, APP_URL: 'https://oubli.example' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = ''; p.stdout.on('data', (d) => { out += d; }); p.stderr.on('data', (d) => { out += d; });
+    p.on('exit', (code) => resolve({ code, out }));
+  });
+  const keysBefore = db.prepare('SELECT COUNT(*) AS c FROM activation_keys').get().c;
+  let c = await cli('keys', '--plan', 'famille', '--days', '7', '--count', '2', '--note', 'Ligne de commande');
+  assert.equal(c.code, 0, c.out);
+  const cliKeys = [...new Set([...c.out.matchAll(/OUBLI-[0-9A-Z]{4}-[0-9A-Z]{4}-[0-9A-Z]{4}/g)].map((m) => m[0]))];
+  assert.equal(cliKeys.length, 2); assert.match(c.out, /https:\/\/oubli\.example\/app\/#signup\?key=OUBLI-/, 'lien de partage affiché');
+  cliKeys.forEach((k) => plain.add(k));
+  const cliUser = await actor('ligne-de-commande@exemple.fr', { complete: true });
+  r = await cliUser.redeem(cliKeys[0]); assert.equal(r.status, 200); assert.equal(r.data.plan, 'famille');
+  assert.equal((await cli('keys', '--count', '2', '--plann', 'famille')).code, 1, 'option inconnue');
+  assert.equal(db.prepare('SELECT COUNT(*) AS c FROM activation_keys').get().c, keysBefore + 2, 'une option inconnue ne crée aucune clé');
+  assert.equal((await cliUser.call('GET', '/admin/stats')).status, 403);
+  c = await cli('promote', 'ligne-de-commande@exemple.fr'); assert.equal(c.code, 0, c.out);
+  assert.equal((await cliUser.call('GET', '/admin/stats')).status, 200, 'administrateur après « promote »');
+  assert.equal((await cli('promote', 'personne@exemple.fr')).code, 1, 'compte inexistant');
+  step('ligne de commande : clés affichées une fois avec leur lien, option inconnue refusée, rôle administrateur accordé');
 
   /* ---------- 16. Ni la console du serveur, ni les courriers, ni la base ne contiennent de clé ---------- */
   const mails = fs.existsSync(OUTBOX) ? fs.readdirSync(OUTBOX).map((f) => fs.readFileSync(path.join(OUTBOX, f), 'utf8')).join('\n') : '';
