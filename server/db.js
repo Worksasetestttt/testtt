@@ -14,7 +14,9 @@ const DB_PATH = process.env.DATABASE_PATH || path.join(__dirname, '..', 'data', 
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 export const db = new DatabaseSync(DB_PATH);
-db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+// WAL + synchronous=NORMAL : aucune corruption possible, seules les toutes dernières transactions peuvent être perdues
+// en cas de coupure de courant ; bien moins de fsync qu'en FULL.
+db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (

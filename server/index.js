@@ -11,6 +11,7 @@ import { api, stripeWebhook } from './routes.js';
 import { startScheduler } from './scheduler.js';
 import { resumeDiscoveries } from './sites.js';
 import { startReports } from './reports.js';
+import { startBackups } from './backup.js';
 import { compressApi } from './compress.js';
 import { createStatic } from './static.js';
 import { HttpError, isPlainObject } from './util.js';
@@ -170,6 +171,7 @@ const server = app.listen(PORT, () => {
   startScheduler();
   resumeDiscoveries();
   startReports();
+  startBackups();
   site.warm();
 });
 server.headersTimeout = 20000;   // en-têtes complets sous 20 s
