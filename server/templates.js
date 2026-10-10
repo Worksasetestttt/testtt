@@ -217,9 +217,8 @@ L’équipe Oubli`,
   };
 }
 
-// Mot de passe oublié : lien à usage unique, valable une heure. Le jeton ne figure que dans ce message (la base n’en garde
-// que l’empreinte SHA-256, et sendMail le masque dans la table mails).
-export const RESET_MINUTES = 60;
+// Mot de passe oublié : lien à usage unique, valable une heure (server/account.js). Le jeton ne figure que dans ce message
+// (la base n’en garde que l’empreinte SHA-256, et sendMail le masque dans la table mails).
 export function passwordResetMail({ token }) {
   return {
     subject: 'Réinitialisation de votre mot de passe Oubli',

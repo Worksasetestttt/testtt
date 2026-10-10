@@ -11,7 +11,7 @@ import {
   isSuspended, isBlockedEmail, promoteIfAdmin, clearLoginFailures,
 } from './auth.js';
 import { sendMail } from './mailer.js';
-import { passwordResetMail, passwordChangedMail, RESET_MINUTES } from './templates.js';
+import { passwordResetMail, passwordChangedMail } from './templates.js';
 import { EMAIL, str, wrap, publicUser, sessionHandle, deviceLabel } from './util.js';
 
 export const account = express.Router();
@@ -40,8 +40,10 @@ const purgeResets = () => q.run('DELETE FROM password_resets WHERE expires_at <=
 purgeResets();
 
 /* ---------- Mot de passe oublié ---------- */
-// Durée minimale de la réponse : l'écriture du jeton ne doit pas distinguer un compte existant d'une adresse inconnue.
-// L'e-mail part après la réponse, pour la même raison (un serveur SMTP lent se verrait).
+const RESET_TTL_MS = 60 * 60000;   // une heure : les e-mails et l'interface l'annoncent en toutes lettres
+// Avant la réponse : uniquement des lectures, identiques que le compte existe ou non, puis une durée minimale.
+// Après la réponse : l'écriture du jeton et l'envoi, qui ne peuvent donc plus rien trahir (verrou d'écriture SQLite
+// occupé, serveur SMTP lent).
 const FORGOT_FLOOR_MS = 300;
 const NEUTRAL = 'Si un compte Oubli est associé à cette adresse, un e-mail contenant un lien de réinitialisation vient de lui être envoyé. Le lien est valable une heure.';
 const addressKey = (req) => sha256(String(req.body?.email ?? '').toLowerCase().trim());
@@ -60,24 +62,23 @@ account.post('/auth/forgot',
     const blocked = isBlockedEmail(email);
     const user = q.get('SELECT id, email FROM users WHERE email = ? AND deleted_at IS NULL', email);
     const send = !!user && !blocked;
-    if (send) {
-      const t = Date.now();
-      tx(() => {
-        q.run('DELETE FROM password_resets WHERE user_id = ?', user.id);   // un nouveau lien remplace les précédents
-        q.run('INSERT INTO password_resets (user_id, token_hash, email, created_at, expires_at) VALUES (?, ?, ?, ?, ?)',
-          user.id, sha256(token), user.email, new Date(t).toISOString(), new Date(t + RESET_MINUTES * 60000).toISOString());
-      });
-    }
-    purgeResets();
     await sleep(Math.max(0, FORGOT_FLOOR_MS - (Date.now() - started)));
     res.json({ ok: true, message: NEUTRAL });
-    if (send) {
-      setImmediate(() => {
+    setImmediate(() => {
+      try {
+        purgeResets();
+        if (!send) return;
+        const t = Date.now();
+        tx(() => {
+          q.run('DELETE FROM password_resets WHERE user_id = ?', user.id);   // un nouveau lien remplace les précédents
+          q.run('INSERT INTO password_resets (user_id, token_hash, email, created_at, expires_at) VALUES (?, ?, ?, ?, ?)',
+            user.id, sha256(token), user.email, new Date(t).toISOString(), new Date(t + RESET_TTL_MS).toISOString());
+        });
         const m = passwordResetMail({ token });
         sendMail({ to: user.email, subject: m.subject, text: m.text, user_id: user.id, redact: [token] })
           .catch((e) => console.error('[account] lien de réinitialisation non envoyé :', e.message));
-      });
-    }
+      } catch (e) { console.error('[account] lien de réinitialisation non préparé :', e.message); }
+    });
   }));
 
 const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
