@@ -213,6 +213,7 @@ textarea.adm-textarea:focus { outline: none; border-color: var(--accent); box-sh
 .adm-revoke { margin-top: 8px; }
 .adm-keys__foot { padding: 14px 32px; border-top: 1px solid var(--border); color: var(--muted); font-size: .85rem; line-height: 1.45; }
 @media (max-width: 767px) {
+  .adm-keyuses a { display: inline-block; padding: 14px 6px; margin: -14px -6px; }   /* zone de clic de 44 px, sans décaler la ligne */
   .adm-keys__foot { padding: 12px 20px; }
   .adm-link { max-width: none; }
   .adm-key { font-size: .85rem; letter-spacing: .02em; white-space: normal; overflow-wrap: anywhere; }

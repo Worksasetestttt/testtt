@@ -36,7 +36,6 @@ export const hashKey = (normalized) => crypto.createHash('sha256').update(normal
 /* ---------- Statut d’une clé ---------- */
 // Par ordre de priorité : révoquée, utilisée (toutes ses activations consommées), expirée, active. Les quatre
 // conditions SQL sont exclusives ; celles qui comparent une date attendent « maintenant » en paramètre (dated).
-export const KEY_STATUSES = ['active', 'used', 'expired', 'revoked'];
 export const KEY_STATUS_SQL = {
   revoked: { sql: 'k.revoked_at IS NOT NULL', dated: false },
   used: { sql: 'k.revoked_at IS NULL AND k.uses >= k.max_uses', dated: false },
@@ -75,8 +74,9 @@ export function parseKeyBatch(body) {
   let expiresAt = null;
   if (body.expires_at !== undefined && body.expires_at !== null && body.expires_at !== '') {
     const v = typeof body.expires_at === 'string' ? body.expires_at.trim() : '';
-    const d = /^\d{4}-\d{2}-\d{2}$/.test(v) ? new Date(`${v}T23:59:59.999Z`) : new Date(v.length <= 40 && v ? v : NaN);
-    if (Number.isNaN(d.getTime()) || (/^\d{4}-\d{2}-\d{2}$/.test(v) && d.toISOString().slice(0, 10) !== v)) throw new HttpError(400, `Date limite invalide${NB}: AAAA-MM-JJ.`);
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(v);   // un jour : la clé s’active jusqu’à sa fin (UTC)
+    const d = new Date(day ? `${v}T23:59:59.999Z` : v.length <= 40 ? v : '');
+    if (!v || Number.isNaN(d.getTime()) || (day && d.toISOString().slice(0, 10) !== v)) throw new HttpError(400, `Date limite invalide${NB}: AAAA-MM-JJ.`);
     expiresAt = d.toISOString();
     if (expiresAt <= now()) throw new HttpError(400, 'La date limite doit être dans le futur.');
   }
