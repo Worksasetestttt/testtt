@@ -77,6 +77,8 @@ function paging(query, def = 25) {
   return { per, page, offset: (page - 1) * per };
 }
 const pageMeta = (total, p) => ({ total, page: p.page, per: p.per, pages: Math.max(1, Math.ceil(total / p.per)) });
+// Page au-delà de la dernière (lien conservé après une action qui a vidé la fin de la liste) : ramenée à la dernière.
+const fit = (p, total) => { p.page = Math.min(p.page, Math.max(1, Math.ceil(total / p.per))); p.offset = (p.page - 1) * p.per; return p; };
 // Journal d'audit. auditAs sert aussi hors du routeur (fin d'un accès support, routes.js).
 export function auditAs(adminId, action, target, details = {}, ip = '') {
   q.run('INSERT INTO admin_audit (admin_id, action, target, details, ip, created_at) VALUES (?, ?, ?, ?, ?, ?)', adminId, action, target == null ? null : String(target), JSON.stringify(details), String(ip || '').slice(0, 64), now());
@@ -118,12 +120,27 @@ function getRequest(id) {
 const getBroker = (id) => (INT.test(String(id)) ? q.get('SELECT * FROM brokers WHERE id = ?', Number(id)) : null);
 const statusCounts = (rows) => { const o = Object.fromEntries(STATUSES.map((s) => [s, 0])); rows.forEach((r) => { o[r.status] = r.n; }); return o; };
 const lastTickAt = () => (typeof scheduler.lastTickAt === 'string' ? scheduler.lastTickAt : typeof scheduler.lastTickAt === 'function' ? scheduler.lastTickAt() : null);
-// Même classification que le webhook /api/inbound (routes.js), pour aider le support à qualifier une réponse collée.
+// Lecture automatique d'une réponse de courtier, partagée par le webhook /api/inbound (routes.js) et la qualification
+// par le support. Seul le texte nouveau compte : les lignes citées (« > »), tout ce qui suit un en-tête de citation
+// (« Le … a écrit : », « On … wrote: », « De : … », « -----Original Message----- ») et les intitulés de nos propres
+// courriers sont ignorés. Sans cela, l'objet « Re: Demande d’effacement… », que le courrier demande de conserver,
+// faisait lire toute réponse comme une confirmation. Ordre : aucune donnée détenue (rien à effacer), vérification
+// demandée, refus, traitement à venir, effacement confirmé ; à défaut, accusé de réception.
+const QUOTE_START = /^\s*(?:le\s.{1,200}\sa\s+écrit\s*:|on\s.{1,200}\swrote\s*:|-{2,}\s*(?:original message|message d['’]origine|forwarded message|message transféré)|_{10,}\s*$|(?:de|from)\s*:\s.*@)/i;
+const OWN_SUBJECTS = /demande d['’]effacement de données personnelles|relance\s*[—–-]\s*demande d['’]effacement sans réponse|vérification de l['’]adresse de contact/gi;
+const REPLY_RULES = [
+  ['done', /(aucune (?:donn[ée]e|fiche|trace)|ne (?:d[ée]tenons|disposons|poss[ée]dons|conservons|traitons) (?:aucune|pas|plus)|(?:no|not any) (?:personal )?(?:data|records?|information|profiles?|listings?) (?:about|on|for|relating|regarding|matching|associated|linked)|(?:cannot|can['’]t|could not|couldn['’]t|unable to|did not|didn['’]t|do not|don['’]t) (?:find|locate)|(?:do not|don['’]t) (?:hold|have|store|process) any)/],
+  ['action_required', /(v[ée]rifi(?:er|cation)\s+(?:de\s+|d['’])?(?:votre|l['’]|son|sa|leur)\s*identit|confirm(?:er|ez)?\s+(?:your|votre|l['’]|son|sa|leur|their|the)\s*identit|verify\s+(?:your|the|their|his|her)\s+identity|identity\s+verification|pi[èe]ce\s+d['’]identit|justificatif|proof\s+of\s+(?:identity|residen|address)|photo\s+id|cli(?:quer|quez)\s+sur\s+le\s+lien|click\s+(?:on\s+)?the\s+(?:link|button)|lien\s+de\s+confirmation|confirmation\s+link|formulaire\s+en\s+ligne|online\s+form|web\s+form)/],
+  ['refused', /(refus|d[ée]clin|cannot|can['’]t|unable to|not able to|ne (?:pouvons|pourrons|sommes) pas|impossible de|pas en mesure|not applicable|n['’]est pas applicable|exempt)/],
+  ['in_progress', /(will be (?:deleted|removed|erased|processed)|will (?:delete|remove|erase|process)|seront?\s+(?:supprim|effac|trait)|allons\s+(?:supprimer|effacer|traiter|proc[ée]der)|traiterons|supprimerons|effacerons)/],
+  ['done', /(supprim(?:é|ée|és|ées)(?![a-z])|effac(?:é|ée|és|ées)(?![a-z])|retir(?:é|ée|és|ées)(?![a-z])|d[ée]sindex|d[ée]sinscri|anonymis|proc[ée]d[ée] à (?:la suppression|l['’]effacement)|suppression (?:a été|est) effectu|deleted|removed|erased|purged|anonymi[sz]ed|no longer|opted[ -]out|completed)/],
+];
 export const classifyReply = (text) => {
-  const t = String(text || '').toLowerCase();
-  return /(supprim|effac|deleted|removed|erased|no longer|opted out|completed)/.test(t) ? 'done'
-    : /(v[ée]rif|verify|confirm your identity|identity|pièce d|proof|photo id)/.test(t) ? 'action_required'
-    : /(refus|decline|cannot|unable|not applicable|exempt)/.test(t) ? 'refused' : 'in_progress';
+  const kept = [];
+  for (const line of String(text || '').split(/\r?\n/)) { if (QUOTE_START.test(line)) break; if (!/^\s*>/.test(line)) kept.push(line); }
+  const t = kept.join('\n').replace(OWN_SUBJECTS, ' ').toLowerCase();
+  for (const [outcome, re] of REPLY_RULES) if (re.test(t)) return outcome;
+  return 'in_progress';
 };
 
 /* ---------- Vue d'ensemble ---------- */
@@ -185,7 +202,7 @@ admin.get('/users', (req, res) => {
   const plan = clean(req.query.plan, 20);
   if (PLANS[plan]) { where.push('u.plan = ?'); params.push(plan); }
   const base = `FROM users u${where.length ? ' WHERE ' + where.join(' AND ') : ''}`;
-  const total = q.get(`SELECT COUNT(*) AS c ${base}`, ...params).c;
+  const total = q.get(`SELECT COUNT(*) AS c ${base}`, ...params).c; fit(p, total);
   const rows = q.all(`SELECT u.*,
       (SELECT pr.first_name || ' ' || pr.last_name FROM profiles pr WHERE pr.user_id = u.id AND pr.is_primary = 1) AS name,
       (SELECT COUNT(*) FROM profiles pr WHERE pr.user_id = u.id) AS profiles_n,
@@ -386,7 +403,11 @@ admin.delete('/users/:id', wrap(async (req, res) => {
   if (u.id === req.user.id) return bad(res, 'Supprimez votre propre compte depuis vos paramètres, pas depuis l’administration.');
   if (u.deleted_at) return bad(res, 'Ce compte est déjà supprimé.');
   if (u.role === 'admin' && q.get(`SELECT COUNT(*) AS c FROM users WHERE role = 'admin' AND deleted_at IS NULL`).c <= 1) return bad(res, 'Il doit rester au moins un administrateur.');
-  if (u.subscription_status === 'active') { try { await cancelSubscription(u); } catch {} }
+  // Comme la suppression par l'abonné : abonnement actif ou impayé résilié d'abord, rien n'est supprimé si Stripe échoue.
+  if (['active', 'past_due'].includes(u.subscription_status)) {
+    try { await cancelSubscription(u); }
+    catch (e) { console.error(`[admin] résiliation Stripe impossible à la suppression (${req.id}) :`, e.message); return bad(res, 'Stripe n’a pas confirmé la résiliation : le compte n’a pas été supprimé. Réessayez dans quelques instants.', 502); }
+  }
   db.exec('BEGIN');
   try {
     q.run('DELETE FROM requests WHERE user_id = ?', u.id); q.run('DELETE FROM profiles WHERE user_id = ?', u.id); q.run('DELETE FROM events WHERE user_id = ?', u.id);
@@ -420,7 +441,7 @@ admin.get('/requests', (req, res) => {
   if (search) { const l = like(search.replace(/^OUBLI-/i, '')); where.push(`(r.token LIKE ? ESCAPE '\\' OR u.email LIKE ? ESCAPE '\\' OR b.name LIKE ? ESCAPE '\\' OR (p.first_name || ' ' || p.last_name) LIKE ? ESCAPE '\\')`); params.push(l, l, l, l); }
   const sort = SORTS[req.query.sort] ? req.query.sort : 'created_desc';
   const base = `${REQ_BASE}${where.length ? ' WHERE ' + where.join(' AND ') : ''}`;
-  const total = q.get(`SELECT COUNT(*) AS c ${base}`, ...params).c;
+  const total = q.get(`SELECT COUNT(*) AS c ${base}`, ...params).c; fit(p, total);
   const rows = q.all(`SELECT ${REQ_COLS} ${base} ORDER BY ${SORTS[sort]} LIMIT ? OFFSET ?`, ...params, p.per, p.offset);
   res.json({ requests: rows.map((r) => ({ ...r, ref: ref(r) })), ...pageMeta(total, p), sort, counts: statusCounts(q.all('SELECT status, COUNT(*) AS n FROM requests GROUP BY status')) });
 });
@@ -443,14 +464,17 @@ admin.post('/requests/:id/outcome', wrap(async (req, res) => {
   const outcome = String(req.body.outcome || '');
   if (!OUTCOMES.includes(outcome)) return bad(res, 'Résultat inconnu.');
   const note = clean(req.body.note, 300);
-  await applyOutcome(r, outcome, note);
+  const out = await applyOutcome(r, outcome, note);
+  if (out?.error) return bad(res, out.error, 409);
   audit(req, 'request.outcome', r.id, { token: r.token, from: r.status, to: outcome, note: note || undefined });
   res.json({ ok: true, request: { id: r.id, token: r.token, status: q.get('SELECT status FROM requests WHERE id = ?', r.id).status } });
 }));
 admin.post('/requests/:id/resend', (req, res) => {
   const r = getRequest(req.params.id);
   if (!r) return bad(res, 'Demande introuvable.', 404);
-  q.run(`UPDATE requests SET status = 'queued', sent_at = NULL, due_at = NULL, followup_sent_at = NULL, completed_at = NULL, next_check_at = NULL, note = ? WHERE id = ?`, 'Nouvel envoi demandé par l’équipe Oubli.', r.id);
+  // Nouvel envoi immédiat : compteur d'échecs et recul remis à zéro (sinon une demande en erreur y retombe au premier
+  // échec, et une demande en recul attend la fin du délai).
+  q.run(`UPDATE requests SET status = 'queued', sent_at = NULL, due_at = NULL, followup_sent_at = NULL, completed_at = NULL, next_check_at = NULL, attempts = 0, next_attempt_at = NULL, last_error = NULL, note = ? WHERE id = ?`, 'Nouvel envoi demandé par l’équipe Oubli.', r.id);
   logEvent(r.user_id, 'queued', `Nouvel envoi programmé vers ${q.get('SELECT name FROM brokers WHERE id = ?', r.broker_id)?.name || 'le courtier'} (cycle ${r.cycle}).`, { profile_id: r.profile_id, request_id: r.id });
   audit(req, 'request.resend', r.id, { token: r.token, from: r.status });
   setTimeout(() => tick(), 10);
@@ -463,15 +487,16 @@ admin.post('/requests/bulk', wrap(async (req, res) => {
   const outcome = String(req.body.outcome || '');
   if (!OUTCOMES.includes(outcome)) return bad(res, 'Résultat inconnu.');
   const note = clean(req.body.note, 300);
-  let updated = 0; const missing = [];
+  let updated = 0; const missing = [], ignored = [];
   for (const id of ids) {
     const r = getRequest(id);
     if (!r) { missing.push(String(id).slice(0, 40)); continue; }
-    await applyOutcome(r, outcome, note);
+    const out = await applyOutcome(r, outcome, note);
+    if (out?.error) { ignored.push(ref(r)); continue; }   // demande close ou jamais envoyée : réponse sans objet
     updated += 1;
   }
-  audit(req, 'request.bulk', null, { outcome, updated, missing: missing.length, note: note || undefined });
-  res.json({ ok: true, updated, missing });
+  audit(req, 'request.bulk', null, { outcome, updated, missing: missing.length, ignored: ignored.length || undefined, note: note || undefined });
+  res.json({ ok: true, updated, missing, ignored });
 }));
 
 /* ---------- Courtiers ---------- */
@@ -570,7 +595,7 @@ admin.get('/mails', (req, res) => {
   if (UUID.test(String(req.query.request || ''))) { where.push('m.request_id = ?'); params.push(req.query.request); }
   if (UUID.test(String(req.query.user || ''))) { where.push('m.user_id = ?'); params.push(req.query.user); }
   const base = `FROM mails m LEFT JOIN users u ON u.id = m.user_id LEFT JOIN requests r ON r.id = m.request_id${where.length ? ' WHERE ' + where.join(' AND ') : ''}`;
-  const total = q.get(`SELECT COUNT(*) AS c ${base}`, ...params).c;
+  const total = q.get(`SELECT COUNT(*) AS c ${base}`, ...params).c; fit(p, total);
   const rows = q.all(`SELECT m.id, m.to_addr, m.subject, m.mode, m.created_at, m.request_id, m.user_id, r.token, u.email AS user_email, length(m.body) AS size ${base} ORDER BY m.id DESC LIMIT ? OFFSET ?`, ...params, p.per, p.offset);
   res.json({ mails: rows.map((m) => ({ ...m, ref: m.token ? `OUBLI-${m.token}` : null })), ...pageMeta(total, p), modes: Object.fromEntries(q.all('SELECT mode, COUNT(*) AS n FROM mails GROUP BY mode').map((r) => [r.mode, r.n])) });
 });
@@ -595,14 +620,14 @@ admin.post('/inbound/simulate', (req, res) => {
 /* ---------- Prospects : newsletter, contacts, exports ---------- */
 admin.get('/newsletter', (req, res) => {
   const p = paging(req.query, 50);
-  const total = q.get('SELECT COUNT(*) AS c FROM newsletter').c;
+  const total = q.get('SELECT COUNT(*) AS c FROM newsletter').c; fit(p, total);
   res.json({ subscribers: q.all('SELECT email, created_at FROM newsletter ORDER BY created_at DESC LIMIT ? OFFSET ?', p.per, p.offset), ...pageMeta(total, p) });
 });
 admin.get('/contacts', (req, res) => {
   const p = paging(req.query);
   const status = clean(req.query.status, 10);
   const where = status === 'open' ? 'WHERE handled_at IS NULL' : status === 'handled' ? 'WHERE handled_at IS NOT NULL' : '';
-  const total = q.get(`SELECT COUNT(*) AS c FROM contacts ${where}`).c;
+  const total = q.get(`SELECT COUNT(*) AS c FROM contacts ${where}`).c; fit(p, total);
   res.json({
     contacts: q.all(`SELECT id, email, subject, message, created_at, handled_at FROM contacts ${where} ORDER BY (handled_at IS NOT NULL), id DESC LIMIT ? OFFSET ?`, p.per, p.offset),
     ...pageMeta(total, p),
@@ -772,7 +797,7 @@ admin.get('/audit', (req, res) => {
   const target = clean(req.query.target, 60);
   if (target) { where.push('a.target = ?'); params.push(target); }
   const base = `FROM admin_audit a LEFT JOIN users u ON u.id = a.admin_id${where.length ? ' WHERE ' + where.join(' AND ') : ''}`;
-  const total = q.get(`SELECT COUNT(*) AS c ${base}`, ...params).c;
+  const total = q.get(`SELECT COUNT(*) AS c ${base}`, ...params).c; fit(p, total);
   const rows = q.all(`SELECT a.id, a.admin_id, a.action, a.target, a.details, a.ip, a.created_at, u.email AS admin_email ${base} ORDER BY a.id DESC LIMIT ? OFFSET ?`, ...params, p.per, p.offset);
   res.json({ entries: rows.map((a) => ({ ...a, details: JSON.parse(a.details || '{}') })), ...pageMeta(total, p), actions: q.all('SELECT action, COUNT(*) AS n FROM admin_audit GROUP BY action ORDER BY action').map((r) => r.action) });
 });

@@ -669,7 +669,7 @@
       if (!out) { toast('Choisissez le résultat à appliquer.', true); $('#bulk-outcome').focus(); return; }
       if (!arm(t, 'Confirmer pour ' + pl(ids.length, 'demande', 'demandes'))) return;
       lock(t, true);
-      api('/admin/requests/bulk', { body: { ids: ids, outcome: out, note: $('#bulk-note').value } }).then(function (r) { done(pl(r.updated, 'demande mise à jour', 'demandes mises à jour') + (r.missing && r.missing.length ? ', ' + r.missing.length + ' introuvable(s)' : '') + '.', 'search-go'); }).catch(function (err) { fail(err); lock(t, false); });
+      api('/admin/requests/bulk', { body: { ids: ids, outcome: out, note: $('#bulk-note').value } }).then(function (r) { done(pl(r.updated, 'demande mise à jour', 'demandes mises à jour') + (r.missing && r.missing.length ? ', ' + r.missing.length + ' introuvable(s)' : '') + (r.ignored && r.ignored.length ? ', ' + pl(r.ignored.length, 'ignorée (close ou pas encore partie)', 'ignorées (closes ou pas encore parties)') : '') + '.', 'search-go'); }).catch(function (err) { fail(err); lock(t, false); });
     }
     else if (t.hasAttribute('data-bulk-clear')) { $$('[data-sel]').forEach(function (i) { i.checked = false; }); bulkState(); var a = $('[data-sel-all]'); if (a) a.focus(); }
     else if (t.hasAttribute('data-user-act')) {

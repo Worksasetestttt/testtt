@@ -13,10 +13,10 @@ import { sendMail, mailMode } from './mailer.js';
 import { welcomeMail, mandateText, complaintDraft, MANDATE_VERSION } from './templates.js';
 import { PLANS, BILLING_PERIODS, billingMode, startCheckout, cancelSubscription, verifyStripeSignature, handleStripeEvent } from './billing.js';
 import { launchProfile, applyOutcome, tick, ref, DEMO, schedulerState } from './scheduler.js';
-import { EMAIL, publicUser, parseProfile, wrap, isId, str, strList, oneOf } from './util.js';
+import { EMAIL, publicUser, parseProfile, wrap, isId, str, strList, oneOf, HttpError } from './util.js';
 import { buildDashboard, exportData, complaintReady } from './dashboard.js';
 import { addSite, relaunchRequest } from './sites.js';
-import { admin, auditAs, currentAnnouncement, toCsv } from './admin.js';
+import { admin, auditAs, currentAnnouncement, toCsv, classifyReply } from './admin.js';
 import { account } from './account.js';
 import { redeemKey, cancelRefusal } from './keys.js';
 import { evaluateHealth } from './health.js';
@@ -127,7 +127,7 @@ api.put('/profiles/:id', requireAuth, (req, res) => {
   const first = b.first_name === undefined ? p.first_name : str(b.first_name, 'first_name', 80);
   const last = b.last_name === undefined ? p.last_name : str(b.last_name, 'last_name', 80);
   if (!first || !last) return bad(res, 'Prénom et nom sont obligatoires.');
-  const birth = str(b.birth_date, 'birth_date', 10) || null;
+  const birth = b.birth_date === undefined ? p.birth_date : (str(b.birth_date, 'birth_date', 10) || null);   // absent : inchangée
   if (birth && (!isoDate(birth) || birth < '1900-01-01' || birth > now().slice(0, 10))) return bad(res, 'Date de naissance invalide (AAAA-MM-JJ).');
   const country = (b.country === undefined ? p.country : str(b.country, 'country', 2)).toUpperCase() || 'FR';
   if (!COUNTRY.test(country)) return bad(res, 'Pays invalide (code à deux lettres).');
@@ -168,7 +168,13 @@ api.post('/mandate', requireAuth, (req, res) => {
   if (name.toLowerCase().replace(/\s+/g, ' ') !== expected) return bad(res, `Tapez exactement « ${p.first_name} ${p.last_name} » pour signer.`);
   q.run('UPDATE users SET mandate_signed_at = ?, mandate_name = ?, mandate_ip = ?, mandate_version = ?, mandate_revoked_at = NULL WHERE id = ?', now(), name, String(req.ip || '').slice(0, 64), MANDATE_VERSION, u.id);
   logEvent(u.id, 'mandate', `Mandat de représentation signé électroniquement (version ${MANDATE_VERSION}).`);
-  res.json({ ok: true, signed_at: now() });
+  // Re-signature : les demandes arrêtées par la révocation repartent dans un nouveau cycle, sans attendre le client
+  // (sans effet tant que l'abonnement n'est pas en cours ; idempotent sinon).
+  const signed = fresh(req);
+  let relaunched = 0;
+  for (const pr of q.all('SELECT * FROM profiles WHERE user_id = ?', u.id)) relaunched += launchProfile(signed, pr).created;
+  if (relaunched) setTimeout(() => tick(), 10);
+  res.json({ ok: true, signed_at: signed.mandate_signed_at, relaunched });
 });
 api.delete('/mandate', requireAuth, (req, res) => {
   q.run('UPDATE users SET mandate_revoked_at = ? WHERE id = ?', now(), req.user.id);
@@ -275,7 +281,10 @@ api.post('/billing/checkout', requireAuth, rateLimit({ max: 10 }), wrap(async (r
   if (req.body.billing != null && req.body.billing !== '' && !BILLING_PERIODS.includes(req.body.billing)) return bad(res, 'L’offre annuelle n’est plus proposée : l’abonnement est mensuel et sans engagement.');
   const billing = 'monthly';
   try { res.json(await startCheckout(fresh(req), plan, billing)); }
-  catch (e) { console.error(`[billing] checkout impossible (${req.id}) :`, e.message); bad(res, 'Le paiement n’a pas pu être initialisé. Réessayez dans quelques instants.', 502); }
+  catch (e) {
+    if (e instanceof HttpError) return bad(res, e.message, e.status);   // refus explicite (offre trop petite, abonnement déjà actif)
+    console.error(`[billing] checkout impossible (${req.id}) :`, e.message); bad(res, 'Le paiement n’a pas pu être initialisé. Réessayez dans quelques instants.', 502);
+  }
 }));
 api.post('/billing/cancel', requireAuth, rateLimit({ max: 10 }), wrap(async (req, res) => {
   const u = fresh(req);
@@ -318,10 +327,9 @@ api.post('/inbound', rateLimit({ windowMs: 60000, max: 120 }), wrap(async (req, 
   if (!m) return res.status(202).json({ matched: false });
   const r = q.get('SELECT * FROM requests WHERE token = ?', m[1].toUpperCase());
   if (!r) return res.status(202).json({ matched: false });
-  const t = text.toLowerCase();
-  const outcome = /(supprim|effac|deleted|removed|erased|no longer|opted out|completed)/.test(t) ? 'done' : /(v[ée]rif|verify|confirm your identity|identity|pièce d|proof|photo id)/.test(t) ? 'action_required' : /(refus|decline|cannot|unable|not applicable|exempt)/.test(t) ? 'refused' : 'in_progress';
-  await applyOutcome(r, outcome, `réponse reçue de ${str(req.body.from, 'from', 120)}`);
-  res.json({ matched: true, outcome });
+  const outcome = classifyReply(text);
+  const out = await applyOutcome(r, outcome, `réponse reçue de ${str(req.body.from, 'from', 120)}`);
+  res.json({ matched: true, outcome, applied: !!out?.applied });
 }));
 
 /* ---------- Divers : newsletter, contact, export RGPD, suppression ---------- */
@@ -345,7 +353,12 @@ api.get('/export', requireAuth, rateLimit({ max: 10 }), (req, res) => {
 api.delete('/account', requireAuth, rateLimit({ max: 5 }), wrap(async (req, res) => {
   const u = fresh(req);
   if (typeof req.body.password !== 'string' || !(await verifyPassword(req.body.password, u.password_hash))) return bad(res, 'Mot de passe incorrect.');
-  if (u.subscription_status === 'active') { try { await cancelSubscription(u); } catch (e) { console.error(`[billing] résiliation à la suppression (${req.id}) :`, e.message); } }
+  // Abonnement en cours ou en attente de paiement : résilié avant toute suppression. Si Stripe ne confirme pas, rien
+  // n'est supprimé : sans compte, plus personne ne pourrait arrêter les prélèvements.
+  if (['active', 'past_due'].includes(u.subscription_status)) {
+    try { await cancelSubscription(u); }
+    catch (e) { console.error(`[billing] résiliation à la suppression (${req.id}) :`, e.message); return bad(res, 'La résiliation de l’abonnement n’a pas pu être confirmée : le compte n’a pas été supprimé. Réessayez dans quelques instants.', 502); }
+  }
   db.exec('BEGIN');
   try {
     q.run('DELETE FROM requests WHERE user_id = ?', u.id); q.run('DELETE FROM profiles WHERE user_id = ?', u.id); q.run('DELETE FROM events WHERE user_id = ?', u.id);

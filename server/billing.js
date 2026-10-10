@@ -1,8 +1,10 @@
 // Facturation : Stripe Checkout (API REST via fetch, sans SDK) ou mode simulé quand STRIPE_SECRET_KEY est absent.
 // Les webhooks sont vérifiés (signature HMAC, tolérance 5 min), traités une seule fois (table stripe_events) et
-// l’utilisateur est retrouvé par ses identifiants Stripe (client / abonnement) plutôt que par les métadonnées.
+// l’utilisateur est retrouvé par ses identifiants Stripe (client / abonnement) plutôt que par les métadonnées ;
+// les événements d’un ancien abonnement du même client (réabonnement après résiliation) sont ignorés.
 import crypto from 'node:crypto';
 import { q, now, logEvent, tx } from './db.js';
+import { HttpError } from './util.js';
 
 // Formule unique, mensuelle et sans engagement (centimes TTC). L'offre annuelle n'est plus proposée ; les comptes
 // encore marqués « annual » (anciens abonnés) sont acceptés partout en lecture.
@@ -42,12 +44,15 @@ export async function startCheckout(user, plan, billing) {
   const p = PLANS[plan];
   if (!p || !BILLING_PERIODS.includes(billing)) throw new Error('Offre inconnue.');
   if (!user || user.deleted_at) throw new Error('Compte introuvable.');
+  // Offre trop petite pour le dossier : les proches en trop resteraient protégés sans être couverts par l'abonnement.
+  const n = q.get('SELECT COUNT(*) AS c FROM profiles WHERE user_id = ?', user.id).c;
+  if (n > p.members) throw new HttpError(409, `Votre dossier protège ${n} personnes : l’offre ${p.name} en couvre ${p.members === 1 ? 'une seule' : p.members}. Retirez d’abord ${n - p.members === 1 ? 'un proche' : `${n - p.members} proches`} depuis la page Dossier.`);
   if (!STRIPE_KEY) {
     q.run(`UPDATE users SET plan = ?, billing = ?, subscription_status = 'active', billing_mode = 'simulated', subscription_ends_at = NULL WHERE id = ?`, plan, billing, user.id);
     logEvent(user.id, 'billing', `Abonnement ${label(plan, billing)} activé en mode simulé.`);
     return { mode: 'simulated', url: `${APP_URL}/app/#dashboard` };
   }
-  if (user.subscription_status === 'active' && user.billing_mode === 'stripe' && user.stripe_subscription_id) throw new Error('Un abonnement est déjà actif sur ce compte : résiliez-le avant d’en souscrire un autre.');
+  if (user.subscription_status === 'active' && user.billing_mode === 'stripe' && user.stripe_subscription_id) throw new HttpError(409, 'Un abonnement est déjà actif sur ce compte : résiliez-le avant d’en souscrire un autre.');
   const session = await stripe('POST', '/checkout/sessions', {
     mode: 'subscription',
     client_reference_id: user.id,
@@ -102,6 +107,11 @@ function userByMetadata(uid, customer) {
 // Abonnement offert par clé en cours (keys.js) : un événement tardif sur un ancien abonnement payé (résiliation, impayé)
 // ne l’écrase pas. Seul un abonnement payé redevenu actif le remplace (l’abonné a choisi de payer).
 const keyRunning = (u) => u.billing_mode === 'key' && u.subscription_status === 'active' && !!u.subscription_ends_at && u.subscription_ends_at > now();
+// Événement d'un autre abonnement que celui du compte (réabonnement après résiliation : même client Stripe, ancien
+// abonnement encore en fin de période) : ignoré, sinon la fin de l'ancien abonnement résilierait le nouveau.
+const staleSub = (u, subscription) => { const s = sid(subscription); return !!(s && u.stripe_subscription_id && u.stripe_subscription_id !== s); };
+// Abonnement d'une facture : champ subscription, ou parent.subscription_details.subscription (format récent de l'API).
+const invoiceSub = (o) => o.subscription || o.parent?.subscription_details?.subscription || null;
 
 function setStatus(u, status, ends, message, extra = {}) {
   if (status !== 'active' && keyRunning(u)) return;
@@ -131,20 +141,20 @@ function apply(event) {
       return;
     }
     case 'invoice.payment_failed': {
-      const u = userByIds(o.customer, o.subscription);
-      if (u && u.subscription_status !== 'canceled') setStatus(u, 'past_due', u.subscription_ends_at, 'Échec de paiement : abonnement en attente de régularisation.');
+      const u = userByIds(o.customer, invoiceSub(o));
+      if (u && !staleSub(u, invoiceSub(o)) && u.subscription_status !== 'canceled') setStatus(u, 'past_due', u.subscription_ends_at, 'Échec de paiement : abonnement en attente de régularisation.');
       return;
     }
     case 'invoice.paid':
     case 'invoice.payment_succeeded': {
-      const u = userByIds(o.customer, o.subscription);
-      if (u && u.subscription_status === 'past_due') setStatus(u, 'active', null, 'Paiement régularisé : abonnement de nouveau actif.');
+      const u = userByIds(o.customer, invoiceSub(o));
+      if (u && !staleSub(u, invoiceSub(o)) && u.subscription_status === 'past_due') setStatus(u, 'active', null, 'Paiement régularisé : abonnement de nouveau actif.');
       return;
     }
     case 'customer.subscription.created':
     case 'customer.subscription.updated': {
       const u = userByIds(o.customer, o.id) || userByMetadata(o.metadata?.user_id, o.customer);
-      if (!u) return;
+      if (!u || staleSub(u, o.id)) return;
       const periodEnd = o.current_period_end || o.items?.data?.[0]?.current_period_end || null;
       const interval = o.items?.data?.[0]?.price?.recurring?.interval || o.plan?.interval || null;
       const extra = { customer: sid(o.customer), subscription: sid(o.id), plan: PLANS[o.metadata?.plan] ? o.metadata.plan : null, billing: interval === 'year' ? 'annual' : interval === 'month' ? 'monthly' : null };
@@ -164,7 +174,7 @@ function apply(event) {
     }
     case 'customer.subscription.deleted': {
       const u = userByIds(o.customer, o.id);
-      if (u) setStatus(u, 'canceled', iso(o.ended_at) || now(), 'Abonnement résilié.');
+      if (u && !staleSub(u, o.id)) setStatus(u, 'canceled', iso(o.ended_at) || now(), 'Abonnement résilié.');
       return;
     }
     default: return;

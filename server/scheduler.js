@@ -5,8 +5,11 @@
 //   · action_required → in_progress (vérification fournie par l’abonné, routes.js)
 //   · done | refused → nouveau cycle (nouvelle demande queued, cycle + 1) quand next_check_at est atteint ; un refus
 //     programme ce nouvel envoi après recheck_days jours, et l’abonné peut relancer plus tôt (sites.js, relaunchRequest)
-//   · queued → error après SEND_MAX_ATTEMPTS échecs d’envoi (recul exponentiel entre deux essais) ; error → queued via applyOutcome(r, 'queued')
+//   · queued → error après SEND_MAX_ATTEMPTS échecs d’envoi (recul exponentiel entre deux essais) ; error → queued par le
+//     renvoi de l’administration (admin.js, essais et recul remis à zéro) ou applyOutcome(r, 'queued')
 //   · queued → refused quand le mandat est révoqué (routes.js) ; ces demandes sont relancées dans un nouveau cycle après re-signature.
+//   · une réponse « en cours » ou « vérification demandée » ne s’applique qu’à une demande en attente du courtier
+//     (sent, in_progress, action_required) : jamais à une demande en file, en erreur, effacée ou refusée (applyOutcome).
 import crypto from 'node:crypto';
 import { q, now, addDays, addMonths, logEvent, tx, newToken } from './db.js';
 import { sendMail, mailMode, REPLY_TO } from './mailer.js';
@@ -41,28 +44,31 @@ const canMail = (b) => !!b && b.active === 1 && !(b.custom === 1 && b.discovery_
   && (mailMode !== 'smtp' || b.contact_verified === 1 || ALLOW_UNVERIFIED || (AUTO_SITE && b.custom === 1 && b.contact_source === 'site'));
 const backoffDate = (attempts) => new Date(Date.now() + Math.min(24 * 60, 2 ** attempts) * 60000).toISOString(); // 2, 4, 8… min, plafond 24 h
 const errMsg = (e) => String(e?.message || e).slice(0, 300);
-const insertRequest = (user_id, profile_id, broker_id, cycle) =>
-  q.run(`INSERT INTO requests (id, user_id, profile_id, broker_id, cycle, status, token, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)`, crypto.randomUUID(), user_id, profile_id, broker_id, cycle, newToken(), now());
+// source_url : adresse de la fiche signalée par l'abonné, reprise d'un cycle à l'autre (citée dans le courrier).
+const insertRequest = (user_id, profile_id, broker_id, cycle, source_url = null) =>
+  q.run(`INSERT INTO requests (id, user_id, profile_id, broker_id, cycle, status, token, created_at, source_url) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?)`, crypto.randomUUID(), user_id, profile_id, broker_id, cycle, newToken(), now(), source_url);
+const revokedStop = (r) => r.status === 'refused' && /^Mandat révoqué/.test(r.note || '');
 
 // Crée (si besoin) les demandes d’un profil complet. Idempotent : un courtier qui a déjà une demande vivante n’en reçoit
-// pas de seconde ; une demande abandonnée par révocation du mandat est relancée dans un nouveau cycle (après re-signature).
+// pas de seconde ; une demande abandonnée par révocation du mandat est relancée dans un nouveau cycle (après re-signature),
+// y compris pour un site que l'abonné avait ajouté (les autres sites ajoutés ne concernent que leurs propres profils).
 export function launchProfile(user, profile) {
   if (!isEligible(user)) return { created: 0, reason: 'Mandat non signé ou abonnement inactif.' };
   if (!profile || profile.user_id !== user.id) return { created: 0, reason: 'Profil introuvable.' };
   if (!profile.first_name || !profile.last_name) return { created: 0, reason: 'Profil incomplet.' };
-  const brokers = q.all('SELECT id FROM brokers WHERE active = 1 AND custom = 0 ORDER BY id');   // registre seulement
+  const brokers = q.all('SELECT id, custom FROM brokers WHERE active = 1 AND (custom = 0 OR id IN (SELECT broker_id FROM requests WHERE profile_id = ?)) ORDER BY id', profile.id);
   const latest = new Map();
-  for (const r of q.all('SELECT broker_id, cycle, status, note FROM requests WHERE profile_id = ? ORDER BY cycle, created_at', profile.id)) latest.set(r.broker_id, r);
+  for (const r of q.all('SELECT broker_id, cycle, status, note, source_url FROM requests WHERE profile_id = ? ORDER BY cycle, created_at', profile.id)) latest.set(r.broker_id, r);
   let created = 0;
   tx(() => {
     for (const b of brokers) {
       const last = latest.get(b.id);
-      if (last && !(last.status === 'refused' && /^Mandat révoqué/.test(last.note || ''))) continue;
-      insertRequest(user.id, profile.id, b.id, last ? last.cycle + 1 : 1);
+      if (last ? !revokedStop(last) : b.custom) continue;
+      insertRequest(user.id, profile.id, b.id, last ? last.cycle + 1 : 1, last?.source_url || null);
       created += 1;
     }
   });
-  if (created) logEvent(user.id, 'launch', `${created} demandes préparées pour ${profile.first_name} ${profile.last_name} (${brokers.length} courtiers surveillés).`, { profile_id: profile.id });
+  if (created) logEvent(user.id, 'launch', `${created} demandes préparées pour ${profile.first_name} ${profile.last_name} (${brokers.filter((b) => !b.custom).length} courtiers surveillés).`, { profile_id: profile.id });
   return { created };
 }
 
@@ -114,6 +120,10 @@ async function followUps() {
     if (stopped) break;
     beat = Date.now();
     try {
+      // Relecture avant chaque envoi, comme pour les demandes : une réponse reçue pendant le passage (envoi SMTP lent)
+      // rend la relance sans objet.
+      const cur = q.get('SELECT status, followup_sent_at FROM requests WHERE id = ?', r.id);
+      if (!cur || !['sent', 'in_progress'].includes(cur.status) || cur.followup_sent_at) continue;
       const user = q.get('SELECT * FROM users WHERE id = ?', r.user_id);
       const profile = q.get('SELECT * FROM profiles WHERE id = ?', r.profile_id);
       const broker = q.get('SELECT * FROM brokers WHERE id = ?', r.broker_id);
@@ -141,30 +151,39 @@ function rechecks() {
       const newer = q.get('SELECT id FROM requests WHERE profile_id = ? AND broker_id = ? AND cycle > ?', r.profile_id, r.broker_id, r.cycle);
       tx(() => {
         q.run('UPDATE requests SET next_check_at = NULL WHERE id = ?', r.id);
-        if (!newer) insertRequest(r.user_id, r.profile_id, r.broker_id, r.cycle + 1);
+        if (!newer) insertRequest(r.user_id, r.profile_id, r.broker_id, r.cycle + 1, r.source_url);   // la fiche signalée reste citée
       });
       if (!newer) logEvent(user.id, 'recheck', r.status === 'refused' ? `Nouvelle demande à ${broker.name} (cycle ${r.cycle + 1}) après son refus.` : `Nouvelle vérification chez ${broker.name} (cycle ${r.cycle + 1}) : une demande est renvoyée.`, { profile_id: r.profile_id });
     } catch (e) { console.error('[scheduler] revérification', r.id, e); }
   }
 }
 
+// Un accusé de réception ou une demande de vérification suppose une demande en attente du courtier : sans objet pour une
+// demande jamais partie (file, erreur), qu'elle bloquerait sans échéance, ou déjà close (effacée, refusée), dont la
+// revérification serait perdue et que la relance rouvrirait auprès d'un courtier qui a déjà répondu.
+const AWAITING = ['sent', 'in_progress', 'action_required'];
+
 // Applique une réponse de courtier (webhook entrant, opérateur ou simulation) ou une remise en file par l’opérateur.
+// Renvoie { applied } ; { applied: false, error } quand la réponse ne s'applique pas à l'état de la demande.
 export async function applyOutcome(r, outcome, note = '') {
   const user = q.get('SELECT * FROM users WHERE id = ?', r.user_id);
   const broker = q.get('SELECT * FROM brokers WHERE id = ?', r.broker_id);
-  if (!user || !broker) return;
+  if (!user || !broker) return { applied: false };
+  if ((outcome === 'in_progress' || outcome === 'action_required') && !AWAITING.includes(r.status)) {
+    return { applied: false, error: ['done', 'refused'].includes(r.status) ? 'Cette demande est close (effacée ou refusée) : un accusé de réception ou une demande de vérification ne la rouvre pas.' : 'Cette demande n’est pas encore partie : elle ne peut être ni en cours de traitement ni en attente de vérification.' };
+  }
   note = String(note || '').slice(0, 300);
   const at = now();
   const ctx = { profile_id: r.profile_id, request_id: r.id };
   if (outcome === 'done') {
-    if (r.status === 'done') return; // même confirmation reçue deux fois : rien à refaire
+    if (r.status === 'done') return { applied: false }; // même confirmation reçue deux fois : rien à refaire
     q.run(`UPDATE requests SET status = 'done', completed_at = ?, next_check_at = ?, next_attempt_at = NULL, note = ? WHERE id = ?`, at, addDays(at, broker.recheck_days), note, r.id);
     logEvent(user.id, 'done', `${broker.name} confirme l’effacement${note ? ' — ' + note : ''}. Nouvelle vérification dans ${broker.recheck_days} jours.`, ctx);
   } else if (outcome === 'action_required') {
     q.run(`UPDATE requests SET status = 'action_required', next_check_at = NULL, note = ? WHERE id = ?`, note || 'Le courtier demande une vérification.', r.id);
-    if (r.status === 'action_required') return; // doublon : pas de second e-mail d’alerte
+    if (r.status === 'action_required') return { applied: true }; // doublon : pas de second e-mail d’alerte
     logEvent(user.id, 'action_required', `${broker.name} demande une vérification avant suppression.`, ctx);
-    if (user.deleted_at) return;
+    if (user.deleted_at) return { applied: true };
     const m = actionRequiredMail({ broker, ref: ref(r) });
     try { await sendMail({ to: user.email, subject: m.subject, text: m.text, request_id: r.id, user_id: user.id }); }
     catch (e) { logEvent(user.id, 'error', `E-mail d’alerte non envoyé : ${errMsg(e)}`, ctx); }
@@ -178,6 +197,7 @@ export async function applyOutcome(r, outcome, note = '') {
     q.run(`UPDATE requests SET status = 'in_progress', next_check_at = NULL, note = ? WHERE id = ?`, note || 'Accusé de réception, en traitement.', r.id);
     logEvent(user.id, 'in_progress', `${broker.name} accuse réception : demande en traitement.`, ctx);
   }
+  return { applied: true };
 }
 
 // Mode démo : les courtiers « répondent » en quelques minutes pour montrer le pipeline.
