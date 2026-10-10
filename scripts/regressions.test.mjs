@@ -131,6 +131,41 @@ try {
   }
   step('réponses entrantes : objet « Re: Demande d’effacement… » et texte cité ignorés ; vérification, refus, accusé, absence de données reconnus');
 
+  /* ---------- 3. Réponse tardive ou sans objet : la machine à états ne recule pas ---------- */
+  // Un accusé de réception arrivé après la confirmation faisait repasser la demande « en cours » (revérification
+  // perdue, relance envoyée au courtier qui avait effacé) ; « en cours » sur une demande en file la bloquait à jamais.
+  {
+    const A = await member(S);
+    await S.call('POST', '/admin/tick', {}, ADM);
+    const [d1, d2, d3] = db.prepare(`SELECT id, token FROM requests WHERE user_id = ? AND status = 'sent' ORDER BY created_at LIMIT 3`).all(A.id);
+    await S.call('POST', `/admin/requests/${d1.id}/outcome`, { outcome: 'done', note: 'confirmé' }, ADM);
+    const check = reqRow(d1.id).next_check_at;
+    let r = await inbound(S, `Réf. OUBLI-${d1.token}`, 'Nous avons bien reçu votre message.');
+    assert.equal(r.status, 200); assert.equal(r.data.applied, false, 'accusé tardif ignoré');
+    assert.equal(reqRow(d1.id).status, 'done'); assert.equal(reqRow(d1.id).next_check_at, check, 'revérification conservée');
+    db.prepare('UPDATE requests SET due_at = ? WHERE id = ?').run(new Date(Date.now() - 86400000).toISOString(), d1.id);
+    await S.call('POST', '/admin/tick', {}, ADM);
+    assert.equal(mailsOf(d1.id, 'Relance%').length, 0, 'aucune relance au courtier qui a confirmé');
+    await S.call('POST', `/admin/requests/${d2.id}/outcome`, { outcome: 'refused' }, ADM);
+    await inbound(S, `Réf. OUBLI-${d2.token}`, 'Accusé de réception automatique.');
+    assert.equal(reqRow(d2.id).status, 'refused'); assert.ok(reqRow(d2.id).next_check_at, 'nouvelle demande toujours programmée');
+    r = await S.call('POST', `/admin/requests/${d3.id}/outcome`, { outcome: 'in_progress' }, ADM);
+    assert.equal(r.status, 200, 'accusé de réception sur une demande envoyée : appliqué'); assert.equal(reqRow(d3.id).status, 'in_progress');
+    // Demande jamais envoyée : « en cours » ou « vérification » n'ont pas de sens et la bloqueraient.
+    const B = await member(S, { launch: false });
+    await S.call('POST', '/requests/launch', {}, B.cookie);
+    const q1 = db.prepare(`SELECT id FROM requests WHERE user_id = ? ORDER BY created_at LIMIT 1`).get(B.id);
+    db.prepare(`UPDATE requests SET status = 'queued', sent_at = NULL, due_at = NULL WHERE id = ?`).run(q1.id);
+    r = await S.call('POST', `/admin/requests/${q1.id}/outcome`, { outcome: 'in_progress' }, ADM);
+    assert.equal(r.status, 409, 'refusé avec explication'); assert.ok(r.data.error);
+    r = await S.call('POST', '/admin/requests/bulk', { ids: [q1.id, d3.id], outcome: 'action_required' }, ADM);
+    assert.equal(r.data.updated, 1); assert.equal(r.data.ignored.length, 1);
+    assert.equal(reqRow(q1.id).status, 'queued');
+    await S.call('POST', '/admin/tick', {}, ADM);
+    assert.equal(reqRow(q1.id).status, 'sent', 'la demande part normalement'); assert.equal(mailsOf(q1.id).length, 1);
+  }
+  step('réponse tardive ou sans objet : un accusé ne rouvre ni un effacement ni un refus, « en cours » refusé sur une demande non envoyée');
+
   console.log(`✔ Régressions validées (${passed} groupes de vérifications).`);
 } catch (e) {
   console.error('✘ Échec :', e.message);

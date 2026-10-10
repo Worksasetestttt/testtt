@@ -7,6 +7,8 @@
 //     programme ce nouvel envoi après recheck_days jours, et l’abonné peut relancer plus tôt (sites.js, relaunchRequest)
 //   · queued → error après SEND_MAX_ATTEMPTS échecs d’envoi (recul exponentiel entre deux essais) ; error → queued via applyOutcome(r, 'queued')
 //   · queued → refused quand le mandat est révoqué (routes.js) ; ces demandes sont relancées dans un nouveau cycle après re-signature.
+//   · une réponse « en cours » ou « vérification demandée » ne s’applique qu’à une demande en attente du courtier
+//     (sent, in_progress, action_required) : jamais à une demande en file, en erreur, effacée ou refusée (applyOutcome).
 import crypto from 'node:crypto';
 import { q, now, addDays, addMonths, logEvent, tx, newToken } from './db.js';
 import { sendMail, mailMode, REPLY_TO } from './mailer.js';
@@ -139,23 +141,32 @@ function rechecks() {
   }
 }
 
+// Un accusé de réception ou une demande de vérification suppose une demande en attente du courtier : sans objet pour une
+// demande jamais partie (file, erreur), qu'elle bloquerait sans échéance, ou déjà close (effacée, refusée), dont la
+// revérification serait perdue et que la relance rouvrirait auprès d'un courtier qui a déjà répondu.
+const AWAITING = ['sent', 'in_progress', 'action_required'];
+
 // Applique une réponse de courtier (webhook entrant, opérateur ou simulation) ou une remise en file par l’opérateur.
+// Renvoie { applied } ; { applied: false, error } quand la réponse ne s'applique pas à l'état de la demande.
 export async function applyOutcome(r, outcome, note = '') {
   const user = q.get('SELECT * FROM users WHERE id = ?', r.user_id);
   const broker = q.get('SELECT * FROM brokers WHERE id = ?', r.broker_id);
-  if (!user || !broker) return;
+  if (!user || !broker) return { applied: false };
+  if ((outcome === 'in_progress' || outcome === 'action_required') && !AWAITING.includes(r.status)) {
+    return { applied: false, error: ['done', 'refused'].includes(r.status) ? 'Cette demande est close (effacée ou refusée) : un accusé de réception ou une demande de vérification ne la rouvre pas.' : 'Cette demande n’est pas encore partie : elle ne peut être ni en cours de traitement ni en attente de vérification.' };
+  }
   note = String(note || '').slice(0, 300);
   const at = now();
   const ctx = { profile_id: r.profile_id, request_id: r.id };
   if (outcome === 'done') {
-    if (r.status === 'done') return; // même confirmation reçue deux fois : rien à refaire
+    if (r.status === 'done') return { applied: false }; // même confirmation reçue deux fois : rien à refaire
     q.run(`UPDATE requests SET status = 'done', completed_at = ?, next_check_at = ?, next_attempt_at = NULL, note = ? WHERE id = ?`, at, addDays(at, broker.recheck_days), note, r.id);
     logEvent(user.id, 'done', `${broker.name} confirme l’effacement${note ? ' — ' + note : ''}. Nouvelle vérification dans ${broker.recheck_days} jours.`, ctx);
   } else if (outcome === 'action_required') {
     q.run(`UPDATE requests SET status = 'action_required', next_check_at = NULL, note = ? WHERE id = ?`, note || 'Le courtier demande une vérification.', r.id);
-    if (r.status === 'action_required') return; // doublon : pas de second e-mail d’alerte
+    if (r.status === 'action_required') return { applied: true }; // doublon : pas de second e-mail d’alerte
     logEvent(user.id, 'action_required', `${broker.name} demande une vérification avant suppression.`, ctx);
-    if (user.deleted_at) return;
+    if (user.deleted_at) return { applied: true };
     const m = actionRequiredMail({ broker, ref: ref(r) });
     try { await sendMail({ to: user.email, subject: m.subject, text: m.text, request_id: r.id, user_id: user.id }); }
     catch (e) { logEvent(user.id, 'error', `E-mail d’alerte non envoyé : ${errMsg(e)}`, ctx); }
@@ -169,6 +180,7 @@ export async function applyOutcome(r, outcome, note = '') {
     q.run(`UPDATE requests SET status = 'in_progress', next_check_at = NULL, note = ? WHERE id = ?`, note || 'Accusé de réception, en traitement.', r.id);
     logEvent(user.id, 'in_progress', `${broker.name} accuse réception : demande en traitement.`, ctx);
   }
+  return { applied: true };
 }
 
 // Mode démo : les courtiers « répondent » en quelques minutes pour montrer le pipeline.

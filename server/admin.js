@@ -447,7 +447,8 @@ admin.post('/requests/:id/outcome', wrap(async (req, res) => {
   const outcome = String(req.body.outcome || '');
   if (!OUTCOMES.includes(outcome)) return bad(res, 'Résultat inconnu.');
   const note = clean(req.body.note, 300);
-  await applyOutcome(r, outcome, note);
+  const out = await applyOutcome(r, outcome, note);
+  if (out?.error) return bad(res, out.error, 409);
   audit(req, 'request.outcome', r.id, { token: r.token, from: r.status, to: outcome, note: note || undefined });
   res.json({ ok: true, request: { id: r.id, token: r.token, status: q.get('SELECT status FROM requests WHERE id = ?', r.id).status } });
 }));
@@ -467,15 +468,16 @@ admin.post('/requests/bulk', wrap(async (req, res) => {
   const outcome = String(req.body.outcome || '');
   if (!OUTCOMES.includes(outcome)) return bad(res, 'Résultat inconnu.');
   const note = clean(req.body.note, 300);
-  let updated = 0; const missing = [];
+  let updated = 0; const missing = [], ignored = [];
   for (const id of ids) {
     const r = getRequest(id);
     if (!r) { missing.push(String(id).slice(0, 40)); continue; }
-    await applyOutcome(r, outcome, note);
+    const out = await applyOutcome(r, outcome, note);
+    if (out?.error) { ignored.push(ref(r)); continue; }   // demande close ou jamais envoyée : réponse sans objet
     updated += 1;
   }
-  audit(req, 'request.bulk', null, { outcome, updated, missing: missing.length, note: note || undefined });
-  res.json({ ok: true, updated, missing });
+  audit(req, 'request.bulk', null, { outcome, updated, missing: missing.length, ignored: ignored.length || undefined, note: note || undefined });
+  res.json({ ok: true, updated, missing, ignored });
 }));
 
 /* ---------- Courtiers ---------- */

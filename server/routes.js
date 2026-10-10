@@ -298,8 +298,8 @@ api.post('/inbound', rateLimit({ windowMs: 60000, max: 120 }), wrap(async (req, 
   const r = q.get('SELECT * FROM requests WHERE token = ?', m[1].toUpperCase());
   if (!r) return res.status(202).json({ matched: false });
   const outcome = classifyReply(text);
-  await applyOutcome(r, outcome, `réponse reçue de ${str(req.body.from, 'from', 120)}`);
-  res.json({ matched: true, outcome });
+  const out = await applyOutcome(r, outcome, `réponse reçue de ${str(req.body.from, 'from', 120)}`);
+  res.json({ matched: true, outcome, applied: !!out?.applied });
 }));
 
 /* ---------- Divers : newsletter, contact, export RGPD, suppression ---------- */
