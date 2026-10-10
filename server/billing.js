@@ -16,15 +16,22 @@ export const BILLING_PERIODS = ['monthly'];
 const STRIPE_KEY = process.env.STRIPE_SECRET_KEY || '';
 const WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || '';
 const APP_URL = (process.env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
+// Adresse de l'API (STRIPE_API_BASE) : l'API réelle par défaut, un faux serveur Stripe dans scripts/billing.test.mjs.
+// La clé secrète part dans chaque requête : https obligatoire en production.
+const STRIPE_API = ((process.env.STRIPE_API_BASE || '').trim() || 'https://api.stripe.com/v1').replace(/\/+$/, '');
 const TOLERANCE_S = 300;
 export const billingMode = STRIPE_KEY ? 'stripe' : 'simulated';
 if (!STRIPE_KEY && process.env.NODE_ENV === 'production') console.warn('[billing] STRIPE_SECRET_KEY absent : abonnements simulés, activés sans paiement.');
 if (STRIPE_KEY && !WEBHOOK_SECRET) console.warn('[billing] STRIPE_WEBHOOK_SECRET absent : les webhooks Stripe seront rejetés.');
+if (STRIPE_KEY && process.env.NODE_ENV === 'production' && !/^https:\/\//i.test(STRIPE_API)) {
+  console.error('[billing] STRIPE_API_BASE doit commencer par https:// en production (la clé secrète part dans chaque requête). Arrêt.');
+  process.exit(1);
+}
 
 async function stripe(method, path, params, idempotencyKey) {
   const headers = { Authorization: `Bearer ${STRIPE_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' };
   if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
-  const r = await fetch(`https://api.stripe.com/v1${path}`, { method, headers, body: params ? new URLSearchParams(flatten(params)).toString() : undefined, signal: AbortSignal.timeout(20000) });
+  const r = await fetch(`${STRIPE_API}${path}`, { method, headers, body: params ? new URLSearchParams(flatten(params)).toString() : undefined, signal: AbortSignal.timeout(20000) });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data.error?.message || `Stripe ${r.status}`);
   return data;
