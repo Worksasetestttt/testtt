@@ -18,7 +18,7 @@ Oubli est un service « type Incogni » : il envoie, suit et relance des demande
 npm install
 npm start                    # http://localhost:3000 (landing) et /app/ (application)
 DEMO_MODE=true npm start     # les courtiers « répondent » après environ 45 s
-npm test                     # smoke.mjs (parcours complet), security.test.mjs, admin.test.mjs
+npm test                     # smoke, security, admin, sites, features (voir package.json)
 PORT=3081 node server/index.js
 ```
 
@@ -32,7 +32,9 @@ Sans `.env`, le serveur tourne en mode développement : abonnement simulé, cour
 | `server/index.js` | Point d'entrée Express : en-têtes de sécurité (CSP, COOP, CORP), webhook Stripe en corps brut, garde CSRF, fichiers statiques, 404 JSON. |
 | `server/routes.js` | Routes `/api` publiques et abonné. Monte le routeur admin. |
 | `server/admin.js` | Routeur `/api/admin`, protégé par `requireAuth` et `requireAdmin`. |
-| `server/dashboard.js` | `buildDashboard(user, profileId)` : JSON du tableau de bord. |
+| `server/dashboard.js` | `buildDashboard(user, profileId)` : JSON du tableau de bord (compteurs calculés sur le cycle en cours de chaque courtier), `complaintReady(r)`, `exportData(u)`. |
+| `server/sites.js`, `server/sitediscovery.js` | Sites ajoutés par les abonnés (`addSite`, `relaunchRequest`, `runDiscovery`) et recherche du contact sur le site, derrière une garde SSRF (`safeFetch`, `guardedLookup`, `isPublicIp`). |
+| `server/reports.js` | Rapport mensuel par e-mail (`runMonthlyReports`, `startReports`). |
 | `server/util.js` | Helpers partagés : `EMAIL`, `clean`, `arr`, `publicUser`, `parseProfile`, `wrap`. |
 | `server/auth.js` | scrypt, sessions en base, cookie signé HMAC, limitation de débit, `requireAdmin`. |
 | `server/db.js` | Schéma SQLite, index, seed des courtiers depuis `server/brokers.json`. |
@@ -44,6 +46,7 @@ Sans `.env`, le serveur tourne en mode développement : abonnement simulé, cour
 | `scripts/smoke.mjs` | Parcours complet de bout en bout. |
 | `scripts/security.test.mjs` | Tests de sécurité : en-têtes, cookies, autorisations, limitation de débit, webhooks. |
 | `scripts/admin.test.mjs` | Tests de l’API d’administration : autorisations, comptes, demandes, courtiers, exports, audit. |
+| `scripts/sites.test.mjs`, `scripts/features.test.mjs` | Sites ajoutés (SSRF, découverte, règle d’envoi) ; fonctions du tableau de bord (détail, CSV, rapport mensuel, refus, plainte, relance). |
 | `docs/handoff/` | Rapports des relectures (bureau, accessibilité, mobile) et contrat de découpage des fichiers. Lis-les avant de toucher l'interface. |
 
 ### Contrats à ne pas casser
@@ -62,7 +65,10 @@ Sans `.env`, le serveur tourne en mode développement : abonnement simulé, cour
 - `[hidden]{display:none!important}` est indispensable : sans lui, un `display` d'auteur masque l'attribut `hidden`.
 - Accessibilité : chaque champ a un `<label>` unique (attention aux ids dupliqués quand le même formulaire est rendu plusieurs fois). Les messages d'erreur ont `role="alert"`. Ne fais pas de `aria-live` sur `<main>`. Les mouvements respectent `prefers-reduced-motion`.
 - Mobile : pas de débordement horizontal à 360, 390, 768, 820 et 1024 px, ni sur le document ni sur un `.sheet`. Les cibles tactiles font au moins 44 px.
-- Le tableau de bord se rafraîchit toutes les 6 s. Ne remplace jamais toute la vue pendant le rafraîchissement : cela fait perdre le focus.
+- Le tableau de bord se rafraîchit toutes les 6 s. Ne remplace jamais toute la vue pendant le rafraîchissement : cela fait perdre le focus. Chaque zone a une signature (`sigs`) et n’est remplacée que si elle change et que le focus n’y est pas (`patch`). `loadDash(focusSel, force)` : une requête à la fois, la plus récente l’emporte, recul en cas d’erreur.
+- Le détail d’une demande est un `<dialog id="drawer">` modal (app/index.html). Pendant qu’il est ouvert, le reste de la page est inerte : `#toast` et `#announce` sont déplacés dans le tiroir puis remis à la fermeture, sinon les messages ne seraient ni visibles ni annoncés. Le tiroir ne se rafraîchit pas pendant une saisie (`drawerIdle`).
+- `readOnly()` (accès support) masque les actions d’écriture du tableau de bord ; le serveur les refuse de toute façon.
+- `statusLabel('done')` vaut « Effacée » (application, administration et CSV).
 - Un texte `.vh` (position absolue) dans un conteneur défilant déborde de la page si ce conteneur n’est pas positionné : `.tbl-wrap` est en `position: relative` pour cette raison.
 - Accès support : la garde de `server/index.js` refuse toute méthode non sûre quand `req.impersonator` est défini, sauf `SUPPORT_ALLOWED` (retour et déconnexion). Une nouvelle route d’écriture est donc bloquée par défaut pendant un accès support : n’ajoutez une exception que délibérément.
 - Une suspension se vérifie par `isSuspended(u)` (`auth.js`) ; le planificateur applique la même règle dans `isEligible`. Gardez les deux alignés.
@@ -73,7 +79,7 @@ Sans `.env`, le serveur tourne en mode développement : abonnement simulé, cour
 - Le cookie de session est HttpOnly, SameSite=Lax, et `Secure` en production.
 - Les mots de passe sont hachés avec scrypt. Ne stocke ni ne renvoie jamais `password_hash`, les ids Stripe ou les identifiants de session.
 - Le webhook Stripe et `/api/inbound` ne lisent pas les cookies. Ils vérifient leur signature ou leur jeton (comparaison à temps constant).
-- En SMTP réel, le planificateur n'écrit qu'aux courtiers dont le contact est vérifié par un administrateur.
+- En SMTP réel, le planificateur n'écrit qu'aux courtiers dont le contact est vérifié par un administrateur. Seule exception (`canMail` dans scheduler.js, réglable par `AUTO_SEND_SITE_CONTACTS`) : l’adresse publiée par un site ajouté par un abonné sur son propre domaine.
 - `DEMO_MODE` ne doit jamais être activé en production.
 - Vérifie dans `server/index.js` et `server/auth.js` l'état réel de la protection CSRF et de la CSP avant de les considérer comme acquises : le chantier de sécurité a été interrompu.
 
@@ -85,11 +91,14 @@ Fait et poussé :
 - Tableau de bord : exposition sur 12 semaines, catégories, sensibilité, recherche, tri, filtres avec compteurs, « Afficher plus », journal de 8 entrées.
 - Panel d’administration complet (vue d’ensemble, utilisateurs, demandes, courtiers, courriers, réponses entrantes, contacts, sécurité, système, audit) et `scripts/admin.test.mjs` (16 groupes).
 - Outils de support : suspension, liste de blocage, accès au compte en lecture seule, sessions par compte, notes internes, message, changement d’adresse, export RGPD par l’admin, annonce globale.
-- `npm test` passe (trois suites). README à jour.
+- Formule unique à 5 € (Individuel) et 9,99 € (Famille) par mois ; sites ajoutés en collant une adresse ; rapport mensuel ; rapport imprimable et CSV.
+- Tableau de bord refondu (synthèse, tiroir de détail, activité groupée, analyse) ; un refus programme un nouveau cycle ; plainte prête à déposer ; relance « données réapparues ».
+- `npm test` passe (cinq suites). README à jour.
 
 Pistes suivantes (non commencées) :
 - Scripts Playwright versionnés dans le dépôt (les vérifications navigateur ont été faites hors dépôt).
-- Typographie des textes produits par le serveur (erreurs d’API, journal, courriers) : espaces ordinaires avant « : » et quelques apostrophes droites (ex. `routes.js`, message de l’offre Individuel). Le client corrige l’affichage du journal et des messages de l’administration avec `typo()`, pas le contenu des courriers.
+- Typographie des textes produits par le serveur (erreurs d’API, journal, courriers) : espaces ordinaires avant « : » et quelques apostrophes droites (ex. `routes.js`, message de l’offre Individuel). Le client corrige l’affichage du journal et des messages de l’administration avec `typo()`, pas le contenu des courriers. La plainte (`complaintDraft`) applique déjà la typographie française (`frTypo`).
+- La landing annonce « 420+ courtiers » ; le registre en contient 50. À aligner avant toute publication.
 - Authentification à deux facteurs pour les administrateurs.
 
 ## Pièges connus
