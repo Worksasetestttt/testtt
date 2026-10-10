@@ -1,33 +1,49 @@
 // API JSON. Toutes les réponses d'erreur ont la forme { error: "message" }.
+// Règles : chaque entrée est typée et bornée (util.js), chaque ressource est filtrée par req.user.id,
+// les points sensibles sont limités en débit, et aucune donnée interne (haché, identifiants Stripe, sessions) ne sort.
 import express from 'express';
 import crypto from 'node:crypto';
 import { q, now, logEvent, db } from './db.js';
-import { hashPassword, verifyPassword, createSession, destroySession, requireAuth, requireAdmin, rateLimit, isAdminEmail } from './auth.js';
+import {
+  hashPassword, verifyPassword, verifyDecoy, passwordProblem, createSession, destroySession, destroyOtherSessions,
+  requireAuth, requireAdmin, rateLimit, isAdminEmail, promoteIfAdmin, loginLockRemaining, noteLoginFailure, clearLoginFailures, fmtWait,
+} from './auth.js';
 import { sendMail, mailMode } from './mailer.js';
 import { welcomeMail, mandateText, MANDATE_VERSION } from './templates.js';
 import { PLANS, billingMode, startCheckout, cancelSubscription, verifyStripeSignature, handleStripeEvent } from './billing.js';
 import { launchProfile, applyOutcome, tick, DEMO } from './scheduler.js';
-import { EMAIL, clean, arr, publicUser, parseProfile, wrap } from './util.js';
+import { EMAIL, publicUser, parseProfile, wrap, isId, str, strList, oneOf } from './util.js';
 import { buildDashboard } from './dashboard.js';
 import { admin } from './admin.js';
 
 export const api = express.Router();
 const fresh = (req) => q.get('SELECT * FROM users WHERE id = ?', req.user.id);
+const bad = (res, msg, code = 400) => res.status(code).json({ error: msg });
+const BILLINGS = ['monthly', 'annual'];
+const PLAN_KEYS = Object.keys(PLANS);
+const PHONE = /^\+?[\d\s().-]{5,30}$/;
+const COUNTRY = /^[A-Z]{2}$/;
+const tooMany = (res, seconds) => { res.setHeader('Retry-After', String(seconds)); return bad(res, `Trop de tentatives. Réessayez dans ${fmtWait(seconds)}.`, 429); };
+const isoDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v) && new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10) === v;
 
 api.get('/health', (_req, res) => res.json({ ok: true, mail: mailMode, billing: billingMode, demo: DEMO, time: now() }));
 api.get('/config', (_req, res) => res.json({ plans: PLANS, billing: billingMode, mail: mailMode, demo: DEMO, mandate_version: MANDATE_VERSION, brokers: q.get('SELECT COUNT(*) AS c FROM brokers WHERE active = 1').c }));
 
 /* ---------- Authentification ---------- */
-api.post('/auth/signup', rateLimit({ max: 20 }), wrap(async (req, res) => {
-  const email = clean(req.body.email, 160).toLowerCase();
-  const password = String(req.body.password || '');
-  if (!EMAIL.test(email)) return res.status(400).json({ error: 'Adresse e-mail invalide.' });
-  if (password.length < 10) return res.status(400).json({ error: 'Le mot de passe doit faire au moins 10 caractères.' });
-  if (q.get('SELECT id FROM users WHERE email = ?', email)) return res.status(409).json({ error: 'Un compte existe déjà avec cette adresse.' });
+api.post('/auth/signup', rateLimit({ windowMs: 60 * 60000, max: 20 }), wrap(async (req, res) => {
+  const email = str(req.body.email, 'email', 160).toLowerCase();
+  const password = req.body.password;
+  if (!EMAIL.test(email)) return bad(res, 'Adresse e-mail invalide.');
+  const problem = passwordProblem(password, email);
+  if (problem) return bad(res, problem);
+  if ((req.body.plan !== undefined && req.body.plan !== null && typeof req.body.plan !== 'string') || (req.body.billing !== undefined && req.body.billing !== null && typeof req.body.billing !== 'string')) return bad(res, 'Offre invalide.');
+  const plan = PLAN_KEYS.includes(req.body.plan) ? req.body.plan : null;             // liste blanche ; valeur inconnue ignorée
+  const billing = BILLINGS.includes(req.body.billing) ? req.body.billing : (plan ? 'annual' : null);
+  if (q.get('SELECT id FROM users WHERE email = ?', email)) return bad(res, 'Un compte existe déjà avec cette adresse.', 409);
+  const password_hash = await hashPassword(password);
+  if (q.get('SELECT id FROM users WHERE email = ?', email)) return bad(res, 'Un compte existe déjà avec cette adresse.', 409);
   const id = crypto.randomUUID();
-  const plan = PLANS[req.body.plan] ? req.body.plan : null;
-  const billing = ['monthly', 'annual'].includes(req.body.billing) ? req.body.billing : (plan ? 'annual' : null);
-  q.run('INSERT INTO users (id, email, password_hash, role, plan, billing, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', id, email, hashPassword(password), isAdminEmail(email) ? 'admin' : 'user', plan, billing, now());
+  q.run('INSERT INTO users (id, email, password_hash, role, plan, billing, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', id, email, password_hash, isAdminEmail(email) ? 'admin' : 'user', plan, billing, now());
   q.run('INSERT INTO profiles (id, user_id, is_primary, created_at, updated_at) VALUES (?, ?, 1, ?, ?)', crypto.randomUUID(), id, now(), now());
   logEvent(id, 'account', 'Compte créé. Dossier ouvert.');
   const user = q.get('SELECT * FROM users WHERE id = ?', id);
@@ -36,58 +52,83 @@ api.post('/auth/signup', rateLimit({ max: 20 }), wrap(async (req, res) => {
   sendMail({ to: email, subject: w.subject, text: w.text, user_id: id }).catch(() => {});
   res.status(201).json({ user: publicUser(user) });
 }));
-api.post('/auth/login', rateLimit({ max: 30 }), wrap(async (req, res) => {
-  const email = clean(req.body.email, 160).toLowerCase();
+api.post('/auth/login', rateLimit({ max: 50 }), wrap(async (req, res) => {
+  const email = str(req.body.email, 'email', 160).toLowerCase();
+  const password = req.body.password;
+  if (!EMAIL.test(email) || typeof password !== 'string' || !password.length) return bad(res, 'E-mail ou mot de passe incorrect.', 401);
+  const locked = loginLockRemaining(email);
+  if (locked) return tooMany(res, locked);
   const user = q.get('SELECT * FROM users WHERE email = ? AND deleted_at IS NULL', email);
-  if (!user || !verifyPassword(String(req.body.password || ''), user.password_hash)) return res.status(401).json({ error: 'E-mail ou mot de passe incorrect.' });
+  const ok = user ? await verifyPassword(password, user.password_hash) : await verifyDecoy(password);
+  if (!ok) { noteLoginFailure(email); return bad(res, 'E-mail ou mot de passe incorrect.', 401); }
+  clearLoginFailures(email);
+  promoteIfAdmin(user);
   createSession(res, user, req);
   res.json({ user: publicUser(user) });
 }));
 api.post('/auth/logout', (req, res) => { destroySession(req, res); res.json({ ok: true }); });
+// Déconnecte tous les autres appareils (la session courante est conservée).
+api.post('/auth/logout-all', requireAuth, (req, res) => res.json({ ok: true, revoked: destroyOtherSessions(req.user.id, req.sessionId) }));
 api.get('/me', (req, res) => {
   if (!req.user) return res.json({ user: null, profiles: [] });
   const u = fresh(req);
   res.json({ user: publicUser(u), profiles: q.all('SELECT * FROM profiles WHERE user_id = ? ORDER BY is_primary DESC, created_at', u.id).map(parseProfile) });
 });
-api.post('/auth/password', requireAuth, wrap(async (req, res) => {
+api.post('/auth/password', requireAuth, rateLimit({ max: 10 }), wrap(async (req, res) => {
+  const current = req.body.current, next = req.body.next;
+  if (typeof current !== 'string' || typeof next !== 'string') return bad(res, 'Mot de passe invalide.');
   const u = fresh(req);
-  if (!verifyPassword(String(req.body.current || ''), u.password_hash)) return res.status(400).json({ error: 'Mot de passe actuel incorrect.' });
-  if (String(req.body.next || '').length < 10) return res.status(400).json({ error: 'Le nouveau mot de passe doit faire au moins 10 caractères.' });
-  q.run('UPDATE users SET password_hash = ? WHERE id = ?', hashPassword(String(req.body.next)), u.id);
-  q.run('DELETE FROM sessions WHERE user_id = ? AND id <> ?', u.id, req.sessionId);
+  const problem = passwordProblem(next, u.email);
+  if (problem) return bad(res, problem);
+  if (!(await verifyPassword(current, u.password_hash))) return bad(res, 'Mot de passe actuel incorrect.');
+  if (next === current) return bad(res, 'Le nouveau mot de passe doit être différent de l’actuel.');
+  q.run('UPDATE users SET password_hash = ? WHERE id = ?', await hashPassword(next), u.id);
+  destroyOtherSessions(u.id, req.sessionId);
+  logEvent(u.id, 'account', 'Mot de passe modifié ; les autres sessions ont été déconnectées.');
   res.json({ ok: true });
 }));
 
 /* ---------- Profils (personnes protégées) ---------- */
+const ownProfile = (req) => (isId(req.params.id) ? q.get('SELECT * FROM profiles WHERE id = ? AND user_id = ?', req.params.id, req.user.id) : null);
 api.get('/profiles', requireAuth, (req, res) => res.json({ profiles: q.all('SELECT * FROM profiles WHERE user_id = ? ORDER BY is_primary DESC, created_at', req.user.id).map(parseProfile) }));
 api.post('/profiles', requireAuth, (req, res) => {
   const u = fresh(req);
+  const first = str(req.body.first_name, 'first_name', 80), last = str(req.body.last_name, 'last_name', 80);
+  if (!first || !last) return bad(res, 'Prénom et nom sont obligatoires.');
   const max = PLANS[u.plan]?.members || 1;
   const n = q.get('SELECT COUNT(*) AS c FROM profiles WHERE user_id = ?', u.id).c;
-  if (n >= max) return res.status(400).json({ error: max === 1 ? "L'offre Individuel couvre une seule personne : passez à l'offre Famille pour ajouter un proche." : `L'offre Famille couvre jusqu'à ${max} personnes.` });
+  if (n >= max) return bad(res, max === 1 ? "L'offre Individuel couvre une seule personne : passez à l'offre Famille pour ajouter un proche." : `L'offre Famille couvre jusqu'à ${max} personnes.`);
   const id = crypto.randomUUID();
-  q.run('INSERT INTO profiles (id, user_id, is_primary, first_name, last_name, created_at, updated_at) VALUES (?, ?, 0, ?, ?, ?, ?)', id, u.id, clean(req.body.first_name, 80), clean(req.body.last_name, 80), now(), now());
-  logEvent(u.id, 'profile', `Proche ajouté au dossier : ${clean(req.body.first_name, 80)} ${clean(req.body.last_name, 80)}.`, { profile_id: id });
+  q.run('INSERT INTO profiles (id, user_id, is_primary, first_name, last_name, created_at, updated_at) VALUES (?, ?, 0, ?, ?, ?, ?)', id, u.id, first, last, now(), now());
+  logEvent(u.id, 'profile', `Proche ajouté au dossier : ${first} ${last}.`, { profile_id: id });
   res.status(201).json({ profile: parseProfile(q.get('SELECT * FROM profiles WHERE id = ?', id)) });
 });
 api.put('/profiles/:id', requireAuth, (req, res) => {
-  const p = q.get('SELECT * FROM profiles WHERE id = ? AND user_id = ?', req.params.id, req.user.id);
-  if (!p) return res.status(404).json({ error: 'Profil introuvable.' });
-  const b = req.body;
-  const first = clean(b.first_name ?? p.first_name, 80), last = clean(b.last_name ?? p.last_name, 80);
-  if (!first || !last) return res.status(400).json({ error: 'Prénom et nom sont obligatoires.' });
-  const birth = b.birth_date ? clean(b.birth_date, 10) : null;
-  if (birth && !/^\d{4}-\d{2}-\d{2}$/.test(birth)) return res.status(400).json({ error: 'Date de naissance invalide (AAAA-MM-JJ).' });
-  const emails = arr(b.emails ?? JSON.parse(p.emails)); if (emails.some((e) => !EMAIL.test(e))) return res.status(400).json({ error: 'Une adresse e-mail est invalide.' });
+  const p = ownProfile(req);
+  if (!p) return bad(res, 'Profil introuvable.', 404);
+  const b = req.body, cur = parseProfile(p);
+  const first = b.first_name === undefined ? p.first_name : str(b.first_name, 'first_name', 80);
+  const last = b.last_name === undefined ? p.last_name : str(b.last_name, 'last_name', 80);
+  if (!first || !last) return bad(res, 'Prénom et nom sont obligatoires.');
+  const birth = str(b.birth_date, 'birth_date', 10) || null;
+  if (birth && (!isoDate(birth) || birth < '1900-01-01' || birth > now().slice(0, 10))) return bad(res, 'Date de naissance invalide (AAAA-MM-JJ).');
+  const country = (b.country === undefined ? p.country : str(b.country, 'country', 2)).toUpperCase() || 'FR';
+  if (!COUNTRY.test(country)) return bad(res, 'Pays invalide (code à deux lettres).');
+  const emails = b.emails === undefined ? cur.emails : strList(b.emails, 'emails', 10);
+  if (emails.some((e) => !EMAIL.test(e))) return bad(res, 'Une adresse e-mail est invalide.');
+  const phones = b.phones === undefined ? cur.phones : strList(b.phones, 'phones', 10, 40);
+  if (phones.some((t) => !PHONE.test(t))) return bad(res, 'Un numéro de téléphone est invalide.');
+  const addresses = b.addresses === undefined ? cur.addresses : strList(b.addresses, 'addresses', 6, 160);
+  const aliases = b.aliases === undefined ? cur.aliases : strList(b.aliases, 'aliases', 6, 80);
   q.run('UPDATE profiles SET first_name = ?, last_name = ?, birth_date = ?, country = ?, emails = ?, phones = ?, addresses = ?, aliases = ?, updated_at = ? WHERE id = ?',
-    first, last, birth, clean(b.country ?? p.country, 2).toUpperCase() || 'FR', JSON.stringify(emails), JSON.stringify(arr(b.phones ?? JSON.parse(p.phones))), JSON.stringify(arr(b.addresses ?? JSON.parse(p.addresses), 6)), JSON.stringify(arr(b.aliases ?? JSON.parse(p.aliases), 6)), now(), p.id);
+    first, last, birth, country, JSON.stringify(emails.map((e) => e.toLowerCase())), JSON.stringify(phones), JSON.stringify(addresses), JSON.stringify(aliases), now(), p.id);
   logEvent(req.user.id, 'profile', `Informations mises à jour pour ${first} ${last}.`, { profile_id: p.id });
   res.json({ profile: parseProfile(q.get('SELECT * FROM profiles WHERE id = ?', p.id)) });
 });
 api.delete('/profiles/:id', requireAuth, (req, res) => {
-  const p = q.get('SELECT * FROM profiles WHERE id = ? AND user_id = ?', req.params.id, req.user.id);
-  if (!p) return res.status(404).json({ error: 'Profil introuvable.' });
-  if (p.is_primary) return res.status(400).json({ error: 'Le profil principal ne peut pas être supprimé (supprimez le compte).' });
+  const p = ownProfile(req);
+  if (!p) return bad(res, 'Profil introuvable.', 404);
+  if (p.is_primary) return bad(res, 'Le profil principal ne peut pas être supprimé (supprimez le compte).');
   q.run('DELETE FROM profiles WHERE id = ?', p.id);
   logEvent(req.user.id, 'profile', `${p.first_name} ${p.last_name} retiré du dossier ; ses demandes en cours sont abandonnées.`);
   res.json({ ok: true });
@@ -96,19 +137,19 @@ api.delete('/profiles/:id', requireAuth, (req, res) => {
 /* ---------- Mandat ---------- */
 api.get('/mandate', requireAuth, (req, res) => {
   const u = fresh(req);
-  const p = parseProfile(q.get('SELECT * FROM profiles WHERE user_id = ? AND is_primary = 1', u.id));
+  const p = parseProfile(q.get('SELECT * FROM profiles WHERE user_id = ? AND is_primary = 1', u.id) || { emails: '[]', phones: '[]', addresses: '[]', aliases: '[]', first_name: '', last_name: '', country: 'FR' });
   if (!u.mandate_signed_at) return res.json({ signed: false, version: MANDATE_VERSION, text: mandateText({ user: { ...u, mandate_name: `${p.first_name} ${p.last_name}` }, profile: p, signedAt: now() }).replace(/Signé électroniquement le .*$/s, 'À signer électroniquement ci-dessous.') });
   res.json({ signed: true, revoked: !!u.mandate_revoked_at, signed_at: u.mandate_signed_at, version: u.mandate_version, text: mandateText({ user: u, profile: p, signedAt: u.mandate_signed_at }) });
 });
 api.post('/mandate', requireAuth, (req, res) => {
   const u = fresh(req);
-  const name = clean(req.body.full_name, 120);
+  const name = str(req.body.full_name, 'full_name', 120);
   const p = q.get('SELECT * FROM profiles WHERE user_id = ? AND is_primary = 1', u.id);
-  if (!p?.first_name || !p?.last_name) return res.status(400).json({ error: 'Renseignez d’abord votre nom et prénom.' });
-  if (req.body.accepted !== true) return res.status(400).json({ error: 'Vous devez accepter le mandat.' });
+  if (!p?.first_name || !p?.last_name) return bad(res, 'Renseignez d’abord votre nom et prénom.');
+  if (req.body.accepted !== true) return bad(res, 'Vous devez accepter le mandat.');
   const expected = `${p.first_name} ${p.last_name}`.toLowerCase().replace(/\s+/g, ' ');
-  if (name.toLowerCase().replace(/\s+/g, ' ') !== expected) return res.status(400).json({ error: `Tapez exactement « ${p.first_name} ${p.last_name} » pour signer.` });
-  q.run('UPDATE users SET mandate_signed_at = ?, mandate_name = ?, mandate_ip = ?, mandate_version = ?, mandate_revoked_at = NULL WHERE id = ?', now(), name, req.ip, MANDATE_VERSION, u.id);
+  if (name.toLowerCase().replace(/\s+/g, ' ') !== expected) return bad(res, `Tapez exactement « ${p.first_name} ${p.last_name} » pour signer.`);
+  q.run('UPDATE users SET mandate_signed_at = ?, mandate_name = ?, mandate_ip = ?, mandate_version = ?, mandate_revoked_at = NULL WHERE id = ?', now(), name, String(req.ip || '').slice(0, 64), MANDATE_VERSION, u.id);
   logEvent(u.id, 'mandate', `Mandat de représentation signé électroniquement (version ${MANDATE_VERSION}).`);
   res.json({ ok: true, signed_at: now() });
 });
@@ -119,7 +160,7 @@ api.delete('/mandate', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-/* ---------- Courtiers ---------- */
+/* ---------- Courtiers (liste publique : jamais d'adresse de contact ni de statut de vérification) ---------- */
 api.get('/brokers', (_req, res) => {
   const brokers = q.all('SELECT id, slug, name, domain, category, jurisdiction, legal_basis, sensitivity, recheck_days, active FROM brokers ORDER BY name');
   const categories = q.all('SELECT category, COUNT(*) AS n FROM brokers WHERE active = 1 GROUP BY category ORDER BY n DESC');
@@ -127,72 +168,93 @@ api.get('/brokers', (_req, res) => {
 });
 
 /* ---------- Demandes & tableau de bord ---------- */
-api.post('/requests/launch', requireAuth, wrap(async (req, res) => {
+api.post('/requests/launch', requireAuth, rateLimit({ max: 30 }), wrap(async (req, res) => {
   const u = fresh(req);
-  const profiles = req.body.profile_id ? [q.get('SELECT * FROM profiles WHERE id = ? AND user_id = ?', req.body.profile_id, u.id)].filter(Boolean) : q.all('SELECT * FROM profiles WHERE user_id = ?', u.id);
+  const pid = req.body.profile_id;
+  if (pid !== undefined && pid !== null && pid !== '' && !isId(pid)) return bad(res, 'Profil introuvable.', 404);
+  const profiles = pid ? [q.get('SELECT * FROM profiles WHERE id = ? AND user_id = ?', pid, u.id)].filter(Boolean) : q.all('SELECT * FROM profiles WHERE user_id = ?', u.id);
+  if (pid && !profiles.length) return bad(res, 'Profil introuvable.', 404);
   let created = 0, reason = null;
   for (const p of profiles) { const r = launchProfile(u, p); created += r.created; reason = reason || r.reason; }
-  if (!created && reason) return res.status(400).json({ error: reason });
+  if (!created && reason) return bad(res, reason);
   setTimeout(() => tick(), 10);
   res.json({ created });
 }));
-api.get('/dashboard', requireAuth, (req, res) => res.json(buildDashboard(fresh(req), req.query.profile_id)));
+api.get('/dashboard', requireAuth, (req, res) => res.json(buildDashboard(fresh(req), isId(req.query.profile_id) ? req.query.profile_id : undefined)));
+const ownRequest = (req, cols = '*') => (isId(req.params.id) ? q.get(`SELECT ${cols} FROM requests WHERE id = ? AND user_id = ?`, req.params.id, req.user.id) : null);
 api.post('/requests/:id/resolve', requireAuth, wrap(async (req, res) => {
-  const r = q.get('SELECT * FROM requests WHERE id = ? AND user_id = ?', req.params.id, req.user.id);
-  if (!r) return res.status(404).json({ error: 'Demande introuvable.' });
-  if (r.status !== 'action_required') return res.status(400).json({ error: 'Cette demande n’attend pas d’action de votre part.' });
+  const r = ownRequest(req);
+  if (!r) return bad(res, 'Demande introuvable.', 404);
+  if (r.status !== 'action_required') return bad(res, 'Cette demande n’attend pas d’action de votre part.');
   q.run(`UPDATE requests SET status = 'in_progress', note = 'Vérification fournie par l’abonné ; en attente du courtier.' WHERE id = ?`, r.id);
   logEvent(req.user.id, 'in_progress', 'Vérification transmise : la demande reprend son cours.', { profile_id: r.profile_id, request_id: r.id });
   res.json({ ok: true });
 }));
 api.get('/requests/:id/mails', requireAuth, (req, res) => {
-  const r = q.get('SELECT id FROM requests WHERE id = ? AND user_id = ?', req.params.id, req.user.id);
-  if (!r) return res.status(404).json({ error: 'Demande introuvable.' });
-  res.json({ mails: q.all('SELECT id, to_addr, subject, body, mode, created_at FROM mails WHERE request_id = ? ORDER BY id', r.id) });
+  const r = ownRequest(req, 'id');
+  if (!r) return bad(res, 'Demande introuvable.', 404);
+  res.json({ mails: q.all('SELECT id, to_addr, subject, body, mode, created_at FROM mails WHERE request_id = ? AND user_id = ? ORDER BY id', r.id, req.user.id) });
 });
 
 /* ---------- Facturation ---------- */
-api.post('/billing/checkout', requireAuth, wrap(async (req, res) => {
-  try { res.json(await startCheckout(fresh(req), req.body.plan, req.body.billing)); }
-  catch (e) { res.status(400).json({ error: e.message }); }
+api.post('/billing/checkout', requireAuth, rateLimit({ max: 10 }), wrap(async (req, res) => {
+  const plan = oneOf(req.body.plan, PLAN_KEYS, 'plan'), billing = oneOf(req.body.billing, BILLINGS, 'billing');
+  if (!plan || !billing) return bad(res, 'Offre inconnue.');
+  try { res.json(await startCheckout(fresh(req), plan, billing)); }
+  catch (e) { console.error(`[billing] checkout impossible (${req.id}) :`, e.message); bad(res, 'Le paiement n’a pas pu être initialisé. Réessayez dans quelques instants.', 502); }
 }));
-api.post('/billing/cancel', requireAuth, wrap(async (req, res) => res.json(await cancelSubscription(fresh(req)))));
+api.post('/billing/cancel', requireAuth, rateLimit({ max: 10 }), wrap(async (req, res) => {
+  try { res.json(await cancelSubscription(fresh(req))); }
+  catch (e) { console.error(`[billing] résiliation impossible (${req.id}) :`, e.message); bad(res, 'La résiliation n’a pas pu être transmise. Réessayez dans quelques instants.', 502); }
+}));
+// Webhook Stripe : corps brut uniquement, signature obligatoire, cookies ignorés (voir index.js).
 export function stripeWebhook(req, res) {
+  if (!Buffer.isBuffer(req.body)) return bad(res, 'Corps de requête invalide.');
   const raw = req.body.toString('utf8');
-  if (!verifyStripeSignature(raw, req.headers['stripe-signature'])) return res.status(400).json({ error: 'Signature invalide.' });
-  try { handleStripeEvent(JSON.parse(raw)); } catch (e) { return res.status(400).json({ error: e.message }); }
+  if (!verifyStripeSignature(raw, req.headers['stripe-signature'])) return bad(res, 'Signature invalide.');
+  let event;
+  try { event = JSON.parse(raw); } catch { return bad(res, 'Événement invalide.'); }
+  if (!event || typeof event !== 'object' || typeof event.type !== 'string') return bad(res, 'Événement invalide.');
+  try { handleStripeEvent(event); } catch (e) { console.error(`[billing] webhook (${req.id}) :`, e); return bad(res, 'Événement non traité.'); }
   res.json({ received: true });
 }
 
 /* ---------- Courrier entrant (réponses des courtiers via webhook de votre fournisseur e-mail) ---------- */
-api.post('/inbound', wrap(async (req, res) => {
-  const token = process.env.INBOUND_TOKEN;
-  if (!token || req.get('x-inbound-token') !== token) return res.status(401).json({ error: 'Jeton manquant ou invalide.' });
-  const text = `${req.body.subject || ''}\n${req.body.text || req.body.body || ''}`;
+const INBOUND_TOKEN = String(process.env.INBOUND_TOKEN || '');
+if (INBOUND_TOKEN && INBOUND_TOKEN.length < 16) console.error('[inbound] INBOUND_TOKEN trop court (16 caractères minimum) : le webhook /api/inbound est désactivé.');
+const inboundTokenOk = (given) => {
+  if (INBOUND_TOKEN.length < 16 || typeof given !== 'string') return false;
+  const a = crypto.createHash('sha256').update(given).digest(), b = crypto.createHash('sha256').update(INBOUND_TOKEN).digest();
+  return crypto.timingSafeEqual(a, b);
+};
+api.post('/inbound', rateLimit({ windowMs: 60000, max: 120 }), wrap(async (req, res) => {
+  if (!inboundTokenOk(req.get('x-inbound-token'))) return bad(res, 'Jeton manquant ou invalide.', 401);
+  const subject = str(req.body.subject, 'subject', 1000), body = str(req.body.text, 'text', 200000) || str(req.body.body, 'body', 200000);
+  const text = `${subject}\n${body}`;
   const m = text.match(/OUBLI-([A-F0-9]{10})/i);
   if (!m) return res.status(202).json({ matched: false });
   const r = q.get('SELECT * FROM requests WHERE token = ?', m[1].toUpperCase());
   if (!r) return res.status(202).json({ matched: false });
   const t = text.toLowerCase();
   const outcome = /(supprim|effac|deleted|removed|erased|no longer|opted out|completed)/.test(t) ? 'done' : /(v[ée]rif|verify|confirm your identity|identity|pièce d|proof|photo id)/.test(t) ? 'action_required' : /(refus|decline|cannot|unable|not applicable|exempt)/.test(t) ? 'refused' : 'in_progress';
-  await applyOutcome(r, outcome, `réponse reçue de ${clean(req.body.from, 120)}`);
+  await applyOutcome(r, outcome, `réponse reçue de ${str(req.body.from, 'from', 120)}`);
   res.json({ matched: true, outcome });
 }));
 
 /* ---------- Divers : newsletter, contact, export RGPD, suppression ---------- */
 api.post('/newsletter', rateLimit({ max: 20 }), (req, res) => {
-  const email = clean(req.body.email, 160).toLowerCase();
-  if (!EMAIL.test(email)) return res.status(400).json({ error: 'Adresse invalide.' });
+  const email = str(req.body.email, 'email', 160).toLowerCase();
+  if (!EMAIL.test(email)) return bad(res, 'Adresse invalide.');
   q.run('INSERT OR IGNORE INTO newsletter (email, created_at) VALUES (?, ?)', email, now());
   res.json({ ok: true });
 });
-api.post('/contact', rateLimit({ max: 10 }), (req, res) => {
-  const email = clean(req.body.email, 160).toLowerCase(), message = clean(req.body.message, 4000);
-  if (!EMAIL.test(email) || message.length < 5) return res.status(400).json({ error: 'Adresse ou message invalide.' });
-  q.run('INSERT INTO contacts (email, subject, message, created_at) VALUES (?, ?, ?, ?)', email, clean(req.body.subject, 200), message, now());
+api.post('/contact', rateLimit({ windowMs: 60 * 60000, max: 10 }), (req, res) => {
+  const email = str(req.body.email, 'email', 160).toLowerCase(), message = str(req.body.message, 'message', 4000), subject = str(req.body.subject, 'subject', 200);
+  if (!EMAIL.test(email) || message.length < 5) return bad(res, 'Adresse ou message invalide.');
+  q.run('INSERT INTO contacts (email, subject, message, created_at) VALUES (?, ?, ?, ?)', email, subject, message, now());
   res.json({ ok: true });
 });
-api.get('/export', requireAuth, (req, res) => {
+api.get('/export', requireAuth, rateLimit({ max: 10 }), (req, res) => {
   const u = fresh(req);
   res.setHeader('Content-Disposition', 'attachment; filename="oubli-export.json"');
   res.json({
@@ -203,10 +265,10 @@ api.get('/export', requireAuth, (req, res) => {
     mails: q.all('SELECT to_addr, subject, body, created_at FROM mails WHERE user_id = ? ORDER BY id', u.id),
   });
 });
-api.delete('/account', requireAuth, wrap(async (req, res) => {
+api.delete('/account', requireAuth, rateLimit({ max: 5 }), wrap(async (req, res) => {
   const u = fresh(req);
-  if (!verifyPassword(String(req.body.password || ''), u.password_hash)) return res.status(400).json({ error: 'Mot de passe incorrect.' });
-  if (u.subscription_status === 'active') { try { await cancelSubscription(u); } catch {} }
+  if (typeof req.body.password !== 'string' || !(await verifyPassword(req.body.password, u.password_hash))) return bad(res, 'Mot de passe incorrect.');
+  if (u.subscription_status === 'active') { try { await cancelSubscription(u); } catch (e) { console.error(`[billing] résiliation à la suppression (${req.id}) :`, e.message); } }
   db.exec('BEGIN');
   try {
     q.run('DELETE FROM requests WHERE user_id = ?', u.id); q.run('DELETE FROM profiles WHERE user_id = ?', u.id); q.run('DELETE FROM events WHERE user_id = ?', u.id);
