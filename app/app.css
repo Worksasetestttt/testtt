@@ -197,6 +197,39 @@ h1 em, h2 em { font-style: italic; font-weight: 400; }
   #devices-foot .btn { height: 44px; }
 }
 
+/* ---------- Double authentification : étape « code » de la connexion, carte des paramètres ---------- */
+.code-who { color: var(--muted); font-size: .95rem; margin-bottom: 22px; }
+.code-alt { display: flex; justify-content: center; margin-top: 10px; }
+button.auth__link { text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; font-size: .95rem; }
+button.auth__link:hover { text-decoration-color: currentColor; }
+#f-code { font-family: var(--font-mono); font-size: 1.1rem; letter-spacing: .08em; }
+#f-code[inputmode="numeric"], #f-tfa-code[inputmode="numeric"] { font-size: 1.35rem; letter-spacing: .3em; }
+.tfa-step { margin-bottom: 6px; }
+.tfa-h { font-size: 1.3rem; margin-bottom: 8px; }
+.tfa-h:focus { outline: none; }
+.tfa-h:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.tfa-lead { color: var(--muted); max-width: 64ch; }
+.tfa-lead + .fields { margin-top: 22px; }
+.tfa-lead a { color: var(--accent-2); text-underline-offset: 3px; }
+.tfa-note { margin-top: 18px; }
+.tfa-steps { list-style: decimal; padding-left: 1.3em; display: grid; gap: 22px; margin-top: 16px; }
+.tfa-steps li { padding-left: 4px; min-width: 0; }
+.tfa-steps li::marker { font-family: var(--font-mono); color: var(--muted); }
+.tfa-steps p { margin-bottom: 10px; }
+.tfa-key { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; min-width: 0; }
+.tfa-key code { font-family: var(--font-mono); font-size: 1.02rem; letter-spacing: .06em; word-spacing: .2em; padding: 10px 14px; background: var(--surface-2); border-radius: 10px; overflow-wrap: anywhere; min-width: 0; max-width: 100%; -webkit-user-select: all; user-select: all; }
+.tfa-codes { display: grid; grid-template-columns: repeat(2, max-content); gap: 10px 40px; margin-top: 18px; list-style: decimal; padding-left: 1.6em; }
+.tfa-codes li { padding-left: 6px; }
+.tfa-codes li::marker { font-family: var(--font-mono); font-size: .8rem; color: var(--muted); }
+.tfa-codes code { font-family: var(--font-mono); font-size: 1rem; letter-spacing: .06em; }
+#twofa .kv dd { min-width: 0; }
+@media (max-width: 767px) {
+  #twofa .btn { height: 44px; }
+}
+@media (max-width: 559px) {
+  .tfa-codes { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* ---------- Onboarding : rail d'étapes à gauche, feuille à droite ---------- */
 .onb { display: grid; grid-template-columns: 240px 1fr; gap: 48px; align-items: start; }
 .rail { position: sticky; top: calc(var(--nav-h) + 32px); display: flex; flex-direction: column; }

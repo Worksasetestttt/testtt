@@ -434,7 +434,23 @@ try {
   /* ---------- 11. Suppression du compte : clé et codes effacés ---------- */
   assert.equal((await call(S, 'DELETE', '/account', { password: STRONG }, { cookie: bob.cookie })).status, 200);
   for (const t of ['user_totp', 'totp_recovery_codes', 'login_challenges']) assert.equal(S.db.prepare(`SELECT COUNT(*) AS c FROM ${t} WHERE user_id = ?`).get(bob.id).c, 0, `${t} purgée`);
-  step('suppression du compte : clé, codes de secours et jetons de connexion effacés');
+  // Ligne de commande du serveur : dernier recours pour un titulaire qui a perdu son téléphone et ses codes de secours.
+  const cli = (...args) => new Promise((resolve) => {
+    const p = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'scripts/admin-cli.mjs', ...args], { env: { ...process.env, DATABASE_PATH: S.dbPath, SESSION_SECRET: SECRET, NODE_ENV: 'test' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = ''; p.stdout.on('data', (d) => { out += d; }); p.stderr.on('data', (d) => { out += d; });
+    p.on('exit', (code) => resolve({ code, out }));
+  });
+  let c = await cli('2fa-off', carol.email.toUpperCase());
+  assert.equal(c.code, 0, c.out); assert.match(c.out, /désactivée pour carol@exemple\.fr/);
+  r = await login(S, carol.email, 'Encore-un-mot-2-passe!');
+  assert.equal(r.status, 200); assert.ok(r.cookie, 'connexion sans code après « npm run admin -- 2fa-off »'); assert.equal(r.data.two_factor, undefined);
+  assert.equal(S.db.prepare('SELECT COUNT(*) AS c FROM totp_recovery_codes WHERE user_id = ?').get(carol.id).c, 0, 'codes de secours effacés');
+  assert.ok(S.db.prepare(`SELECT 1 FROM admin_audit WHERE action = 'user.2fa_off' AND target = ?`).get(carol.id), 'action inscrite au journal d’audit');
+  assert.ok(S.db.prepare(`SELECT 1 FROM events WHERE user_id = ? AND message LIKE 'Double authentification désactivée par l’équipe%'`).get(carol.id), 'action inscrite au journal de l’abonnée');
+  c = await cli('2fa-off', carol.email);
+  assert.equal(c.code, 0); assert.match(c.out, /n’est pas active/, 'rien à faire la seconde fois');
+  assert.equal((await cli('2fa-off', 'personne@exemple.fr')).code, 1, 'adresse inconnue');
+  step('suppression du compte : clé, codes de secours et jetons effacés ; « npm run admin -- 2fa-off » désactive la double authentification d’un compte (audit, journal)');
 
   /* ---------- 12. Administration : ADMIN_REQUIRE_2FA ---------- */
   {

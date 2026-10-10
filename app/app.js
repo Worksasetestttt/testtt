@@ -78,6 +78,13 @@
   function pendingKey() { var v = memKey; try { v = sessionStorage.getItem(KEY_STORE) || memKey; } catch (e) { /* stockage indisponible */ } return v || ''; }
   function setPendingKey(v) { memKey = v || ''; try { if (v) sessionStorage.setItem(KEY_STORE, v); else sessionStorage.removeItem(KEY_STORE); } catch (e) { /* stockage indisponible */ } }
   function keyNotice() { return pendingKey() ? '<p class="notice notice--ok key-note">Clé d’activation reçue' + NBSP + ': elle vous sera proposée à la dernière étape, et l’abonnement démarrera sans paiement.</p>' : ''; }
+  /* Double authentification : après un mot de passe correct, le serveur remet un jeton de 5 minutes pour l'étape « code ».
+     Gardé pour l'onglet (sessionStorage, ou en mémoire si le stockage est refusé) : sur mobile, aller chercher le code
+     dans l'application d'authentification peut recharger la page. Jamais envoyé ailleurs qu'à /auth/login/2fa. */
+  var MFA_STORE = 'oubli.login-code', memMfa = null;
+  function storedMfa() { var v = memMfa; try { var s = sessionStorage.getItem(MFA_STORE); if (s) v = JSON.parse(s); } catch (e) { /* stockage indisponible */ } return v && typeof v === 'object' ? v : null; }
+  function pendingMfa() { var v = storedMfa(); return v && v.c && Date.parse(v.x) > Date.now() ? v : null; }
+  function setPendingMfa(v) { memMfa = v || null; try { if (v) sessionStorage.setItem(MFA_STORE, JSON.stringify(v)); else sessionStorage.removeItem(MFA_STORE); } catch (e) { /* stockage indisponible */ } }
   var LONG = { day: 'numeric', month: 'long', year: 'numeric' };
   var KEY_FMT = ['OUBLI', 'XXXX', 'XXXX', 'XXXX'].join('\u2011');   // traits d'union insécables : le format ne se coupe pas
   function fileNo(id) { return 'N°' + NBSP + String(id || '').slice(0, 4).toUpperCase(); }
@@ -118,6 +125,8 @@
   var views = {};
 
   views.login = function (q) {
+    var m = pendingMfa();
+    if (m) return codeView(m);
     return '<section class="auth"><div class="auth__mark">' + MARK + '</div><h1>Bon retour.</h1><p class="lead">Connectez-vous pour suivre vos demandes.</p>' + keyNotice() +
       '<form id="login-form" class="sheet" novalidate><div class="sheet__body"><div class="fields">' + field('email', 'Adresse e-mail', q.email || '', { extra: 'type="email" autocomplete="email" required' }) + field('password', 'Mot de passe', '', { extra: 'type="password" autocomplete="current-password" required' }) +
       '</div><p class="auth__forgot"><a class="auth__link" href="#forgot" id="forgot-link">Mot de passe oublié' + NBSP + '?</a></p>' + msgEl('msg-login-form', 'margin-top:8px') + '<button class="btn btn--block" type="submit">Se connecter</button></div></form>' +
@@ -133,6 +142,44 @@
       '</div>' + msgEl('msg-signup-form', 'margin-top:16px') + '<button class="btn btn--block" type="submit">Créer mon compte <span class="btn__arrow" aria-hidden="true">→</span></button></div></form>' +
       '<p class="switch">Déjà un compte' + NBSP + '? <a class="auth__link" href="#login">Se connecter</a></p></section>';
   };
+
+  /* ---------- connexion : étape « code » (double authentification) ---------- */
+  /* Code à 6 chiffres de l'application, ou code de secours (« Utiliser un code de secours »). Aucune session n'existe
+     avant cette étape ; un jeton expiré ou épuisé ramène au mot de passe, avec l'adresse déjà remplie. */
+  function codeLead(rec) { return rec ? 'Saisissez l’un des codes de secours notés lors de l’activation. Chacun ne sert qu’une fois.' : 'Saisissez le code à 6' + NBSP + 'chiffres affiché par votre application d’authentification.'; }
+  function codeField(rec) {
+    return rec ? field('code', 'Code de secours', '', { extra: 'type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="20" required' }, 'Format XXXX-XXXX-XXXX, tirets facultatifs.')
+      : field('code', 'Code à 6' + NBSP + 'chiffres', '', { extra: 'type="text" inputmode="numeric" autocomplete="one-time-code" spellcheck="false" maxlength="9" required' }, 'Il change toutes les 30' + NBSP + 'secondes.');
+  }
+  function codeView(m) {
+    var rec = !!state.codeRecovery;
+    return '<section class="auth"><div class="auth__mark">' + MARK + '</div><h1>Code de vérification</h1><p class="lead" id="code-lead">' + codeLead(rec) + '</p>' +
+      '<form id="code-form" class="sheet" novalidate><div class="sheet__body"><p class="code-who">Compte' + NBSP + ': <strong class="auth__email">' + esc(m.e) + '</strong></p><div class="fields" id="code-fields">' + codeField(rec) + '</div>' +
+      msgEl('msg-code-form', 'margin-top:16px') + '<button class="btn btn--block" type="submit">Vérifier et se connecter</button>' +
+      '<p class="code-alt"><button class="auth__link" type="button" id="code-switch" aria-controls="code-fields">' + (rec ? 'Utiliser l’application d’authentification' : 'Utiliser un code de secours') + '</button></p></div></form>' +
+      '<p class="switch"><button class="auth__link" type="button" id="code-cancel">Revenir au mot de passe</button></p></section>';
+  }
+  /* Retour au mot de passe (jeton expiré, épuisé, ou abandon) : adresse remise dans le champ, message éventuel annoncé. */
+  function backToPassword(email, msg) {
+    setPendingMfa(null); state.codeRecovery = false;
+    render();
+    var f = $('#login-form'); if (!f) return;
+    var em = $('#f-email', f), pw = $('#f-password', f);
+    if (email) em.value = email;
+    if (msg) showMsg(f, msg, true, null, pw); else (email ? pw : em).focus();
+  }
+  /* Connexion ou inscription réussie (après le code si la double authentification est active). */
+  function signedIn(r, email, isLogin) {
+    var adminMail = r && r.admin_verification, left = r && typeof r.recovery_remaining === 'number' ? r.recovery_remaining : null;
+    state.dash = null; state.profileId = null;
+    return loadMe().then(function () {
+      toast(adminMail === 'outbox' ? 'Accès administrateur en attente' + NBSP + ': aucun serveur d’envoi n’est configuré, lancez «' + NBSP + 'npm run admin -- promote ' + email + NBSP + '» sur le serveur.'
+        : adminMail ? 'Pour activer l’accès administrateur, ouvrez le lien de confirmation envoyé à ' + email + '.'
+        : left !== null ? 'Connecté avec un code de secours' + NBSP + ': ' + (left > 1 ? 'il vous en reste ' + left + '.' : left ? 'il ne vous en reste qu’un.' : 'il ne vous en reste aucun.') + (left <= 3 ? ' Générez-en de nouveaux dans les paramètres.' : '')
+        : isLogin ? 'Connecté.' : 'Compte créé. Dossier ouvert.', adminMail === 'outbox' || (left !== null && left <= 3));
+      go(pendingKey() && onboardingDone() ? 'billing' : home());
+    });
+  }
 
   /* ---------- mot de passe oublié ---------- */
   /* Le serveur répond la même chose que le compte existe ou non : l'écran de confirmation reste neutre. */
@@ -807,6 +854,7 @@
   views.settings = function () {
     return '<div class="page-head"><div><span class="mono">Paramètres</span><h1>Votre compte, vos données, vos droits.</h1></div></div><div class="stack">' +
       '<form class="sheet" id="pwd-form" novalidate><div class="sheet__head"><h2>Mot de passe</h2></div><div class="sheet__body"><div class="fields">' + field('current', 'Mot de passe actuel', '', { extra: 'type="password" autocomplete="current-password" required' }) + field('next', 'Nouveau mot de passe', '', { extra: 'type="password" autocomplete="new-password" minlength="10" required' }, 'Au moins 10' + NBSP + 'caractères. Les autres sessions seront déconnectées.') + '</div>' + msgEl('msg-pwd-form', 'margin-top:16px') + '</div><div class="sheet__foot"><button class="btn btn--outline" type="submit">Changer le mot de passe</button></div></form>' +
+      '<section class="sheet" id="twofa" aria-labelledby="twofa-h"><div class="sheet__head"><h2 id="twofa-h" tabindex="-1">Double authentification</h2><span id="twofa-state"></span></div><div id="twofa-body"><div class="sheet__body"><p class="devices__note"><span class="spinner"></span> Chargement…</p></div></div></section>' +
       '<section class="sheet" id="devices" aria-labelledby="devices-h"><div class="sheet__head"><h2 id="devices-h" tabindex="-1">Appareils connectés</h2><span class="mono" id="devices-count"></span></div><div class="sheet__body" id="devices-body"><p class="devices__note"><span class="spinner"></span> Chargement des appareils…</p></div>' +
       '<div class="sheet__foot" id="devices-foot" hidden><button class="btn btn--outline btn--sm" type="button" id="revoke-others">Déconnecter les autres appareils</button><span class="mono">Une session dure 30' + NBSP + 'jours au plus</span></div></section>' +
       '<section class="sheet" aria-labelledby="notif-h"><div class="sheet__head"><h2 id="notif-h">Notifications</h2></div><div class="sheet__body"><label class="check"><input type="checkbox" id="pref-report"' + (state.user.monthly_report !== false ? ' checked' : '') + '> <span>Recevoir chaque mois un rapport par e-mail' + NBSP + ': effacements confirmés, demandes en cours, vérifications à faire.</span></label><p class="hint notif-hint">Les alertes «' + NBSP + 'action requise' + NBSP + '» restent envoyées' + NBSP + ': elles demandent une intervention de votre part.</p></div></section>' +
@@ -847,6 +895,103 @@
     });
   }
 
+  /* ---------- double authentification (Paramètres) ---------- */
+  /* Étapes : idle (état), password (mot de passe), key (clé et premier code), codes (codes de secours, montrés une seule
+     fois), disable ou regen (mot de passe et code). La clé n'est connue du client qu'entre la mise en place et le premier
+     code ; les codes de secours, que jusqu'à « J’ai noté mes codes » ou la sortie de la page. */
+  var tfa = { status: null, step: 'idle', setup: null, codes: null };
+  function tfaField(name, label, extra) { return field(name, label, '', { extra: extra }, '', 'tfa'); }
+  var TFA_PWD = 'type="password" autocomplete="current-password" required';
+  function tfaFoot(submit, danger) { return '<div class="sheet__foot"><div class="btn-row"><button class="btn' + (danger ? ' btn--danger' : '') + '" type="submit">' + submit + '</button><button class="btn btn--outline" type="button" data-tfa-cancel>Annuler</button></div></div>'; }
+  function tfaHtml() {
+    var s = tfa.status, ro = readOnly();
+    if (tfa.step === 'password') {
+      return '<form id="tfa-setup-form" novalidate><div class="sheet__body"><p class="mono tfa-step">Étape 1 sur 2</p><h3 class="tfa-h" id="tfa-step-h" tabindex="-1">Confirmez votre mot de passe</h3><p class="tfa-lead">La clé de configuration s’affiche ensuite, à ajouter dans votre application d’authentification.</p><div class="fields">' +
+        tfaField('password', 'Mot de passe actuel', TFA_PWD) + '</div>' + msgEl('msg-tfa-setup-form', 'margin-top:16px') + '</div>' + tfaFoot('Continuer') + '</form>';
+    }
+    if (tfa.step === 'key') {
+      var su = tfa.setup, grouped = su.secret.replace(/(.{4})(?=.)/g, '$1 ');
+      return '<form id="tfa-enable-form" novalidate><div class="sheet__body"><p class="mono tfa-step">Étape 2 sur 2</p><h3 class="tfa-h" id="tfa-step-h" tabindex="-1">Ajoutez Oubli à votre application</h3><ol class="tfa-steps">' +
+        '<li><p>Sur ce téléphone, ce bouton ouvre directement votre application d’authentification (Google Authenticator, Microsoft Authenticator, Aegis, 1Password…)' + NBSP + ':</p><a class="btn btn--outline btn--sm" id="tfa-open" href="' + esc(su.otpauth) + '">Ouvrir l’application d’authentification</a></li>' +
+        '<li><p>Sur un autre appareil, ajoutez un compte «' + NBSP + 'basé sur le temps' + NBSP + '» avec cette clé de configuration' + NBSP + ':</p><div class="tfa-key"><code id="tfa-secret">' + esc(grouped) + '</code><button class="btn btn--outline btn--sm" type="button" id="tfa-copy">Copier la clé</button></div></li>' +
+        '<li><p>Saisissez le code à 6' + NBSP + 'chiffres que l’application affiche pour Oubli' + NBSP + ':</p><div class="fields">' + tfaField('code', 'Code de vérification', 'type="text" inputmode="numeric" autocomplete="one-time-code" spellcheck="false" maxlength="9" required') + '</div></li></ol>' +
+        msgEl('msg-tfa-enable-form', 'margin-top:16px') + '</div>' + tfaFoot('Activer') + '</form>';
+    }
+    if (tfa.step === 'codes') {
+      var list = tfa.codes || [], txt = 'Codes de secours Oubli (' + state.user.email + ')\r\nChaque code permet une seule connexion sans votre téléphone.\r\n\r\n' + list.join('\r\n') + '\r\n';
+      return '<div class="sheet__body"><h3 class="tfa-h" id="tfa-codes-h" tabindex="-1">Vos codes de secours</h3><p class="tfa-lead">Sans votre téléphone, chacun de ces codes permet une connexion, une seule fois. Gardez-les en lieu sûr' + NBSP + ': ils ne seront plus affichés.</p>' +
+        '<ol class="tfa-codes" aria-label="Codes de secours">' + list.map(function (c) { return '<li><code>' + esc(c) + '</code></li>'; }).join('') + '</ol></div>' +
+        '<div class="sheet__foot"><div class="btn-row"><button class="btn btn--outline btn--sm" type="button" id="tfa-codes-copy">Copier les codes</button><a class="btn btn--outline btn--sm" id="tfa-codes-dl" download="oubli-codes-de-secours.txt" href="data:text/plain;charset=utf-8,' + esc(encodeURIComponent(txt)) + '">Télécharger (.txt)</a><button class="btn btn--sm" type="button" id="tfa-codes-done">J’ai noté mes codes</button></div></div>';
+    }
+    if (tfa.step === 'disable' || tfa.step === 'regen') {
+      var off = tfa.step === 'disable';
+      return '<form id="tfa-confirm-form" data-kind="' + tfa.step + '" novalidate><div class="sheet__body"><h3 class="tfa-h" id="tfa-step-h" tabindex="-1">' + (off ? 'Désactiver la double authentification' : 'Nouveaux codes de secours') + '</h3><p class="tfa-lead">' +
+        (off ? 'Confirmez avec votre mot de passe et un code de l’application (ou un code de secours). Le mot de passe suffira de nouveau pour vous connecter.' + (s.admin_required ? ' L’administration vous sera fermée tant que vous ne l’aurez pas réactivée.' : '') : 'Les nouveaux codes remplacent tous les anciens. Confirmez avec votre mot de passe et un code de l’application (ou un code de secours).') + '</p><div class="fields">' +
+        tfaField('password', 'Mot de passe actuel', TFA_PWD) + tfaField('code', 'Code de l’application ou de secours', 'type="text" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" maxlength="20" required') + '</div>' +
+        msgEl('msg-tfa-confirm-form', 'margin-top:16px') + '</div>' + tfaFoot(off ? 'Désactiver' : 'Générer de nouveaux codes', off) + '</form>';
+    }
+    if (!s.enabled) {
+      return '<div class="sheet__body"><p class="tfa-lead">À chaque connexion, en plus du mot de passe, un code à 6' + NBSP + 'chiffres généré par une application d’authentification sur votre téléphone. Un mot de passe volé ne suffit plus pour entrer dans votre compte.</p>' +
+        (s.admin_required ? '<p class="notice tfa-note">Obligatoire pour l’administration' + NBSP + ': activez-la pour y accéder.</p>' : '') + '</div>' +
+        (ro ? '' : '<div class="sheet__foot"><button class="btn" type="button" id="tfa-start">Activer la double authentification</button><span class="mono">Deux minutes</span></div>');
+    }
+    var n = s.recovery_remaining;
+    return '<div class="sheet__body"><dl class="kv"><dt>Activée le</dt><dd>' + fmtDate(s.enabled_at, LONG) + '</dd><dt>Codes de secours</dt><dd>' + (n > 1 ? n + NBSP + 'restants sur ' + s.recovery_total : n ? 'un seul restant sur ' + s.recovery_total : 'aucun restant') + '</dd></dl>' +
+      (n <= 3 ? '<p class="notice tfa-note">' + (n ? 'Il ne vous reste que ' + plural(n, 'code', 'codes') + ' de secours' : 'Vous n’avez plus de code de secours') + NBSP + ': générez-en de nouveaux pour garder l’accès si vous perdez votre téléphone.</p>' : '') +
+      (s.admin_required ? '<p class="tfa-lead tfa-note">L’administration vous est ouverte' + NBSP + ': <a href="#admin">ouvrir l’administration</a>.</p>' : '') + '</div>' +
+      (ro ? '' : '<div class="sheet__foot"><div class="btn-row"><button class="btn btn--outline btn--sm" type="button" id="tfa-regen">Nouveaux codes de secours</button><button class="btn btn--danger btn--sm" type="button" id="tfa-off">Désactiver</button></div></div>');
+  }
+  /* Repeint la carte ; `focus` : sélecteur de l'élément à rendre actif (champ, titre ou bouton). */
+  function paintTfa(focus) {
+    var body = $('#twofa-body'); if (!body || !tfa.status) return;
+    body.innerHTML = tfaHtml();
+    var on = tfa.status.enabled || tfa.step === 'codes';
+    $('#twofa-state').innerHTML = chip(on ? 'active' : 'none', on ? 'Activée' : 'Désactivée');
+    var el = focus && $(focus); if (el) el.focus();
+  }
+  function loadTfa(focus) {
+    return api('/auth/2fa').then(function (s) {
+      if (!$('#twofa-body') || params().route !== 'settings') return;
+      tfa.status = s; paintTfa(focus === 'gate' ? null : focus);
+      if (focus === 'gate') { var card = $('#twofa'); card.scrollIntoView({ block: 'start', behavior: reduced() ? 'auto' : 'smooth' }); ($('#tfa-start') || $('#twofa-h')).focus({ preventScroll: true }); }
+    }).catch(function (e) {
+      if (e.status === 401) { resetSession(); go('login'); return; }
+      var body = $('#twofa-body'); if (body) body.innerHTML = '<div class="sheet__body"><p class="notice" role="alert">' + esc(typo(e.message)) + '</p></div>';
+    });
+  }
+  document.addEventListener('submit', function (e) {
+    var f = e.target;
+    if (!/^tfa-(setup|enable|confirm)-form$/.test(f.id)) return;
+    e.preventDefault();
+    if (f._busy) return;
+    var pw = $('#f-tfa-password', f), code = $('#f-tfa-code', f);
+    if (pw && !pw.value) { showMsg(f, 'Saisissez votre mot de passe.', true, null, pw); return; }
+    if (code && !code.value.trim()) { showMsg(f, f.id === 'tfa-enable-form' ? 'Saisissez le code à 6' + NBSP + 'chiffres affiché par l’application.' : 'Saisissez un code de l’application ou un code de secours.', true, null, code); return; }
+    busy(f, true); showMsg(f, '');
+    var req = f.id === 'tfa-setup-form' ? api('/auth/2fa/setup', { body: { password: pw.value } })
+      : f.id === 'tfa-enable-form' ? api('/auth/2fa/enable', { body: { code: code.value.trim() } })
+      : api(f.getAttribute('data-kind') === 'disable' ? '/auth/2fa/disable' : '/auth/2fa/recovery', { body: { password: pw.value, code: code.value.trim() } });
+    req.then(function (r) {
+      if (f.id === 'tfa-setup-form') { tfa.setup = r; tfa.step = 'key'; paintTfa('#tfa-step-h'); announce('Étape 2 sur 2' + NBSP + ': ajoutez Oubli à votre application d’authentification, puis saisissez le code affiché.'); return; }
+      if (f.id === 'tfa-enable-form') {
+        tfa.setup = null; tfa.codes = r.recovery_codes; tfa.step = 'codes';
+        tfa.status = { enabled: true, pending: false, enabled_at: r.enabled_at, recovery_remaining: r.recovery_codes.length, recovery_total: r.recovery_codes.length, admin_required: tfa.status.admin_required };
+        paintTfa('#tfa-codes-h');
+        toast('Double authentification activée' + (r.signed_out ? NBSP + ': ' + (r.signed_out > 1 ? r.signed_out + NBSP + 'autres appareils déconnectés' : 'un autre appareil déconnecté') : '') + '.');
+        if (r.signed_out) loadDevices();
+        return;
+      }
+      if (f.getAttribute('data-kind') === 'disable') { tfa.step = 'idle'; toast('Double authentification désactivée.'); return loadTfa('#tfa-start'); }
+      tfa.codes = r.recovery_codes; tfa.step = 'codes'; tfa.status.recovery_remaining = r.recovery_codes.length;
+      paintTfa('#tfa-codes-h'); toast('Nouveaux codes de secours' + NBSP + ': les anciens ne fonctionnent plus.');
+    }).catch(function (err) {
+      if (err.status === 409 || err.code === 'no_setup') { tfa.step = 'idle'; tfa.setup = null; toast(typo(err.message), true); return loadTfa('#twofa-h'); }
+      var onCode = code && (err.code === 'invalid_code' || !pw);
+      if (onCode) code.value = '';
+      showMsg(f, typo(err.message), true, null, onCode ? code : pw || code);
+    }).finally(function () { busy(f, false); });
+  });
+
   /* ---------- interactions : mot de passe oublié, réinitialisation, appareils ---------- */
   document.addEventListener('submit', function (e) {
     var f = e.target;
@@ -864,6 +1009,14 @@
       if (pw.value !== pw2.value) { showMsg(f, 'Les deux mots de passe ne correspondent pas.', true, null, pw2); return; }
       busy(f, true); showMsg(f, '');
       api('/auth/reset', { body: { token: params().q.token || '', password: pw.value } }).then(function (r) {
+        // Double authentification active : pas de session sans le code. Retour à la connexion (le lien sort de
+        // l'historique), avec le message du serveur dans le formulaire.
+        if (!r.signed_in && r.two_factor) {
+          resetSession(); setPendingMfa(null);
+          history.replaceState(null, '', location.pathname + location.search + '#login'); render();
+          var lf = $('#login-form'); if (lf) { showMsg(lf, typo(r.message)); $('#f-email', lf).focus(); }
+          return;
+        }
         if (!r.signed_in) { swapState($('#reset-box'), resetState('suspended', r.message)); return; }
         state.dash = null; state.profileId = null;
         return loadMe().then(function () { toast('Mot de passe changé. Vous êtes connecté.'); location.replace('#' + home()); });   // le lien sort de l'historique
@@ -875,7 +1028,15 @@
   });
   document.addEventListener('click', function (e) {
     var t = e.target.closest('button, a'); if (!t || t.getAttribute('aria-disabled') === 'true') return;
-    if (t.id === 'forgot-link') { var le = $('#f-email'); state.forgotEmail = le ? le.value.trim() : ''; }   // adresse reprise, sans passer par l'URL
+    if (t.id === 'code-switch') {   // code de l'application ↔ code de secours
+      state.codeRecovery = !state.codeRecovery;
+      $('#code-fields').innerHTML = codeField(state.codeRecovery); $('#code-lead').textContent = codeLead(state.codeRecovery);
+      t.textContent = state.codeRecovery ? 'Utiliser l’application d’authentification' : 'Utiliser un code de secours';
+      var cform = $('#code-form'); if (cform) showMsg(cform, '');
+      $('#f-code').focus(); announce(codeLead(state.codeRecovery));
+    }
+    else if (t.id === 'code-cancel') { backToPassword((storedMfa() || {}).e || ''); }
+    else if (t.id === 'forgot-link') { var le = $('#f-email'); state.forgotEmail = le ? le.value.trim() : ''; }   // adresse reprise, sans passer par l'URL
     else if (t.id === 'forgot-again') { var box = $('#forgot-box'); box.innerHTML = forgotForm(t.getAttribute('data-email') || ''); $('#f-email', box).focus(); }
     else if (t.hasAttribute('data-session')) {
       var rank = $$('#devices-body [data-session]').indexOf(t), label = t.getAttribute('data-device');
@@ -883,6 +1044,12 @@
       api('/sessions/' + encodeURIComponent(t.getAttribute('data-session')), { method: 'DELETE' }).then(function () { toast('Appareil déconnecté' + NBSP + ': ' + label + '.'); return loadDevices(rank); })
         .catch(function (err) { toast(typo(err.message), true); lock(t, false); if (err.status === 404) loadDevices(rank); });
     }
+    else if (t.id === 'tfa-start') { tfa.step = 'password'; paintTfa('#f-tfa-password'); }
+    else if (t.id === 'tfa-regen' || t.id === 'tfa-off') { tfa.step = t.id === 'tfa-off' ? 'disable' : 'regen'; paintTfa('#f-tfa-password'); }
+    else if (t.hasAttribute('data-tfa-cancel')) { tfa.step = 'idle'; tfa.setup = null; paintTfa(tfa.status.enabled ? '#tfa-regen' : '#tfa-start'); announce('Annulé.'); }
+    else if (t.id === 'tfa-copy') { copyText(tfa.setup ? tfa.setup.secret : '', 'Clé de configuration copiée.'); }
+    else if (t.id === 'tfa-codes-copy') { copyText((tfa.codes || []).join('\n'), 'Codes de secours copiés.'); }
+    else if (t.id === 'tfa-codes-done') { tfa.codes = null; tfa.step = 'idle'; loadTfa('#twofa-h'); }
     else if (t.id === 'revoke-others') {
       lock(t, true);
       api('/sessions/revoke-others', { method: 'POST' }).then(function (r) { toast(r.revoked > 1 ? r.revoked + NBSP + 'appareils déconnectés.' : r.revoked ? 'Un appareil déconnecté.' : 'Aucun autre appareil n’était connecté.'); return loadDevices(0); })
@@ -929,7 +1096,7 @@
     if (route === 'dashboard') { drawChart(); loadDash(null, true); pollTimer = setInterval(function () { if (!document.hidden && Date.now() >= retryAt) loadDash(); }, 6000); }
     if (route === 'onboarding' || route === 'dossier') loadMandateText();
     if (route === 'report') loadReport();
-    if (route === 'settings') loadDevices();
+    if (route === 'settings') { loadDevices(); tfa = { status: null, step: 'idle', setup: null, codes: null }; loadTfa(q && q.twofa ? 'gate' : null); }
     if (route === 'verify') runVerify(q || {});
     if (plugins[route]) plugins[route](q || {});
   }
@@ -1017,10 +1184,23 @@
     if (f._busy) return;
     if (f.id === 'login-form' || f.id === 'signup-form') {
       var d = formData(f); busy(f, true); showMsg(f, '');
-      var adminMail = false;
-      api(f.id === 'login-form' ? '/auth/login' : '/auth/signup', { body: d }).then(function (r) { adminMail = r && r.admin_verification; state.dash = null; state.profileId = null; return loadMe(); }).then(function () {
-        toast(adminMail === 'outbox' ? 'Accès administrateur en attente' + NBSP + ': aucun serveur d’envoi n’est configuré, lancez «' + NBSP + 'npm run admin -- promote ' + d.email + NBSP + '» sur le serveur.'
-          : adminMail ? 'Pour activer l’accès administrateur, ouvrez le lien de confirmation envoyé à ' + d.email + '.' : f.id === 'login-form' ? 'Connecté.' : 'Compte créé. Dossier ouvert.', adminMail === 'outbox'); go(pendingKey() && onboardingDone() ? 'billing' : home()); }).catch(function (err) { showMsg(f, err.message, true, null, $('#f-password', f)); }).finally(function () { busy(f, false); });
+      api(f.id === 'login-form' ? '/auth/login' : '/auth/signup', { body: d }).then(function (r) {
+        // Double authentification : le mot de passe est juste, reste le code (aucune session n'est ouverte avant).
+        if (r && r.two_factor) { setPendingMfa({ c: r.challenge, e: String(d.email || '').trim(), x: r.expires_at }); state.codeRecovery = false; render(); var cf = $('#f-code'); if (cf) cf.focus(); return; }
+        return signedIn(r, d.email, f.id === 'login-form');
+      }).catch(function (err) { showMsg(f, err.message, true, null, $('#f-password', f)); }).finally(function () { busy(f, false); });
+    } else if (f.id === 'code-form') {
+      var mf = pendingMfa(), ci = $('#f-code', f), cv = ci.value.trim();
+      if (!mf) { backToPassword((storedMfa() || {}).e || '', 'Votre connexion a expiré' + NBSP + ': saisissez de nouveau votre mot de passe.'); return; }
+      if (!cv) { showMsg(f, state.codeRecovery ? 'Saisissez l’un de vos codes de secours.' : 'Saisissez le code à 6' + NBSP + 'chiffres affiché par l’application.', true, null, ci); return; }
+      busy(f, true); showMsg(f, '');
+      api('/auth/login/2fa', { body: { challenge: mf.c, code: cv } }).then(function (r) {
+        setPendingMfa(null); state.codeRecovery = false;
+        return signedIn(r, mf.e, true);
+      }).catch(function (err) {
+        if (err.code === 'challenge_expired') { backToPassword(mf.e, typo(err.message)); return; }   // jeton expiré ou 5 codes faux
+        ci.value = ''; showMsg(f, typo(err.message), true, null, ci);
+      }).finally(function () { busy(f, false); });
     } else if (f.id === 'key-form') {
       var ki = $('#key-input', f), kv = ki.value.trim();
       if (!kv) { showMsg(f, 'Saisissez la clé reçue, sous la forme ' + KEY_FMT + '.', true, null, ki); return; }
