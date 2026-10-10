@@ -16,7 +16,7 @@ import { launchProfile, applyOutcome, tick, ref, DEMO } from './scheduler.js';
 import { EMAIL, publicUser, parseProfile, wrap, isId, str, strList, oneOf } from './util.js';
 import { buildDashboard, exportData, complaintReady } from './dashboard.js';
 import { addSite, relaunchRequest } from './sites.js';
-import { admin, auditAs, currentAnnouncement, toCsv } from './admin.js';
+import { admin, auditAs, currentAnnouncement, toCsv, classifyReply } from './admin.js';
 
 export const api = express.Router();
 const fresh = (req) => q.get('SELECT * FROM users WHERE id = ?', req.user.id);
@@ -297,8 +297,7 @@ api.post('/inbound', rateLimit({ windowMs: 60000, max: 120 }), wrap(async (req, 
   if (!m) return res.status(202).json({ matched: false });
   const r = q.get('SELECT * FROM requests WHERE token = ?', m[1].toUpperCase());
   if (!r) return res.status(202).json({ matched: false });
-  const t = text.toLowerCase();
-  const outcome = /(supprim|effac|deleted|removed|erased|no longer|opted out|completed)/.test(t) ? 'done' : /(v[ée]rif|verify|confirm your identity|identity|pièce d|proof|photo id)/.test(t) ? 'action_required' : /(refus|decline|cannot|unable|not applicable|exempt)/.test(t) ? 'refused' : 'in_progress';
+  const outcome = classifyReply(text);
   await applyOutcome(r, outcome, `réponse reçue de ${str(req.body.from, 'from', 120)}`);
   res.json({ matched: true, outcome });
 }));

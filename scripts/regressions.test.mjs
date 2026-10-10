@@ -90,6 +90,47 @@ try {
   }
   step('chemin d’installation contenant un dossier caché : landing et repli de l’application servis (plus de 404)');
 
+  /* ---------- Serveur principal (boîte d'envoi locale, paiement simulé, webhooks entrants et Stripe) ---------- */
+  const S = await start('main');
+  const ADM = await adminOf(S);
+  const db = S.sql();
+  const mailsOf = (id, like = '%') => db.prepare('SELECT subject, body FROM mails WHERE request_id = ? AND subject LIKE ? ORDER BY id').all(id, like);
+  const reqRow = (id) => db.prepare('SELECT * FROM requests WHERE id = ?').get(id);
+
+  /* ---------- 2. Lecture des réponses entrantes ---------- */
+  // L'objet « Re: Demande d’effacement de données personnelles… » (que le courrier demande de conserver) et le texte
+  // cité contiennent « effacement », « supprimer » : toute réponse était lue comme une confirmation d'effacement.
+  {
+    const A = await member(S);
+    await S.call('POST', '/admin/tick', {}, ADM);
+    const sent = db.prepare(`SELECT id, token FROM requests WHERE user_id = ? AND status = 'sent' ORDER BY created_at`).all(A.id);
+    const subject = (r) => mailsOf(r.id)[0].subject;
+    const quoteFr = '\n\nLe 3 oct. 2026 à 10:00, Oubli <demandes@oubli.example> a écrit :\n> 2. de supprimer l’ensemble de ces données (article 17 du RGPD, « droit à l’effacement ») ;\n> Identité de la personne concernée :';
+    const quoteEn = '\n\nOn Sat, Oct 3, 2026 at 10:00 AM Oubli <demandes@oubli.example> wrote:\n> 2. delete all such data, including profiles, derived data, identifiers and backups;';
+    const cases = [
+      ['Re: ', 'Bonjour,\nAvant toute suppression, merci de confirmer l’identité de la personne concernée (copie d’une pièce d’identité).\nCordialement', 'action_required'],
+      ['RE: ', `Hello,\nPlease verify your identity using the link below.${quoteEn}`, 'action_required'],
+      ['Re: ', 'Nous ne pouvons pas donner suite : ces données sont nécessaires au respect de nos obligations légales.', 'refused'],
+      ['TR: ', `Nous avons bien reçu votre demande ; elle est en cours de traitement.${quoteFr}`, 'in_progress'],
+      ['Re: ', 'Bonjour, vos données ont été supprimées de nos bases.', 'done'],
+      ['Re: ', 'Après vérification, nous ne détenons aucune donnée concernant cette personne.', 'done'],
+      ['Re: ', 'Thank you. Your request will be processed within 30 days.', 'in_progress'],
+      ['Re: ', `We have deleted all records relating to this person.${quoteEn}`, 'done'],
+    ];
+    for (const [i, [prefix, text, expected]] of cases.entries()) {
+      const r = await inbound(S, prefix + subject(sent[i]), text);
+      assert.equal(r.status, 200); assert.equal(r.data.outcome, expected, `réponse « ${text.split('\n')[0]} » : ${r.data.outcome} au lieu de ${expected}`);
+      assert.equal(reqRow(sent[i].id).status, expected, 'statut enregistré');
+    }
+    // Relance : son objet contient aussi « demande d’effacement ».
+    const r = await inbound(S, `Re: Relance — demande d’effacement sans réponse [OUBLI-${sent[8].token}]`, 'Nous traitons votre demande.');
+    assert.equal(r.data.outcome, 'in_progress');
+    // La qualification par le support lit la réponse de la même façon (sans rien enregistrer).
+    const sim = await S.call('POST', '/admin/inbound/simulate', { subject: 'Re: ' + subject(sent[9]), text: cases[0][1] }, ADM);
+    assert.equal(sim.data.outcome, 'action_required'); assert.equal(reqRow(sent[9].id).status, 'sent');
+  }
+  step('réponses entrantes : objet « Re: Demande d’effacement… » et texte cité ignorés ; vérification, refus, accusé, absence de données reconnus');
+
   console.log(`✔ Régressions validées (${passed} groupes de vérifications).`);
 } catch (e) {
   console.error('✘ Échec :', e.message);

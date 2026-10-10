@@ -116,12 +116,27 @@ function getRequest(id) {
 const getBroker = (id) => (INT.test(String(id)) ? q.get('SELECT * FROM brokers WHERE id = ?', Number(id)) : null);
 const statusCounts = (rows) => { const o = Object.fromEntries(STATUSES.map((s) => [s, 0])); rows.forEach((r) => { o[r.status] = r.n; }); return o; };
 const lastTickAt = () => (typeof scheduler.lastTickAt === 'string' ? scheduler.lastTickAt : typeof scheduler.lastTickAt === 'function' ? scheduler.lastTickAt() : null);
-// Même classification que le webhook /api/inbound (routes.js), pour aider le support à qualifier une réponse collée.
+// Lecture automatique d'une réponse de courtier, partagée par le webhook /api/inbound (routes.js) et la qualification
+// par le support. Seul le texte nouveau compte : les lignes citées (« > »), tout ce qui suit un en-tête de citation
+// (« Le … a écrit : », « On … wrote: », « De : … », « -----Original Message----- ») et les intitulés de nos propres
+// courriers sont ignorés. Sans cela, l'objet « Re: Demande d’effacement… », que le courrier demande de conserver,
+// faisait lire toute réponse comme une confirmation. Ordre : aucune donnée détenue (rien à effacer), vérification
+// demandée, refus, traitement à venir, effacement confirmé ; à défaut, accusé de réception.
+const QUOTE_START = /^\s*(?:le\s.{1,200}\sa\s+écrit\s*:|on\s.{1,200}\swrote\s*:|-{2,}\s*(?:original message|message d['’]origine|forwarded message|message transféré)|_{10,}\s*$|(?:de|from)\s*:\s.*@)/i;
+const OWN_SUBJECTS = /demande d['’]effacement de données personnelles|relance\s*[—–-]\s*demande d['’]effacement sans réponse|vérification de l['’]adresse de contact/gi;
+const REPLY_RULES = [
+  ['done', /(aucune (?:donn[ée]e|fiche|trace)|ne (?:d[ée]tenons|disposons|poss[ée]dons|conservons|traitons) (?:aucune|pas|plus)|(?:no|not any) (?:personal )?(?:data|records?|information|profiles?|listings?) (?:about|on|for|relating|regarding|matching|associated|linked)|(?:cannot|can['’]t|could not|couldn['’]t|unable to|did not|didn['’]t|do not|don['’]t) (?:find|locate)|(?:do not|don['’]t) (?:hold|have|store|process) any)/],
+  ['action_required', /(v[ée]rifi(?:er|cation)\s+(?:de\s+|d['’])?(?:votre|l['’]|son|sa|leur)\s*identit|confirm(?:er|ez)?\s+(?:your|votre|l['’]|son|sa|leur|their|the)\s*identit|verify\s+(?:your|the|their|his|her)\s+identity|identity\s+verification|pi[èe]ce\s+d['’]identit|justificatif|proof\s+of\s+(?:identity|residen|address)|photo\s+id|cli(?:quer|quez)\s+sur\s+le\s+lien|click\s+(?:on\s+)?the\s+(?:link|button)|lien\s+de\s+confirmation|confirmation\s+link|formulaire\s+en\s+ligne|online\s+form|web\s+form)/],
+  ['refused', /(refus|d[ée]clin|cannot|can['’]t|unable to|not able to|ne (?:pouvons|pourrons|sommes) pas|impossible de|pas en mesure|not applicable|n['’]est pas applicable|exempt)/],
+  ['in_progress', /(will be (?:deleted|removed|erased|processed)|will (?:delete|remove|erase|process)|seront?\s+(?:supprim|effac|trait)|allons\s+(?:supprimer|effacer|traiter|proc[ée]der)|traiterons|supprimerons|effacerons)/],
+  ['done', /(supprim(?:é|ée|és|ées)(?![a-z])|effac(?:é|ée|és|ées)(?![a-z])|retir(?:é|ée|és|ées)(?![a-z])|d[ée]sindex|d[ée]sinscri|anonymis|proc[ée]d[ée] à (?:la suppression|l['’]effacement)|suppression (?:a été|est) effectu|deleted|removed|erased|purged|anonymi[sz]ed|no longer|opted[ -]out|completed)/],
+];
 export const classifyReply = (text) => {
-  const t = String(text || '').toLowerCase();
-  return /(supprim|effac|deleted|removed|erased|no longer|opted out|completed)/.test(t) ? 'done'
-    : /(v[ée]rif|verify|confirm your identity|identity|pièce d|proof|photo id)/.test(t) ? 'action_required'
-    : /(refus|decline|cannot|unable|not applicable|exempt)/.test(t) ? 'refused' : 'in_progress';
+  const kept = [];
+  for (const line of String(text || '').split(/\r?\n/)) { if (QUOTE_START.test(line)) break; if (!/^\s*>/.test(line)) kept.push(line); }
+  const t = kept.join('\n').replace(OWN_SUBJECTS, ' ').toLowerCase();
+  for (const [outcome, re] of REPLY_RULES) if (re.test(t)) return outcome;
+  return 'in_progress';
 };
 
 /* ---------- Vue d'ensemble ---------- */
