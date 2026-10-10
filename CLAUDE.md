@@ -64,6 +64,8 @@ Sans `.env`, le serveur tourne en mode développement : abonnement simulé, cour
 - Mobile : pas de débordement horizontal à 360, 390, 768, 820 et 1024 px, ni sur le document ni sur un `.sheet`. Les cibles tactiles font au moins 44 px.
 - Le tableau de bord se rafraîchit toutes les 6 s. Ne remplace jamais toute la vue pendant le rafraîchissement : cela fait perdre le focus.
 - Un texte `.vh` (position absolue) dans un conteneur défilant déborde de la page si ce conteneur n’est pas positionné : `.tbl-wrap` est en `position: relative` pour cette raison.
+- Accès support : la garde de `server/index.js` refuse toute méthode non sûre quand `req.impersonator` est défini, sauf `SUPPORT_ALLOWED` (retour et déconnexion). Une nouvelle route d’écriture est donc bloquée par défaut pendant un accès support : n’ajoutez une exception que délibérément.
+- Une suspension se vérifie par `isSuspended(u)` (`auth.js`) ; le planificateur applique la même règle dans `isEligible`. Gardez les deux alignés.
 
 ## Sécurité
 
@@ -81,7 +83,8 @@ Fait et poussé :
 - Landing page, application abonné en style dossier, backend complet (inscription, profils, mandat, abonnement, demandes, relances, réponses, export, suppression).
 - Correctifs des trois relectures (`docs/handoff/`) et accessibilité : vérifiés au navigateur à 1280 et 390 px (débordements à 360–1280 px, ids, labels, focus pendant le rafraîchissement, erreurs annoncées).
 - Tableau de bord : exposition sur 12 semaines, catégories, sensibilité, recherche, tri, filtres avec compteurs, « Afficher plus », journal de 8 entrées.
-- Panel d’administration complet (vue d’ensemble, utilisateurs, demandes, courtiers, courriers, réponses entrantes, contacts, système, audit) et `scripts/admin.test.mjs`.
+- Panel d’administration complet (vue d’ensemble, utilisateurs, demandes, courtiers, courriers, réponses entrantes, contacts, sécurité, système, audit) et `scripts/admin.test.mjs` (16 groupes).
+- Outils de support : suspension, liste de blocage, accès au compte en lecture seule, sessions par compte, notes internes, message, changement d’adresse, export RGPD par l’admin, annonce globale.
 - `npm test` passe (trois suites). README à jour.
 
 Pistes suivantes (non commencées) :
