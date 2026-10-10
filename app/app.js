@@ -34,7 +34,16 @@
     var init = { method: opts.method || (opts.body ? 'POST' : 'GET'), headers: {}, credentials: 'same-origin' };
     if (opts.body !== undefined) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(opts.body); }
     return fetch('/api' + path, init).then(function (r) {
-      return r.text().then(function (t) { var d; try { d = t ? JSON.parse(t) : {}; } catch (e) { d = { error: 'Réponse invalide du serveur.' }; } if (!r.ok) { var err = new Error(d.error || ('Erreur ' + r.status)); err.status = r.status; throw err; } return d; });
+      return r.text().then(function (t) {
+        var d; try { d = t ? JSON.parse(t) : {}; } catch (e) { d = { error: 'Réponse invalide du serveur.' }; }
+        if (!r.ok) {
+          var err = new Error(d.error || ('Erreur ' + r.status)); err.status = r.status;
+          // Session expirée ou fermée ailleurs : retour à la connexion, quel que soit l'écran (pas seulement le tableau de bord).
+          if (r.status === 401 && state.user && path !== '/auth/login') { resetSession(); toast('Session expirée' + NBSP + ': reconnectez-vous.', true); go('login'); }
+          throw err;
+        }
+        return d;
+      });
     });
   }
   function params() { var h = location.hash.slice(1), i = h.indexOf('?'); var out = { route: i < 0 ? h : h.slice(0, i), q: {} }; if (i >= 0) new URLSearchParams(h.slice(i + 1)).forEach(function (v, k) { out.q[k] = v; }); return out; }
@@ -437,7 +446,7 @@
 
   views.billing = function () {
     var u = state.user;
-    var status = '<section class="sheet" aria-labelledby="sub-h"><div class="sheet__head"><h2 id="sub-h">Votre abonnement</h2>' + chip(u.subscription_status, subLabel(u.subscription_status)) + '</div><div class="sheet__body"><dl class="kv"><dt>Offre</dt><dd>' + (u.plan && state.config.plans[u.plan] ? esc(state.config.plans[u.plan].name) + SEP + (u.billing === 'annual' ? 'annuel (ancienne formule)' : 'mensuel') : '—') + '</dd><dt>Paiement</dt><dd>' + (u.billing_mode === 'stripe' ? 'Carte via Stripe' : u.billing_mode === 'simulated' ? 'Simulé (environnement de test)' : '—') + '</dd>' + (u.subscription_ends_at ? '<dt>Fin d’accès</dt><dd>' + fmtDate(u.subscription_ends_at) + '</dd>' : '') + '</dl></div>' + (u.subscription_status === 'active' ? '<div class="sheet__foot"><button class="btn btn--danger btn--sm" type="button" id="cancel-sub">Résilier l’abonnement</button><span class="mono">Satisfait ou remboursé 30' + NBSP + 'jours</span></div>' : '') + '</section>';
+    var status = '<section class="sheet" aria-labelledby="sub-h"><div class="sheet__head"><h2 id="sub-h">Votre abonnement</h2>' + chip(u.subscription_status, subLabel(u.subscription_status)) + '</div><div class="sheet__body"><dl class="kv"><dt>Offre</dt><dd>' + (u.plan && state.config.plans[u.plan] ? esc(state.config.plans[u.plan].name) + SEP + (u.billing === 'annual' ? 'annuel (ancienne formule)' : 'mensuel') : '—') + '</dd><dt>Paiement</dt><dd>' + (u.billing_mode === 'stripe' ? 'Carte via Stripe' : u.billing_mode === 'simulated' ? 'Simulé (environnement de test)' : '—') + '</dd>' + (u.subscription_ends_at ? '<dt>Fin d’accès</dt><dd>' + fmtDate(u.subscription_ends_at) + '</dd>' : '') + '</dl></div>' + (u.subscription_status === 'active' || u.subscription_status === 'past_due' ? '<div class="sheet__foot"><button class="btn btn--danger btn--sm" type="button" id="cancel-sub">Résilier l’abonnement</button><span class="mono">Satisfait ou remboursé 30' + NBSP + 'jours</span></div>' : '') + '</section>';
     return '<div class="page-head"><div><span class="mono">Abonnement</span><h1>Un prix clair. Une <em>seule</em> mission.</h1></div></div><div class="stack">' + status + plansBlock() + '</div>';
   };
 

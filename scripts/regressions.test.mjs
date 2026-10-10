@@ -8,7 +8,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
+import { createRequire } from 'node:module';
 import { discoverContact } from '../server/sitediscovery.js';
+
+// Navigateur pour les vérifications de l'application (facultatif : ignorées si Playwright n'est pas installé).
+const playwright = (() => { try { return createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE || '/opt/node-tools/node_modules/playwright'); } catch { return null; } })();
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'oubli-reg-'));
@@ -415,6 +419,44 @@ try {
     r2db.close(); await R2.stop();
   }
   step('reprise au démarrage : un contact saisi par l’équipe ne reste pas bloqué « en recherche »');
+
+  /* ---------- 14. Application (navigateur) : session expirée, abonnement impayé ---------- */
+  // Une action après expiration de la session affichait « Connectez-vous pour continuer. » sous le formulaire, la
+  // navigation restant affichée (seul le tableau de bord renvoyait à la connexion). Un abonnement « paiement en
+  // attente » n'offrait aucun bouton de résiliation alors que Stripe continue de relancer le prélèvement.
+  if (!playwright) console.log('  · navigateur indisponible (PLAYWRIGHT_MODULE) : vérifications de l’application ignorées');
+  else {
+    const browser = await playwright.chromium.launch();
+    try {
+      const M = await member(S, { launch: false });
+      const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+      await ctx.addCookies([{ name: 'oubli_sid', value: M.cookie.split('=')[1], domain: 'localhost', path: '/' }]);
+      const page = await ctx.newPage();
+      const jsErrors = []; page.on('pageerror', (e) => jsErrors.push(e.message));
+      await page.goto(S.origin + '/app/#dossier');
+      await page.waitForSelector('.profile-form');
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(M.id);
+      await page.locator('.profile-form button[type="submit"]').first().click();
+      await page.waitForURL(/#login$/, { timeout: 5000 });
+      await page.waitForSelector('#login-form');
+      assert.equal(await page.isVisible('#nav'), false, 'navigation masquée');
+      assert.match(await page.textContent('#toast'), /Session expirée/);
+      // Abonnement impayé : la résiliation reste possible.
+      const P = await member(S, { launch: false });
+      await S.call('POST', `/admin/users/${P.id}/subscription`, { status: 'past_due' }, ADM);
+      await ctx.clearCookies();
+      await ctx.addCookies([{ name: 'oubli_sid', value: P.cookie.split('=')[1], domain: 'localhost', path: '/' }]);
+      await page.goto(S.origin + '/app/?abonne=2#billing');   // nouvelle adresse : rechargement complet avec le nouveau cookie
+      await page.waitForSelector('#sub-h');
+      assert.ok(await page.isVisible('#cancel-sub'), 'bouton « Résilier l’abonnement » proposé');
+      await page.click('#cancel-sub'); await page.click('#cancel-sub');
+      await page.waitForFunction(() => /résilié/i.test(document.querySelector('#toast').textContent));
+      assert.equal(db.prepare('SELECT subscription_status FROM users WHERE id = ?').get(P.id).subscription_status, 'canceled');
+      assert.deepEqual(jsErrors, []);
+      await ctx.close();
+    } finally { await browser.close(); }
+  }
+  step('application : session expirée → retour à la connexion ; abonnement impayé résiliable');
 
   console.log(`✔ Régressions validées (${passed} groupes de vérifications).`);
 } catch (e) {
