@@ -2,7 +2,7 @@
 
 Service « type Incogni » : une landing page, une application abonné et une API qui envoient, suivent et relancent des demandes d'effacement (art. 17 RGPD, CCPA) auprès des courtiers en données et des sites de recherche de personnes.
 
-> Marque et données fictives (prix, avis, chiffres du tableau de bord) : à remplacer avant mise en production.
+> Marque, témoignages et chiffres du tableau de bord illustré de la landing : fictifs, à remplacer avant la mise en production. Les prix (5 € et 9,99 € par mois) et le nombre de courtiers (50) sont ceux du produit.
 
 ## Démarrer en 30 secondes
 
