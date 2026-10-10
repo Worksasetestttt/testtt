@@ -527,14 +527,20 @@
       sInput.removeAttribute('aria-invalid');
       sMsg.classList.remove('is-error'); sMsg.textContent = 'Ouverture du dossier…';
       sBtn.disabled = true;
-      setTimeout(function () {
+      var period = billing ? billing.getAttribute('data-period') || 'annual' : 'annual';
+      var appUrl = '/app/#signup?email=' + encodeURIComponent(v) + '&plan=' + encodeURIComponent(chosenPlan) + '&billing=' + encodeURIComponent(period);
+      /* Avec le serveur : ouverture du dossier dans l'application. Page servie seule (aperçu statique) : confirmation simulée. */
+      var simulate = function () {
         sBtn.disabled = false;
         sMsg.innerHTML = '';
         var s = document.createElement('span'); s.className = 'stamp stamp--small stamp-anim'; s.textContent = 'Dossier ouvert';
         sMsg.appendChild(s); sMsg.appendChild(document.createTextNode(' Nous vous écrivons pour signer le mandat. Première vague sous 48' + NBSP + 'h.'));
         void s.getBoundingClientRect(); s.classList.add('is-stamped');
         sInput.value = '';
-      }, 600);
+      };
+      if (window.fetch && location.protocol !== 'file:') {
+        fetch('/api/health', { cache: 'no-store' }).then(function (r) { if (r.ok) window.location.href = appUrl; else simulate(); }).catch(simulate);
+      } else setTimeout(simulate, 600);
     });
     sInput.addEventListener('input', function () { if (sMsg.classList.contains('is-error')) { sMsg.textContent = ''; sMsg.classList.remove('is-error'); sInput.removeAttribute('aria-invalid'); } });
   }
@@ -576,14 +582,18 @@
       input.removeAttribute('aria-invalid');
       msg.classList.remove('is-error'); msg.textContent = 'Envoi…';
       btn.disabled = true;
-      setTimeout(function () {
+      var done = function () {
         btn.disabled = false;
         msg.innerHTML = '';
         var s = document.createElement('span'); s.className = 'stamp stamp--small stamp-anim'; s.textContent = 'Inscrit';
         msg.appendChild(s); msg.appendChild(document.createTextNode(' À bientôt.'));
         void s.getBoundingClientRect(); s.classList.add('is-stamped');
         input.value = '';
-      }, 600);
+      };
+      var fail = function () { btn.disabled = false; msg.classList.add('is-error'); msg.textContent = 'Inscription impossible pour le moment. Réessayez plus tard.'; };
+      if (window.fetch && location.protocol !== 'file:') {
+        fetch('/api/newsletter', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: v }) }).then(function (r) { if (r.ok) done(); else fail(); }).catch(fail);
+      } else setTimeout(done, 600);
     });
     input.addEventListener('input', function () { if (msg.classList.contains('is-error')) { msg.textContent = ''; msg.classList.remove('is-error'); input.removeAttribute('aria-invalid'); } });
   }

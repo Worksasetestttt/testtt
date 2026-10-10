@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#F6F1E8">
+  <meta name="robots" content="noindex">
+  <title>Oubli — Votre dossier</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,300..700,0..100;1,9..144,300..700,0..100&family=Instrument+Sans:ital,wght@0,400..700;1,400..700&family=DM+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/app/app.css">
+</head>
+<body>
+  <a class="skip" href="#view">Aller au contenu</a>
+  <header class="top">
+    <div class="top__inner">
+      <a class="logo" href="/" aria-label="Oubli — retour à l’accueil">
+        <svg viewBox="0 0 32 32" width="26" height="26" fill="none" aria-hidden="true"><circle cx="16" cy="16" r="10.5" stroke="currentColor" stroke-width="3.2"/><path d="M3.5 17.8 L28.5 14.2" stroke="#C8471F" stroke-width="3.2" stroke-linecap="round"/></svg>
+        <span>Oubli</span>
+      </a>
+      <nav class="top__nav" id="nav" aria-label="Application" hidden>
+        <a href="#dashboard" data-route="dashboard">Tableau de bord</a>
+        <a href="#dossier" data-route="dossier">Dossier</a>
+        <a href="#billing" data-route="billing">Abonnement</a>
+        <a href="#settings" data-route="settings">Paramètres</a>
+        <a href="#admin" data-route="admin" id="nav-admin" hidden>Admin</a>
+      </nav>
+      <div class="top__user" id="top-user" hidden>
+        <span class="mono" id="top-email"></span>
+        <button class="btn btn--ghost btn--sm" type="button" id="logout">Se déconnecter</button>
+      </div>
+    </div>
+  </header>
+  <main id="view" class="view" tabindex="-1" aria-live="polite"></main>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script src="/app/app.js"></script>
+</body>
+</html>

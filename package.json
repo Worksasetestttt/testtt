@@ -1,0 +1,17 @@
+{
+  "name": "oubli",
+  "version": "1.0.0",
+  "description": "Oubli — retrait automatisé de données personnelles auprès des courtiers en données (landing page + application + API).",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env server/index.js",
+    "dev": "node --watch --disable-warning=ExperimentalWarning --env-file-if-exists=.env server/index.js",
+    "test": "node --disable-warning=ExperimentalWarning scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "nodemailer": "^7.0.0"
+  }
+}
