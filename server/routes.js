@@ -336,7 +336,7 @@ api.delete('/account', requireAuth, rateLimit({ max: 5 }), wrap(async (req, res)
   // n'est supprimé : sans compte, plus personne ne pourrait arrêter les prélèvements.
   if (['active', 'past_due'].includes(u.subscription_status)) {
     try { await cancelSubscription(u); }
-    catch (e) { console.error(`[billing] résiliation à la suppression (${req.id}) :`, e.message); return bad(res, 'La résiliation de l’abonnement n’a pas pu être confirmée : le compte n’a pas été supprimé. Réessayez dans quelques instants.', 502); }
+    catch (e) { console.error(`[billing] résiliation à la suppression (${req.id}) :`, e.message); return bad(res, 'La résiliation de l’abonnement n’a pas pu être confirmée : le compte n’a pas été supprimé. Réessayez dans quelques instants.', 502); }
   }
   db.exec('BEGIN');
   try {

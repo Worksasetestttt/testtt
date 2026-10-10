@@ -160,7 +160,7 @@ export async function applyOutcome(r, outcome, note = '') {
   const broker = q.get('SELECT * FROM brokers WHERE id = ?', r.broker_id);
   if (!user || !broker) return { applied: false };
   if ((outcome === 'in_progress' || outcome === 'action_required') && !AWAITING.includes(r.status)) {
-    return { applied: false, error: ['done', 'refused'].includes(r.status) ? 'Cette demande est close (effacée ou refusée) : un accusé de réception ou une demande de vérification ne la rouvre pas.' : 'Cette demande n’est pas encore partie : elle ne peut être ni en cours de traitement ni en attente de vérification.' };
+    return { applied: false, error: ['done', 'refused'].includes(r.status) ? 'Cette demande est close (effacée ou refusée) : un accusé de réception ou une demande de vérification ne la rouvre pas.' : 'Cette demande n’est pas encore partie : elle ne peut être ni en cours de traitement ni en attente de vérification.' };
   }
   note = String(note || '').slice(0, 300);
   const at = now();

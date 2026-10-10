@@ -46,13 +46,13 @@ export async function startCheckout(user, plan, billing) {
   if (!user || user.deleted_at) throw new Error('Compte introuvable.');
   // Offre trop petite pour le dossier : les proches en trop resteraient protégés sans être couverts par l'abonnement.
   const n = q.get('SELECT COUNT(*) AS c FROM profiles WHERE user_id = ?', user.id).c;
-  if (n > p.members) throw new HttpError(409, `Votre dossier protège ${n} personnes : l’offre ${p.name} en couvre ${p.members === 1 ? 'une seule' : p.members}. Retirez d’abord ${n - p.members === 1 ? 'un proche' : `${n - p.members} proches`} depuis la page Dossier.`);
+  if (n > p.members) throw new HttpError(409, `Votre dossier protège ${n} personnes : l’offre ${p.name} en couvre ${p.members === 1 ? 'une seule' : p.members}. Retirez d’abord ${n - p.members === 1 ? 'un proche' : `${n - p.members} proches`} depuis la page Dossier.`);
   if (!STRIPE_KEY) {
     q.run(`UPDATE users SET plan = ?, billing = ?, subscription_status = 'active', billing_mode = 'simulated', subscription_ends_at = NULL WHERE id = ?`, plan, billing, user.id);
     logEvent(user.id, 'billing', `Abonnement ${label(plan, billing)} activé en mode simulé.`);
     return { mode: 'simulated', url: `${APP_URL}/app/#dashboard` };
   }
-  if (user.subscription_status === 'active' && user.billing_mode === 'stripe' && user.stripe_subscription_id) throw new HttpError(409, 'Un abonnement est déjà actif sur ce compte : résiliez-le avant d’en souscrire un autre.');
+  if (user.subscription_status === 'active' && user.billing_mode === 'stripe' && user.stripe_subscription_id) throw new HttpError(409, 'Un abonnement est déjà actif sur ce compte : résiliez-le avant d’en souscrire un autre.');
   const session = await stripe('POST', '/checkout/sessions', {
     mode: 'subscription',
     client_reference_id: user.id,

@@ -395,7 +395,7 @@ admin.delete('/users/:id', wrap(async (req, res) => {
   // Comme la suppression par l'abonné : abonnement actif ou impayé résilié d'abord, rien n'est supprimé si Stripe échoue.
   if (['active', 'past_due'].includes(u.subscription_status)) {
     try { await cancelSubscription(u); }
-    catch (e) { console.error(`[admin] résiliation Stripe impossible à la suppression (${req.id}) :`, e.message); return bad(res, 'Stripe n’a pas confirmé la résiliation : le compte n’a pas été supprimé. Réessayez dans quelques instants.', 502); }
+    catch (e) { console.error(`[admin] résiliation Stripe impossible à la suppression (${req.id}) :`, e.message); return bad(res, 'Stripe n’a pas confirmé la résiliation : le compte n’a pas été supprimé. Réessayez dans quelques instants.', 502); }
   }
   db.exec('BEGIN');
   try {
