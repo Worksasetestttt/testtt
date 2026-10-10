@@ -97,13 +97,17 @@ function guardedLookup(hostname, options, callback) {
     callback(null, list[0].address, list[0].family);
   });
 }
-// Lecture d'une page HTML : ports 80/443, redirections revérifiées, durée et taille plafonnées.
-export function safeFetch(url, { timeoutMs = 6000, maxBytes = 600000, redirects = 3 } = {}) {
+// Lecture d'une page HTML : ports 80/443, redirections revérifiées, taille plafonnée, durée plafonnée. timeoutMs borne
+// aussi la durée totale (redirections comprises) : le délai d'inactivité seul ne coupe jamais un site qui envoie un octet
+// de temps en temps, et la connexion resterait ouverte indéfiniment.
+export function safeFetch(url, { timeoutMs = 6000, maxBytes = 600000, redirects = 3, deadline = Date.now() + timeoutMs } = {}) {
   return new Promise((resolve, reject) => {
     let u;
     try { u = new URL(url); } catch { return reject(new Error('URL invalide.')); }
     const check = normalizeSite(u.href);
     if (check.error) return reject(new Error(check.error));
+    const left = deadline - Date.now();
+    if (left <= 0) return reject(new Error('Délai dépassé.'));
     const lib = u.protocol === 'https:' ? https : http;
     const req = lib.request(u, { method: 'GET', lookup: guardedLookup, headers: { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.1', 'Accept-Language': 'fr,en;q=0.8' }, timeout: timeoutMs }, (res) => {
       const status = res.statusCode || 0;
@@ -112,7 +116,7 @@ export function safeFetch(url, { timeoutMs = 6000, maxBytes = 600000, redirects 
         if (redirects <= 0) return reject(new Error('Trop de redirections.'));
         let next;
         try { next = new URL(res.headers.location, u).href; } catch { return reject(new Error('Redirection invalide.')); }
-        return safeFetch(next, { timeoutMs, maxBytes, redirects: redirects - 1 }).then(resolve, reject);
+        return safeFetch(next, { timeoutMs, maxBytes, redirects: redirects - 1, deadline }).then(resolve, reject);
       }
       const type = String(res.headers['content-type'] || '');
       if (status >= 400 || (type && !/text\/html|application\/xhtml/i.test(type))) { res.resume(); return resolve({ status, url: u.href, html: '' }); }
@@ -121,6 +125,8 @@ export function safeFetch(url, { timeoutMs = 6000, maxBytes = 600000, redirects 
       res.on('end', () => resolve({ status, url: u.href, html: Buffer.concat(chunks).toString('utf8') }));
       res.on('error', reject);
     });
+    const timer = setTimeout(() => { const e = new Error('Délai dépassé.'); reject(e); req.destroy(e); }, left);
+    req.on('close', () => clearTimeout(timer));
     req.on('timeout', () => req.destroy(new Error('Délai dépassé.')));
     req.on('error', reject);
     req.end();
