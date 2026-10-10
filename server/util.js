@@ -1,4 +1,6 @@
 // Utilitaires partagés par les routeurs : nettoyage et validation des entrées, sérialisation publique, wrapper async.
+import crypto from 'node:crypto';
+
 export const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 export const clean = (v, max = 200) => String(v ?? '').trim().slice(0, max);
 export const arr = (v, max = 10) => (Array.isArray(v) ? v : String(v ?? '').split(/[\n,;]+/)).map((s) => clean(s, 160)).filter(Boolean).slice(0, max);
@@ -45,3 +47,21 @@ export const oneOf = (v, allowed, name) => {
   if (typeof v !== 'string' || !allowed.includes(v)) throw new HttpError(400, `Champ « ${name} » invalide.`);
   return v;
 };
+
+/* ---------- Sessions (appareils connectés) ---------- */
+// Poignée d'une session : empreinte SHA-256 tronquée de l'identifiant, qui ne permet pas de le retrouver
+// (même calcul que l'administration). C'est la seule référence à une session qui sorte du serveur.
+export const sessionHandle = (id) => crypto.createHash('sha256').update(String(id)).digest('base64url').slice(0, 16);
+// Appareil approximatif d'après le User-Agent (tronqué à 200 caractères en base) : « Chrome sur macOS ».
+// L'ordre compte : un User-Agent d'Edge contient aussi « Chrome/ » et « Safari/ », celui d'un iPhone « Mac OS X ».
+const OS_RULES = [[/iPad/, 'iPad'], [/iPhone|iPod/, 'iPhone'], [/Android/, 'Android'], [/CrOS/, 'ChromeOS'], [/Mac OS X|Macintosh/, 'macOS'], [/Windows/, 'Windows'], [/Linux|X11/, 'Linux']];
+const BROWSER_RULES = [[/Edg(?:e|A|iOS)?\//, 'Edge'], [/OPR\/|Opera/, 'Opera'], [/SamsungBrowser\//, 'Samsung Internet'], [/Firefox\/|FxiOS\//, 'Firefox'], [/Chrome\/|CriOS\/|Chromium\//, 'Chrome'], [/Safari\//, 'Safari']];
+export function deviceLabel(ua) {
+  const s = String(ua ?? '').slice(0, 200);
+  if (!s.trim()) return 'Appareil inconnu';
+  const pick = (rules) => (rules.find(([re]) => re.test(s)) || [])[1] || '';
+  const os = pick(OS_RULES), browser = pick(BROWSER_RULES);
+  if (browser) return os ? `${browser} sur ${os}` : browser;
+  if (/^(?:curl|wget|python|node|undici|go-http|okhttp|java|axios|postman)/i.test(s)) return 'Application ou script';
+  return os ? `Navigateur sur ${os}` : 'Appareil inconnu';
+}

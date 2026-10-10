@@ -217,6 +217,43 @@ L’équipe Oubli`,
   };
 }
 
+// Mot de passe oublié : lien à usage unique, valable une heure. Le jeton ne figure que dans ce message (la base n’en garde
+// que l’empreinte SHA-256, et sendMail le masque dans la table mails).
+export const RESET_MINUTES = 60;
+export function passwordResetMail({ token }) {
+  return {
+    subject: 'Réinitialisation de votre mot de passe Oubli',
+    text: frTypo(`Bonjour,
+
+Une demande de réinitialisation du mot de passe a été faite pour votre compte Oubli. Pour choisir un nouveau mot de passe, ouvrez ce lien :
+${APP_URL}/app/#reset?token=${encodeURIComponent(token)}
+
+Ce lien est valable une heure et ne sert qu’une fois. Si vous demandez un autre lien, celui-ci ne fonctionnera plus.
+
+Vous n’êtes pas à l’origine de cette demande ? Ignorez ce message : votre mot de passe reste inchangé.
+
+L’équipe Oubli`),
+  };
+}
+
+// Prévient le titulaire après une réinitialisation (heure de Paris) : s’il n’en est pas l’auteur, il peut reprendre la main.
+export function passwordChangedMail({ changedAt }) {
+  const when = new Date(changedAt).toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Europe/Paris' });
+  return {
+    subject: 'Votre mot de passe Oubli a été changé',
+    text: frTypo(`Bonjour,
+
+Le mot de passe de votre compte Oubli a été changé le ${when} (heure de Paris), à l’aide du lien de réinitialisation envoyé à cette adresse. Tous les appareils connectés au compte ont été déconnectés.
+
+Si vous êtes à l’origine de ce changement, vous n’avez rien à faire.
+
+Sinon, demandez tout de suite un nouveau lien pour choisir un autre mot de passe, puis répondez à ce message pour prévenir notre équipe :
+${APP_URL}/app/#forgot
+
+L’équipe Oubli`),
+  };
+}
+
 export function mandateText({ user, profile, signedAt }) {
   return `MANDAT DE REPRÉSENTATION — version ${MANDATE_VERSION}
 
