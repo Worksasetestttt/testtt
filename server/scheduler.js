@@ -198,7 +198,8 @@ const AWAITING = ['sent', 'in_progress', 'action_required'];
 
 // Applique une réponse de courtier (webhook entrant, opérateur ou simulation) ou une remise en file par l’opérateur.
 // Renvoie { applied } ; { applied: false, error } quand la réponse ne s'applique pas à l'état de la demande.
-export async function applyOutcome(r, outcome, note = '') {
+// message : texte du journal de l'abonné pour « en cours », à la place de l'accusé de réception (réponse à vérifier).
+export async function applyOutcome(r, outcome, note = '', { message } = {}) {
   const user = q.get('SELECT * FROM users WHERE id = ?', r.user_id);
   const broker = q.get('SELECT * FROM brokers WHERE id = ?', r.broker_id);
   if (!user || !broker) return { applied: false };
@@ -228,7 +229,7 @@ export async function applyOutcome(r, outcome, note = '') {
     logEvent(user.id, 'queued', `Demande à ${broker.name} remise en file d’envoi${note ? ' — ' + note : ''}.`, ctx);
   } else {
     q.run(`UPDATE requests SET status = 'in_progress', next_check_at = NULL, note = ? WHERE id = ?`, note || 'Accusé de réception, en traitement.', r.id);
-    logEvent(user.id, 'in_progress', `${broker.name} accuse réception : demande en traitement.`, ctx);
+    logEvent(user.id, 'in_progress', message || `${broker.name} accuse réception : demande en traitement.`, ctx);
   }
   return { applied: true };
 }

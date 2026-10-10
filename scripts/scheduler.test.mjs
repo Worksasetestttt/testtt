@@ -2,6 +2,7 @@
 //   1. recherche du contact d'un site pendant laquelle l'équipe saisit l'adresse ;
 //   2. courtier ajouté au registre (brokers.json ou administration) : demandes pour les abonnés existants ;
 //   3. courtier désactivé puis réactivé : demandes jamais envoyées arrêtées, puis relancées ;
+//   4. réponses entrantes d'un expéditeur qui n'est ni le courtier ni son contact vérifié ;
 // Chaque groupe démarre ses serveurs (port libre, base temporaire, jamais data/). SCHED_ONLY=2,4 ne lance que ces groupes.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -340,6 +341,77 @@ try {
   }
   if (want(3)) step('courtier désactivé : demandes jamais parties closes (« arrêtées », cause propre, sans plainte ni refus, CSV et rapport) ; nouveau cycle à la réactivation');
 
+  /* ---------- 4. Réponses entrantes : un effacement ou un refus ne s'applique que s'il vient du courtier ---------- */
+  // /api/inbound appliquait « effacée » ou « refusée » à toute réponse citant une référence, quel que soit l'expéditeur.
+  if (want(4)) {
+    const M = await member(S);
+    await settle(S);
+    const sent = db.prepare(`SELECT id, token FROM requests WHERE user_id = ? AND status = 'sent' ORDER BY created_at`).all(M.id);
+    const DONE = 'Bonjour, vos données ont été supprimées de nos bases.', REFUSED = 'Nous ne pouvons pas donner suite à votre demande.';
+    const ref = (x) => `Re: Demande [OUBLI-${x.token}]`;
+    const domainOf = (x) => brokerOf(x.id).domain;
+    // a. Expéditeur inconnu : au plus « en cours », demande signalée à l'équipe.
+    let r = await inbound(S, ref(sent[0]), DONE, 'dpo@usurpateur.example');
+    assert.equal(r.status, 200); assert.equal(r.data.matched, true); assert.equal(r.data.outcome, 'done'); assert.equal(r.data.review, true);
+    assert.equal(r.data.status, 'in_progress');
+    let row = reqRow(sent[0].id);
+    assert.equal(row.status, 'in_progress', 'pas d’effacement enregistré'); assert.equal(row.completed_at, null); assert.equal(row.next_check_at, null);
+    assert.ok(row.review_at); assert.equal(row.review_outcome, 'done'); assert.equal(row.review_from, 'dpo@usurpateur.example');
+    // b. Domaine qui imite celui du courtier, nom affiché trompeur, expéditeur absent : refus non appliqués.
+    const d1 = domainOf(sent[1]);
+    for (const [x, from] of [[sent[1], `privacy@${d1}.usurpateur.example`], [sent[2], `"privacy@${domainOf(sent[2])}" <pirate@usurpateur.example>`], [sent[3], undefined], [sent[8], `dpo@faux${domainOf(sent[8])}`]]) {
+      r = await inbound(S, ref(x), REFUSED, from);
+      assert.equal(r.data.outcome, 'refused'); assert.equal(r.data.review, true, `expéditeur ${from} : à vérifier`);
+      assert.equal(reqRow(x.id).status, 'in_progress');
+    }
+    // c. Domaine du courtier, sous-domaine, adresse de contact vérifiée par l'équipe : appliqué.
+    r = await inbound(S, ref(sent[4]), DONE, `"Service RGPD" <DPO@${domainOf(sent[4]).toUpperCase()}>`);
+    assert.equal(r.data.review, false); assert.equal(reqRow(sent[4].id).status, 'done');
+    r = await inbound(S, ref(sent[5]), REFUSED, `privacy@mail.${domainOf(sent[5])}`);
+    assert.equal(r.data.review, false); assert.equal(reqRow(sent[5].id).status, 'refused');
+    r = await inbound(S, ref(sent[4]), DONE, 'dpo@usurpateur.example');   // déjà effacée : rien à vérifier
+    assert.equal(r.data.review, false); assert.equal(r.data.applied, false); assert.equal(reqRow(sent[4].id).review_at, null);
+    const b6 = brokerOf(sent[6].id);
+    assert.equal((await S.call('PUT', `/admin/brokers/${b6.id}`, { contact_email: 'dpo@groupe-mere.fr' }, ADM)).status, 200);   // nouvelle adresse : non vérifiée
+    r = await inbound(S, ref(sent[6]), DONE, 'dpo@groupe-mere.fr');
+    assert.equal(r.data.review, true, 'adresse de contact non vérifiée : pas digne de confiance'); assert.equal(reqRow(sent[6].id).status, 'in_progress');
+    assert.equal((await S.call('PUT', `/admin/brokers/${b6.id}`, { contact_verified: true }, ADM)).status, 200);
+    r = await inbound(S, ref(sent[6]), DONE, 'dpo@groupe-mere.fr');
+    assert.equal(r.data.review, false); assert.equal(reqRow(sent[6].id).status, 'done', 'adresse de contact vérifiée : appliqué');
+    assert.equal(reqRow(sent[6].id).review_at, null, 'un résultat fiable lève le signalement');
+    // d. Une demande de vérification n'est pas un résultat définitif : appliquée comme avant.
+    r = await inbound(S, ref(sent[7]), 'Merci de confirmer votre identité (copie d’une pièce d’identité).', 'support@helpdesk.example');
+    assert.equal(r.data.outcome, 'action_required'); assert.equal(r.data.review, false); assert.equal(reqRow(sent[7].id).status, 'action_required');
+    // e. Abonné : rien d'une décision ; ni l'expéditeur ni le signalement dans son export.
+    const dash = (await S.call('GET', '/dashboard', undefined, M.cookie)).data;
+    assert.equal(dash.requests.find((x) => x.id === sent[0].id).status, 'in_progress');
+    assert.ok(dash.events.some((e) => e.request_id === sent[0].id && /vérifie/.test(e.message)), 'journal : réponse en cours de vérification');
+    const exp = JSON.stringify((await S.call('GET', '/export', undefined, M.cookie)).data);
+    assert.ok(!exp.includes('usurpateur') && !exp.includes('review_'), 'export sans l’expéditeur ni le signalement');
+    // f. Administration : liste des réponses à vérifier, fiche de la demande, décision ou levée du signalement.
+    r = await S.call('GET', '/admin/requests?status=review', undefined, ADM);
+    assert.equal(r.status, 200);
+    const ids = r.data.requests.map((x) => x.id);
+    for (const x of [...sent.slice(0, 4), sent[8]]) assert.ok(ids.includes(x.id), 'demande à vérifier listée');
+    assert.equal(r.data.counts.review, 5);
+    const listed = r.data.requests.find((x) => x.id === sent[0].id);
+    assert.equal(listed.review_outcome, 'done'); assert.equal(listed.review_from, 'dpo@usurpateur.example');
+    r = await S.call('GET', `/admin/requests/${sent[0].id}`, undefined, ADM); assert.equal(r.data.request.review_outcome, 'done');
+    assert.equal((await S.call('GET', '/admin/stats', undefined, ADM)).data.review, 5, 'compteur pour le badge de l’onglet');
+    r = await S.call('POST', `/admin/requests/${sent[0].id}/outcome`, { outcome: 'done', note: 'confirmé par téléphone' }, ADM);
+    assert.equal(r.status, 200); row = reqRow(sent[0].id); assert.equal(row.status, 'done'); assert.equal(row.review_at, null, 'décision de l’équipe : signalement levé');
+    r = await S.call('DELETE', `/admin/requests/${sent[1].id}/review`, {}, ADM);
+    assert.equal(r.status, 200); row = reqRow(sent[1].id); assert.equal(row.review_at, null); assert.equal(row.status, 'in_progress', 'statut inchangé');
+    assert.equal((await S.call('DELETE', `/admin/requests/${sent[1].id}/review`, {}, ADM)).status, 400, 'rien à lever');
+    assert.equal((await S.call('GET', '/admin/requests?status=review', undefined, ADM)).data.total, 3);
+    r = await S.call('POST', '/admin/requests/bulk', { ids: [sent[2].id], outcome: 'refused' }, ADM);
+    assert.equal(r.data.updated, 1); assert.equal(reqRow(sent[2].id).review_at, null, 'réponses groupées : signalement levé');
+    assert.equal((await S.call('POST', `/admin/requests/${sent[3].id}/resend`, {}, ADM)).status, 200);
+    assert.equal(reqRow(sent[3].id).review_at, null, 'renvoi : signalement levé');
+    assert.equal((await S.call('GET', '/admin/requests?status=review', undefined, ADM)).data.total, 1);
+    assert.equal((await S.call('DELETE', `/admin/requests/${sent[2].id}/review`, {}, M.cookie)).status, 403, 'réservé aux administrateurs');
+  }
+  if (want(4)) step('réponses entrantes : effacement ou refus appliqués seulement depuis le domaine du courtier ou son contact vérifié ; sinon « en cours » et « à vérifier » dans l’administration');
 
 
   if (db) db.close();

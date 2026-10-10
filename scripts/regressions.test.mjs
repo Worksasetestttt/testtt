@@ -82,7 +82,8 @@ async function stripeEvent(s, type, object, id = `evt_${crypto.randomBytes(8).to
   const r = await fetch(s.base + '/billing/webhook', { method: 'POST', headers: { 'content-type': 'application/json', 'stripe-signature': `t=${t},v1=${sig}` }, body: raw });
   assert.equal(r.status, 200, `webhook ${type} : ${await r.text()}`);
 }
-const inbound = (s, subject, text) => s.call('POST', '/inbound', { subject, text, from: 'dpo@courtier.fr' }, '', { 'x-inbound-token': INBOUND });
+// Réponse entrante ; `from` doit être une adresse du courtier pour qu'un effacement ou un refus s'applique seul.
+const inbound = (s, subject, text, from = 'dpo@courtier.fr') => s.call('POST', '/inbound', { subject, text, from }, '', { 'x-inbound-token': INBOUND });
 
 try {
   /* ---------- 1. Installation dans un dossier dont le chemin contient un dossier caché ---------- */
@@ -115,7 +116,7 @@ try {
   {
     const A = await member(S);
     await settle(S);
-    const sent = db.prepare(`SELECT id, token FROM requests WHERE user_id = ? AND status = 'sent' ORDER BY created_at`).all(A.id);
+    const sent = db.prepare(`SELECT r.id, r.token, b.domain FROM requests r JOIN brokers b ON b.id = r.broker_id WHERE r.user_id = ? AND r.status = 'sent' ORDER BY r.created_at`).all(A.id);
     const subject = (r) => mailsOf(r.id)[0].subject;
     const quoteFr = '\n\nLe 3 oct. 2026 à 10:00, Oubli <demandes@oubli.example> a écrit :\n> 2. de supprimer l’ensemble de ces données (article 17 du RGPD, « droit à l’effacement ») ;\n> Identité de la personne concernée :';
     const quoteEn = '\n\nOn Sat, Oct 3, 2026 at 10:00 AM Oubli <demandes@oubli.example> wrote:\n> 2. delete all such data, including profiles, derived data, identifiers and backups;';
@@ -130,7 +131,7 @@ try {
       ['Re: ', `We have deleted all records relating to this person.${quoteEn}`, 'done'],
     ];
     for (const [i, [prefix, text, expected]] of cases.entries()) {
-      const r = await inbound(S, prefix + subject(sent[i]), text);
+      const r = await inbound(S, prefix + subject(sent[i]), text, `dpo@${sent[i].domain}`);   // réponse venue du courtier
       assert.equal(r.status, 200); assert.equal(r.data.outcome, expected, `réponse « ${text.split('\n')[0]} » : ${r.data.outcome} au lieu de ${expected}`);
       assert.equal(reqRow(sent[i].id).status, expected, 'statut enregistré');
     }

@@ -20,7 +20,7 @@
     ['audit', 'Journal d’audit', 'Chaque action d’un administrateur, horodatée et attribuée.'],
   ];
   var TAB = {}; TABS.forEach(function (t) { TAB[t[0]] = t; });
-  var BADGE = { users: ' comptes', keys: ' clés actives', requests: ' à traiter', brokers: ' contacts non vérifiés', contacts: ' messages à traiter', security: ' comptes suspendus' };
+  var BADGE = { users: ' comptes', keys: ' clés actives', requests: ' à traiter', brokers: ' contacts non vérifiés', inbound: ' réponses à vérifier', contacts: ' messages à traiter', security: ' comptes suspendus' };
   var STATUSES = ['queued', 'sent', 'in_progress', 'action_required', 'done', 'refused', 'error'];
   var OUTCOMES = [['done', 'Effacée'], ['in_progress', 'En cours'], ['action_required', 'Vérification demandée'], ['refused', 'Refus']];
   var SUBS = [['active', 'Actif'], ['past_due', 'Paiement en attente'], ['canceled', 'Résilié'], ['none', 'Aucun abonnement']];
@@ -29,8 +29,8 @@
   var SENS = [['1', 'Faible'], ['2', 'Moyenne'], ['3', 'Élevée']];
   var SORTS = [['created_desc', 'Plus récentes'], ['created_asc', 'Plus anciennes'], ['status', 'Par statut'], ['due_asc', 'Échéance proche'], ['sent_desc', 'Envoi récent'], ['broker', 'Par courtier'], ['user', 'Par abonné']];
   var ACTIONS = { 'user.role': 'Rôle modifié', 'user.subscription': 'Abonnement modifié', 'user.logout_all': 'Sessions fermées', 'user.launch': 'Demandes lancées', 'user.delete': 'Compte supprimé', 'request.outcome': 'Réponse enregistrée', 'request.resend': 'Demande renvoyée', 'request.bulk': 'Réponses groupées', 'broker.create': 'Courtier créé', 'broker.update': 'Courtier modifié', 'broker.deactivate': 'Courtier désactivé', 'broker.test_mail': 'Courrier de test', 'contact.handled': 'Message traité', 'export.csv': 'Export CSV', 'system.tick': 'Planificateur exécuté',
-    'user.suspend': 'Compte suspendu', 'user.unsuspend': 'Compte réactivé', 'user.impersonate': 'Accès au compte', 'user.impersonate_stop': 'Fin de l’accès au compte', 'user.session_revoke': 'Session fermée', 'user.note': 'Note ajoutée', 'note.delete': 'Note supprimée', 'user.message': 'Message envoyé', 'user.email': 'Adresse modifiée', 'user.export': 'Données exportées', 'blocklist.add': 'Adresse bloquée', 'blocklist.remove': 'Blocage retiré', 'settings.announcement': 'Annonce modifiée', 'broker.discover': 'Recherche du contact', 'system.reports': 'Rapports mensuels envoyés', 'key.create': 'Clés d’activation créées', 'key.revoke': 'Clé d’activation révoquée', 'system.backup': 'Sauvegarde de la base' };
-  var KEYS = { count: 'nombre', plan: 'offre', days: 'jours', max_uses: 'utilisations par clé', uses: 'utilisations', expires_at: 'date limite', hint: 'indice', batch: 'lot', until: 'jusqu’au', blocked: 'adresse bloquée', pattern: 'motif bloqué', subject: 'objet', text: 'texte', level: 'niveau', removed: 'retirée', minutes: 'minutes', note_id: 'note', was: 'motif levé', stripe: 'Stripe', note: 'note', reason: 'motif', sessions: 'sessions', created: 'créées', updated: 'mises à jour', missing: 'introuvables', rows: 'lignes', to: 'destinataire', mode: 'mode', ref: 'réf.', slug: 'slug', name: 'nom', handled: 'traité', outcome: 'résultat', file: 'fichier', bytes: 'taille', ms: 'durée', failed: 'échec' };
+    'user.suspend': 'Compte suspendu', 'user.unsuspend': 'Compte réactivé', 'user.impersonate': 'Accès au compte', 'user.impersonate_stop': 'Fin de l’accès au compte', 'user.session_revoke': 'Session fermée', 'user.note': 'Note ajoutée', 'note.delete': 'Note supprimée', 'user.message': 'Message envoyé', 'user.email': 'Adresse modifiée', 'user.export': 'Données exportées', 'blocklist.add': 'Adresse bloquée', 'blocklist.remove': 'Blocage retiré', 'settings.announcement': 'Annonce modifiée', 'broker.discover': 'Recherche du contact', 'system.reports': 'Rapports mensuels envoyés', 'key.create': 'Clés d’activation créées', 'key.revoke': 'Clé d’activation révoquée', 'system.backup': 'Sauvegarde de la base', 'request.review_dismiss': 'Réponse à vérifier classée' };
+  var KEYS = { count: 'nombre', plan: 'offre', days: 'jours', max_uses: 'utilisations par clé', uses: 'utilisations', expires_at: 'date limite', hint: 'indice', batch: 'lot', until: 'jusqu’au', blocked: 'adresse bloquée', pattern: 'motif bloqué', subject: 'objet', text: 'texte', level: 'niveau', removed: 'retirée', minutes: 'minutes', note_id: 'note', was: 'motif levé', stripe: 'Stripe', note: 'note', reason: 'motif', sessions: 'sessions', created: 'créées', updated: 'mises à jour', missing: 'introuvables', rows: 'lignes', to: 'destinataire', mode: 'mode', ref: 'réf.', slug: 'slug', name: 'nom', handled: 'traité', outcome: 'résultat', file: 'fichier', bytes: 'taille', ms: 'durée', failed: 'échec', sender: 'expéditeur', reviewed: 'réponse à vérifier traitée', stopped: 'demandes arrêtées' };
   var seq = 0, brokersById = {};
 
   /* ---------- utilitaires ---------- */
@@ -388,7 +388,7 @@
   function vRequests(d, q) {
     var c = d.counts || {}, open = (c.queued || 0) + (c.sent || 0) + (c.in_progress || 0) + (c.action_required || 0), all = STATUSES.reduce(function (a, s) { return a + (c[s] || 0); }, 0);
     var bar = '<div class="adm-bar">' + searchForm('Rechercher une demande', inp('adm-q', 'Rechercher', 'q', q.q, ' type="search" placeholder="référence, e-mail, courtier, nom" autocomplete="off" maxlength="120" data-k="q"') + sel('adm-sort', 'Trier', 'sort', SORTS, q.sort || 'created_desc', ' data-autosubmit data-k="sort"')) + '<a class="btn btn--outline btn--sm" href="/api/admin/export.csv?what=requests" download>Exporter (CSV)</a></div>';
-    var f = filters('Filtrer par statut', 'status', [['', 'Toutes', all], ['open', 'Ouvertes', open]].concat(STATUSES.filter(function (s) { return s !== 'error' || c.error || q.status === 'error'; }).map(function (s) { return [s, O.statusLabel(s), c[s] || 0]; })), q.status);
+    var f = filters('Filtrer par statut', 'status', [['', 'Toutes', all], ['open', 'Ouvertes', open]].concat(STATUSES.filter(function (s) { return s !== 'error' || c.error || q.status === 'error'; }).map(function (s) { return [s, O.statusLabel(s), c[s] || 0]; })).concat(c.review || q.status === 'review' ? [['review', 'À vérifier', c.review || 0]] : []), q.status);
     var scope = '';
     if (safeId(q.user)) scope += '<p class="notice notice--info">Demandes du compte ' + esc(d.requests[0] ? d.requests[0].email : short(q.user)) + SEP + '<a href="' + esc(href({ user: null, page: null })) + '" data-nav data-k="scope-user">retirer ce filtre</a></p>';
     if (q.broker) scope += '<p class="notice notice--info">Demandes adressées à ' + esc(d.requests[0] ? d.requests[0].broker : q.broker) + SEP + '<a href="' + esc(href({ broker: null, page: null })) + '" data-nav data-k="scope-broker">retirer ce filtre</a></p>';
@@ -414,7 +414,8 @@
       '<dt>Courtier</dt><dd>' + esc(b.name || r.broker) + '<span class="adm-sub">' + esc(b.domain || '') + SEP + esc(b.jurisdiction || '') + SEP + esc(label(BASES, b.legal_basis || r.legal_basis)) + '</span></dd>' +
       '<dt>Contact</dt><dd><span class="mono mono--plain">' + esc(b.contact_email || '—') + '</span> ' + (b.contact_verified ? chip('done', 'Vérifié') : chip('none', 'Non vérifié')) + '</dd>' +
       '<dt>Créée</dt><dd>' + stamp(r.created_at) + '</dd><dt>Envoyée</dt><dd>' + stamp(r.sent_at) + '</dd><dt>Échéance</dt><dd>' + date(r.due_at) + '</dd>' + (r.followup_sent_at ? '<dt>Relance</dt><dd>' + stamp(r.followup_sent_at) + '</dd>' : '') +
-      (r.completed_at ? '<dt>Effacée</dt><dd>' + stamp(r.completed_at) + '</dd>' : '') + (r.next_check_at ? '<dt>Revérification</dt><dd>' + date(r.next_check_at) + '</dd>' : '') + (r.note ? '<dt>Note</dt><dd>' + esc(fr(r.note)) + '</dd>' : '') + '</dl>';
+      (r.completed_at ? '<dt>Effacée</dt><dd>' + stamp(r.completed_at) + '</dd>' : '') + (r.next_check_at ? '<dt>Revérification</dt><dd>' + date(r.next_check_at) + '</dd>' : '') + (r.note ? '<dt>Note</dt><dd>' + esc(fr(r.note)) + '</dd>' : '') +
+      (r.review_at ? '<dt>À vérifier</dt><dd>' + reviewText(r) + '</dd>' : '') + '</dl>';
     var form = '<form class="adm-outcome" data-outcome-form="' + id + '" novalidate><h3>Enregistrer une réponse</h3><fieldset class="adm-radios"><legend class="vh">Résultat</legend>' + OUTCOMES.map(function (o) { return '<label class="adm-radio"><input type="radio" name="outcome" value="' + o[0] + '"> ' + o[1] + '</label>'; }).join('') + '</fieldset>' +
       inp('out-' + id + '-note', 'Note (facultative)', 'note', '', ' maxlength="300" autocomplete="off" placeholder="ex. confirmation reçue par e-mail"') + msg() +
       '<div class="btn-row"><button class="btn btn--sm" type="submit">Enregistrer</button><button class="btn btn--outline btn--sm" type="button" data-req-resend="' + id + '">Renvoyer la demande</button></div></form>';
@@ -523,7 +524,22 @@
   }
 
   /* ---------- Réponses entrantes ---------- */
-  function vInbound(sys, aud) {
+  // Réponse lue comme un effacement ou un refus, mais envoyée par une adresse qui n’est ni celle du courtier ni son contact
+  // vérifié : enregistrée au plus « en cours », en attente de la décision de l’équipe.
+  function reviewText(r) { return 'Réponse lue comme «' + NB + esc(O.statusLabel(r.review_outcome)) + NB + '», reçue le ' + esc(stamp(r.review_at)) + ' de <span class="mono mono--plain">' + esc(r.review_from || 'expéditeur inconnu') + '</span>' + NB + ': ni le domaine du courtier ni son contact vérifié.'; }
+  function vReview(d) {
+    var rows = d.requests.map(function (r) {
+      var id = esc(r.id);
+      return '<tr>' + td('Demande', '<a class="mono mono--plain ell" href="' + esc(link('requests', { q: r.token, open: r.id })) + '">' + esc(r.ref) + '</a><span class="sub">' + esc(r.broker) + '</span>') +
+        td('Abonné', '<span class="ell">' + esc(r.email) + '</span><span class="sub">statut' + NB + ': ' + esc(O.statusLabel(r.status).toLowerCase()) + '</span>') +
+        td('Lecture', chip(r.review_outcome) + '<span class="sub num">' + esc(stamp(r.review_at)) + '</span>') +
+        td('Expéditeur', '<span class="ell mono mono--plain" title="' + esc(r.review_from || '') + '">' + esc(r.review_from || '—') + '</span>') +
+        td('', '<div class="adm-acts"><button class="btn btn--xs" type="button" data-outcome="' + esc(r.review_outcome) + '" data-req="' + id + '" data-note="réponse vérifiée par l’équipe">' + (r.review_outcome === 'refused' ? 'Confirmer le refus' : 'Confirmer l’effacement') + '<span class="vh"> (' + esc(r.ref) + ')</span></button><button class="btn btn--outline btn--xs" type="button" data-review-dismiss="' + id + '">Classer sans suite<span class="vh"> (' + esc(r.ref) + ')</span></button></div>', 'act') + '</tr>';
+    }).join('');
+    return sheet('adm-ibv-h', 'Réponses à vérifier', meta(pl(d.total, 'demande', 'demandes')), '<div class="sheet__body adm-prose"><p>Un effacement ou un refus ne s’enregistre seul que s’il vient du domaine du courtier, d’un sous-domaine, ou de son adresse de contact vérifiée. Sinon la demande passe au plus «' + NB + 'En cours' + NB + '» et attend votre décision' + NB + ': confirmez après avoir vérifié la réponse, ou classez-la sans suite.</p></div>' +
+      table('Réponses à vérifier', [th('Demande'), th('Abonné'), th('Lecture'), th('Expéditeur'), th('<span class="vh">Actions</span>', 'act')], rows, 'Aucune réponse à vérifier.') + (d.total > d.requests.length ? '<div class="pager"><a class="adm-back" href="' + esc(link('requests', { status: 'review' })) + '">Voir les ' + num(d.total) + ' demandes à vérifier</a></div>' : ''));
+  }
+  function vInbound(sys, aud, rev) {
     var tok = !!(sys.env && sys.env.INBOUND_TOKEN);
     var hook = sheet('adm-ib-h', 'Réception automatique', tok ? chip('active', 'Jeton configuré') : chip('refused', 'Jeton absent'), '<div class="sheet__body adm-prose"><p>Votre fournisseur d’e-mail entrant (Postmark, Mailgun, SendGrid…) transmet chaque réponse en POST JSON <code>{from, subject, text}</code> sur <code>/api/inbound</code>, avec l’en-tête <code>X-Inbound-Token</code>. La référence <code>OUBLI-…</code> présente dans l’objet ou le corps rattache la réponse à sa demande, qui est qualifiée automatiquement.</p>' +
       (tok ? '' : '<p class="notice">Sans <code>INBOUND_TOKEN</code> (16' + NB + 'caractères minimum), le webhook refuse tout envoi' + NB + ': qualifiez les réponses à la main ci-dessous.</p>') + '</div>');
@@ -532,7 +548,7 @@
       '<div class="f f--full"><label for="ib-text">Texte de la réponse</label><textarea id="ib-text" name="text" class="adm-textarea" rows="7" maxlength="20000" aria-describedby="ib-text-hint"></textarea><span class="hint" id="ib-text-hint">Collez l’e-mail du courtier' + NB + ': la référence est retrouvée dans le texte si vous ne la saisissez pas.</span></div></div>' + msg() + '</div>' +
       '<div class="sheet__foot"><button class="btn" type="submit">Analyser la réponse</button><span class="mono">La décision reste la vôtre</span></div></form><div id="inbound-result" aria-live="polite"></div>';
     var recent = sheet('adm-ibr-h', 'Dernières décisions sur les demandes', meta('Journal d’audit'), auditTable(aud.entries || [], 'Dernières décisions sur les demandes', 'Aucune décision enregistrée.', true));
-    return hook + form + recent;
+    return vReview(rev) + hook + form + recent;
   }
   function vSim(r) {
     if (!r.matched) return '<p class="notice" role="status">' + esc(fr(r.reason || 'Aucune demande ne correspond.')) + '</p>';
@@ -596,7 +612,7 @@
     requests: function (q) { return api('/admin/requests' + qs({ q: q.q, status: q.status, sort: q.sort, broker: q.broker, user: q.user, page: q.page })).then(function (d) { return vRequests(d, q); }); },
     brokers: function (q) { return api('/admin/brokers').then(function (d) { return vBrokers(d, q); }); },
     mails: function (q) { return api('/admin/mails' + qs({ q: q.q, mode: q.mode, user: q.user, request: q.request, page: q.page })).then(function (d) { return vMails(d, q); }); },
-    inbound: function () { return Promise.all([api('/admin/system'), api('/admin/audit' + qs({ action: 'request.', per: 12 }))]).then(function (r) { return vInbound(r[0], r[1]); }); },
+    inbound: function () { return Promise.all([api('/admin/system'), api('/admin/audit' + qs({ action: 'request.', per: 12 })), api('/admin/requests' + qs({ status: 'review', sort: 'review', per: 50 }))]).then(function (r) { return vInbound(r[0], r[1], r[2]); }); },
     contacts: function (q) { return Promise.all([api('/admin/contacts' + qs({ status: q.status, page: q.page })), api('/admin/newsletter' + qs({ page: q.npage }))]).then(function (r) { return vContacts(r[0], r[1], q); }); },
     security: function () { return api('/admin/security').then(vSecurity); },
     system: function () { return api('/admin/system').then(vSystem); },
@@ -623,8 +639,8 @@
   function reload(changes, focusKey) { history.replaceState(null, '', href(changes || {})); return loadMain(O.params().q, focusKey); }
   function setBadges(s) {
     var rs = s.requests_by_status || {}, b = s.brokers || {};
-    var v = { users: s.users, keys: (s.keys || {}).active, requests: (rs.action_required || 0) + (rs.error || 0), brokers: (b.active || 0) - (b.verified || 0), contacts: s.contacts_open, security: s.suspended };
-    var hot = { requests: v.requests > 0, brokers: s.mail_mode === 'smtp' && v.brokers > 0, contacts: v.contacts > 0 };
+    var v = { users: s.users, keys: (s.keys || {}).active, requests: (rs.action_required || 0) + (rs.error || 0), brokers: (b.active || 0) - (b.verified || 0), inbound: s.review, contacts: s.contacts_open, security: s.suspended };
+    var hot = { requests: v.requests > 0, brokers: s.mail_mode === 'smtp' && v.brokers > 0, inbound: v.inbound > 0, contacts: v.contacts > 0 };
     Object.keys(v).forEach(function (k) { var el = $('[data-badge="' + k + '"]'); if (!el) return; el.innerHTML = '<span class="vh">,' + NB + '</span>' + num(v[k]) + '<span class="vh">' + BADGE[k] + '</span>'; el.hidden = !v[k]; el.classList.toggle('is-hot', !!hot[k]); });
   }
   function refreshBadges() { return api('/admin/stats').then(setBadges).catch(function () {}); }
@@ -661,6 +677,11 @@
       api('/admin/requests/' + encodeURIComponent(t.getAttribute('data-req')) + '/outcome', { body: { outcome: o, note: t.getAttribute('data-note') || '' } }).then(function () { done('Réponse enregistrée' + NB + ': ' + label(OUTCOMES, o).toLowerCase() + '.'); }).catch(function (err) { fail(err); lock(t, false); });
     }
     else if (t.hasAttribute('data-req-open')) openRequest(t.getAttribute('data-req-open'));
+    else if (t.hasAttribute('data-review-dismiss')) {
+      if (!arm(t, 'Confirmer le classement')) return;
+      lock(t, true);
+      api('/admin/requests/' + encodeURIComponent(t.getAttribute('data-review-dismiss')) + '/review', { method: 'DELETE', body: {} }).then(function () { done('Réponse classée sans suite' + NB + ': la demande garde son statut.'); }).catch(function (err) { fail(err); lock(t, false); });
+    }
     else if (t.hasAttribute('data-req-resend')) {
       if (!arm(t, 'Confirmer le renvoi')) return;
       var rid = t.getAttribute('data-req-resend'); lock(t, true);

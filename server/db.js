@@ -156,6 +156,11 @@ ensureColumn('brokers', 'discovered_at', 'TEXT');
 ensureColumn('brokers', 'added_by', 'TEXT');
 ensureColumn('brokers', 'created_at', 'TEXT');
 ensureColumn('requests', 'source_url', 'TEXT');         // page où figure la fiche, citée dans le courrier
+// Réponse entrante à vérifier par l'équipe (routes.js, /api/inbound) : effacement ou refus annoncé par un expéditeur qui
+// n'est ni le courtier ni son contact vérifié. Interne : jamais montré à l'abonné ni exporté.
+ensureColumn('requests', 'review_at', 'TEXT');
+ensureColumn('requests', 'review_outcome', 'TEXT');     // done | refused (lecture automatique de la réponse)
+ensureColumn('requests', 'review_from', 'TEXT');        // adresse de l'expéditeur
 // Rapport mensuel par e-mail (reports.js) : activé par défaut, désactivable dans les paramètres.
 ensureColumn('users', 'monthly_report', 'INTEGER NOT NULL DEFAULT 1');
 ensureColumn('users', 'last_report_at', 'TEXT');
@@ -190,6 +195,7 @@ CREATE INDEX IF NOT EXISTS idx_requests_broker ON requests(profile_id, broker_id
 CREATE INDEX IF NOT EXISTS idx_requests_due ON requests(due_at);
 CREATE INDEX IF NOT EXISTS idx_requests_next_check ON requests(next_check_at);
 CREATE INDEX IF NOT EXISTS idx_brokers_registry ON brokers(id) WHERE custom = 0 AND active = 1;
+CREATE INDEX IF NOT EXISTS idx_requests_review ON requests(review_at) WHERE review_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_mails_request ON mails(request_id);
 CREATE INDEX IF NOT EXISTS idx_mails_user ON mails(user_id);

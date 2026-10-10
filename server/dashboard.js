@@ -44,8 +44,9 @@ export function exportData(u) {
   return {
     exported_at: now(), user: publicUser(u),
     profiles: q.all('SELECT * FROM profiles WHERE user_id = ?', u.id).map(parseProfile),
-    // last_error (message brut du serveur d’envoi) reste interne : il sert à l’administration, pas à l’abonné.
-    requests: q.all('SELECT r.*, b.name AS broker FROM requests r JOIN brokers b ON b.id = r.broker_id WHERE r.user_id = ?', u.id).map(({ last_error: _internal, ...r }) => r),
+    // Restent internes, pour l’administration : last_error (message brut du serveur d’envoi) et le signalement d’une
+    // réponse à vérifier (review_*, dont l’adresse de son expéditeur).
+    requests: q.all('SELECT r.*, b.name AS broker FROM requests r JOIN brokers b ON b.id = r.broker_id WHERE r.user_id = ?', u.id).map(({ last_error: _e, review_at: _a, review_outcome: _o, review_from: _f, ...r }) => r),
     events: q.all('SELECT * FROM events WHERE user_id = ? ORDER BY id', u.id),
     mails: q.all('SELECT to_addr, subject, body, created_at FROM mails WHERE user_id = ? ORDER BY id', u.id),
     // Clés d’activation utilisées : indice (4 derniers caractères) seulement, jamais la clé.
