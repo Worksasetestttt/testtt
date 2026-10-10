@@ -369,6 +369,17 @@ try {
   }
   step('relance : la demande est relue avant l’envoi, aucune relance vers un courtier qui vient de confirmer');
 
+  /* ---------- 11. Profil : une mise à jour partielle ne touche pas aux champs absents ---------- */
+  // birth_date absent du corps de PUT /profiles/:id effaçait la date de naissance (les autres champs étaient conservés).
+  {
+    const M = await member(S, { subscribe: false });
+    let r = await S.call('PUT', `/profiles/${M.pid}`, { birth_date: '1990-05-01' }, M.cookie); assert.equal(r.data.profile.birth_date, '1990-05-01');
+    r = await S.call('PUT', `/profiles/${M.pid}`, { phones: ['+33 6 11 22 33 44'] }, M.cookie);
+    assert.equal(r.status, 200); assert.equal(r.data.profile.birth_date, '1990-05-01', 'date conservée'); assert.equal(r.data.profile.first_name, 'Léa');
+    r = await S.call('PUT', `/profiles/${M.pid}`, { birth_date: '' }, M.cookie); assert.equal(r.data.profile.birth_date, null, 'effacement explicite');
+  }
+  step('profil : la date de naissance n’est plus effacée par une mise à jour qui ne la mentionne pas');
+
   console.log(`✔ Régressions validées (${passed} groupes de vérifications).`);
 } catch (e) {
   console.error('✘ Échec :', e.message);

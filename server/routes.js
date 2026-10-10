@@ -117,7 +117,7 @@ api.put('/profiles/:id', requireAuth, (req, res) => {
   const first = b.first_name === undefined ? p.first_name : str(b.first_name, 'first_name', 80);
   const last = b.last_name === undefined ? p.last_name : str(b.last_name, 'last_name', 80);
   if (!first || !last) return bad(res, 'Prénom et nom sont obligatoires.');
-  const birth = str(b.birth_date, 'birth_date', 10) || null;
+  const birth = b.birth_date === undefined ? p.birth_date : (str(b.birth_date, 'birth_date', 10) || null);   // absent : inchangée
   if (birth && (!isoDate(birth) || birth < '1900-01-01' || birth > now().slice(0, 10))) return bad(res, 'Date de naissance invalide (AAAA-MM-JJ).');
   const country = (b.country === undefined ? p.country : str(b.country, 'country', 2)).toUpperCase() || 'FR';
   if (!COUNTRY.test(country)) return bad(res, 'Pays invalide (code à deux lettres).');
