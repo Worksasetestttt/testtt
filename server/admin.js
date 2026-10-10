@@ -17,6 +17,7 @@ import { exportData } from './dashboard.js';
 import { runDiscovery } from './sites.js';
 import { runMonthlyReports } from './reports.js';
 import { KEY_STATUS_SQL, keyStatus, keyCounts, keySubscriptions, parseKeyBatch, createKeys, revokeKey, keysOfUser } from './keys.js';
+import { backupStatus, runBackup } from './backup.js';
 
 const { applyOutcome, tick, launchProfile, ref, DEMO } = scheduler;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -745,9 +746,23 @@ admin.get('/system', (_req, res) => {
       newsletter: q.get('SELECT COUNT(*) AS c FROM newsletter').c, contacts: q.get('SELECT COUNT(*) AS c FROM contacts').c, contacts_open: q.get('SELECT COUNT(*) AS c FROM contacts WHERE handled_at IS NULL').c, audit: q.get('SELECT COUNT(*) AS c FROM admin_audit').c,
     },
     announcement: currentAnnouncement(),
-    env: Object.fromEntries(['NODE_ENV', 'APP_URL', 'SESSION_SECRET', 'DATABASE_PATH', 'OUTBOX_DIR', 'SMTP_URL', 'MAIL_FROM', 'MAIL_REPLY_TO', 'ALLOW_UNVERIFIED_CONTACTS', 'INBOUND_TOKEN', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'ADMIN_EMAILS', 'COMPANY_NAME', 'COMPANY_ADDRESS', 'SCHEDULER_INTERVAL_MS', 'TRUST_PROXY', 'DEMO_MODE'].map((k) => [k, present(k)])),
+    backup: backupStatus(),
+    env: Object.fromEntries(['NODE_ENV', 'APP_URL', 'SESSION_SECRET', 'DATABASE_PATH', 'OUTBOX_DIR', 'BACKUP_DIR', 'SMTP_URL', 'MAIL_FROM', 'MAIL_REPLY_TO', 'ALLOW_UNVERIFIED_CONTACTS', 'INBOUND_TOKEN', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'ADMIN_EMAILS', 'COMPANY_NAME', 'COMPANY_ADDRESS', 'SCHEDULER_INTERVAL_MS', 'SHUTDOWN_TIMEOUT_MS', 'TRUST_PROXY', 'DEMO_MODE'].map((k) => [k, present(k)])),
   });
 });
+// Sauvegarde immédiate de la base (backup.js) ; rejoint celle en cours s'il y en a une. Journalisée dans l'audit.
+admin.post('/backup', wrap(async (req, res) => {
+  try {
+    const r = await runBackup();
+    audit(req, 'system.backup', null, { file: r.file, bytes: r.bytes, ms: r.ms });
+    res.json({ backup: r, status: backupStatus() });
+  } catch (e) {
+    if (e.code === 'DISABLED') return bad(res, `Sauvegardes désactivées : ${e.message}`, 409);
+    console.error(`[sauvegarde] demandée par l’administration (réf. ${req.id}) :`, e.message);
+    audit(req, 'system.backup', null, { failed: true });
+    bad(res, 'La sauvegarde a échoué. Le détail figure dans le journal du serveur.', 500);
+  }
+}));
 admin.get('/audit', (req, res) => {
   const p = paging(req.query, 40);
   const where = [], params = [];

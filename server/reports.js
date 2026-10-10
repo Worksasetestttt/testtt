@@ -37,7 +37,14 @@ export async function runMonthlyReports() {
   } finally { running = false; }
   return { sent, failed };
 }
+let timers = [];
 export function startReports() {
-  const h = setInterval(() => { runMonthlyReports().catch((e) => console.error('[rapports]', e)); }, 60 * 60000); h.unref();
-  setTimeout(() => { runMonthlyReports().catch((e) => console.error('[rapports]', e)); }, 30000).unref();
+  const run = () => { runMonthlyReports().catch((e) => console.error('[rapports]', e)); };
+  timers = [setInterval(run, 60 * 60000), setTimeout(run, 30000)];
+  for (const t of timers) t.unref();
+}
+// Arrêt du serveur : plus de passage programmé ; attend la fin d'un passage en cours (l'appelant borne l'attente).
+export async function stopReports() {
+  clearInterval(timers[0]); clearTimeout(timers[1]); timers = [];
+  while (running) await new Promise((r) => setTimeout(r, 50));
 }

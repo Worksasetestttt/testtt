@@ -14,7 +14,9 @@ const DB_PATH = process.env.DATABASE_PATH || path.join(__dirname, '..', 'data', 
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 export const db = new DatabaseSync(DB_PATH);
-db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+// WAL + synchronous=NORMAL : aucune corruption possible, seules les toutes dernières transactions peuvent être perdues
+// en cas de coupure de courant ; bien moins de fsync qu'en FULL.
+db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
@@ -283,4 +285,18 @@ export function tx(fn) {
 }
 export function logEvent(user_id, type, message, { profile_id = null, request_id = null } = {}) {
   q.run('INSERT INTO events (user_id, profile_id, request_id, type, message, created_at) VALUES (?, ?, ?, ?, ?, ?)', user_id, profile_id, request_id, type, String(message).slice(0, 1000), now());
+}
+
+/* ---------- Santé et arrêt ---------- */
+// La connexion répond-elle ? (/api/health) Ne lève jamais d’exception.
+export function dbPing() {
+  try { return db.prepare('SELECT 1 AS ok').get()?.ok === 1; } catch { return false; }
+}
+// Arrêt du serveur : statistiques de l’optimiseur à jour (PRAGMA optimize), puis fermeture (le WAL est reversé dans la base).
+let closed = false;
+export function closeDb() {
+  if (closed) return;
+  closed = true;
+  try { db.exec('PRAGMA optimize'); } catch (e) { console.error('[db] PRAGMA optimize :', e.message); }
+  db.close();
 }

@@ -8,9 +8,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { attachUser } from './auth.js';
 import { api, stripeWebhook } from './routes.js';
-import { startScheduler } from './scheduler.js';
+import { startScheduler, stopScheduler } from './scheduler.js';
 import { resumeDiscoveries } from './sites.js';
-import { startReports } from './reports.js';
+import { startReports, stopReports } from './reports.js';
+import { startBackups, stopBackups } from './backup.js';
+import { closeDb } from './db.js';
+import { compressApi } from './compress.js';
+import { createStatic } from './static.js';
+import { markDraining, isDraining } from './health.js';
 import { HttpError, isPlainObject } from './util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -68,11 +73,15 @@ app.use((req, res, next) => {
   if (PROD) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   next();
 });
+// Arrêt en cours : chaque réponse ferme sa connexion, pour que le serveur se vide vite (voir shutdown).
+app.use((_req, res, next) => { if (isDraining()) res.setHeader('Connection', 'close'); next(); });
 
 /* ---------- API ---------- */
 app.use('/api', (_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
 // Webhook Stripe : monté avant la session et l'analyse JSON → corps brut, cookies ignorés, signature seule.
 app.post('/api/billing/webhook', express.raw({ type: '*/*', limit: '1mb' }), stripeWebhook);
+// Compression des réponses (brotli ou gzip, 1 Ko à 2 Mo), sauf routes à jeton et téléchargements (compress.js).
+app.use('/api', compressApi({ skip: (req) => TOKEN_ROUTES.has((req.baseUrl + req.path).toLowerCase().replace(/\/+$/, '')) }));
 app.use('/api', express.json({ limit: '200kb' }));
 
 // Routes authentifiées par jeton : les cookies y sont ignorés (aucune session attachée, pas de garde CSRF).
@@ -141,11 +150,13 @@ app.use('/api', (err, req, res, next) => {
 });
 
 /* ---------- Pages et ressources statiques ---------- */
+// Texte (HTML, CSS, JS, SVG…) : en mémoire, précompressé, versionné par ?v=<empreinte>, routes /app/… de
+// l'application comprises (static.js). express.static ne sert plus que les autres types de fichiers.
+const site = createStatic(ROOT);
+app.use(site);
 const staticOpts = { maxAge: PROD ? '1h' : 0, extensions: ['html'], dotfiles: 'ignore' };
 app.use('/assets', express.static(path.join(ROOT, 'assets'), staticOpts));
 app.use('/app', express.static(path.join(ROOT, 'app'), staticOpts));
-app.get(['/app', '/app/*splat'], (_req, res) => res.sendFile(path.join(ROOT, 'app', 'index.html')));
-app.get('/', (_req, res) => res.sendFile(path.join(ROOT, 'index.html')));
 app.use((_req, res) => res.redirect('/'));
 // Erreur hors API (chemin indéchiffrable, fichier illisible…) : page minimale sans détail.
 app.use((err, req, res, next) => {
@@ -164,16 +175,35 @@ const server = app.listen(PORT, () => {
   startScheduler();
   resumeDiscoveries();
   startReports();
+  startBackups();
+  site.warm();
 });
 server.headersTimeout = 20000;   // en-têtes complets sous 20 s
 server.requestTimeout = 60000;   // requête complète sous 60 s
 server.keepAliveTimeout = 5000;
 
-let stopping = false;
-function shutdown(code) {
-  if (stopping) return; stopping = true;
-  server.close(() => process.exit(code));
-  setTimeout(() => process.exit(code), 3000).unref();
+// Arrêt propre (SIGTERM, SIGINT, exception non interceptée) : /api/health passe à 503, plus de nouvelle connexion,
+// planificateur, rapports et sauvegardes arrêtés ; les requêtes en cours (et un passage du planificateur en cours) ont
+// SHUTDOWN_TIMEOUT_MS pour finir (8 s par défaut, sous les 10 s de docker stop ; 3 s au plus après une exception), puis les
+// connexions restantes sont coupées, la base est fermée (PRAGMA optimize) et le processus sort. Un second signal force la
+// sortie immédiate.
+const SHUTDOWN_MS = Math.max(100, Number(process.env.SHUTDOWN_TIMEOUT_MS) || 8000);
+function shutdown(code, signal) {
+  if (isDraining()) { if (signal) { console.error(`[arrêt] second ${signal} : sortie immédiate.`); process.exit(code); } return; }
+  markDraining();
+  const limit = code === 0 ? SHUTDOWN_MS : Math.min(SHUTDOWN_MS, 3000);
+  console.log(`[arrêt] ${signal || 'exception'} : fin des requêtes en cours (${limit / 1000} s au plus)`);
+  const closed = new Promise((resolve) => server.close(() => resolve()));
+  const idle = setInterval(() => server.closeIdleConnections(), 200);   // connexions keep-alive libérées au fil de l'eau
+  let timer;
+  const late = new Promise((resolve) => { timer = setTimeout(resolve, limit, 'late'); });
+  const work = Promise.allSettled([closed, stopScheduler(), stopReports(), stopBackups()]);
+  Promise.race([work, late]).then((outcome) => {
+    clearInterval(idle); clearTimeout(timer);
+    if (outcome === 'late') { console.error('[arrêt] délai dépassé : connexions restantes coupées.'); server.closeAllConnections(); }
+    try { closeDb(); } catch (e) { console.error('[arrêt] fermeture de la base :', e.message); }
+    process.exit(code);
+  });
 }
-process.on('SIGTERM', () => shutdown(0));
-process.on('SIGINT', () => shutdown(0));
+process.on('SIGTERM', () => shutdown(0, 'SIGTERM'));
+process.on('SIGINT', () => shutdown(0, 'SIGINT'));

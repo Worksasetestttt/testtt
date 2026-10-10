@@ -3,7 +3,7 @@
 // les points sensibles sont limités en débit, et aucune donnée interne (haché, identifiants Stripe, sessions) ne sort.
 import express from 'express';
 import crypto from 'node:crypto';
-import { q, now, logEvent, db } from './db.js';
+import { q, now, logEvent, db, dbPing } from './db.js';
 import {
   hashPassword, verifyPassword, verifyDecoy, passwordProblem, createSession, destroySession, destroyOtherSessions,
   requireAuth, requireAdmin, rateLimit, isAdminEmail, promoteIfAdmin, loginLockRemaining, noteLoginFailure, clearLoginFailures, fmtWait,
@@ -12,13 +12,15 @@ import {
 import { sendMail, mailMode } from './mailer.js';
 import { welcomeMail, mandateText, complaintDraft, MANDATE_VERSION } from './templates.js';
 import { PLANS, BILLING_PERIODS, billingMode, startCheckout, cancelSubscription, verifyStripeSignature, handleStripeEvent } from './billing.js';
-import { launchProfile, applyOutcome, tick, ref, DEMO } from './scheduler.js';
+import { launchProfile, applyOutcome, tick, ref, DEMO, schedulerState } from './scheduler.js';
 import { EMAIL, publicUser, parseProfile, wrap, isId, str, strList, oneOf } from './util.js';
 import { buildDashboard, exportData, complaintReady } from './dashboard.js';
 import { addSite, relaunchRequest } from './sites.js';
 import { admin, auditAs, currentAnnouncement, toCsv } from './admin.js';
 import { account } from './account.js';
 import { redeemKey, cancelRefusal } from './keys.js';
+import { evaluateHealth } from './health.js';
+import { sendJsonConditional } from './compress.js';
 
 export const api = express.Router();
 const fresh = (req) => q.get('SELECT * FROM users WHERE id = ?', req.user.id);
@@ -29,7 +31,11 @@ const COUNTRY = /^[A-Z]{2}$/;
 const tooMany = (res, seconds) => { res.setHeader('Retry-After', String(seconds)); return bad(res, `Trop de tentatives. Réessayez dans ${fmtWait(seconds)}.`, 429); };
 const isoDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v) && new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10) === v;
 
-api.get('/health', (_req, res) => res.json({ ok: true, mail: mailMode, billing: billingMode, demo: DEMO, time: now() }));
+// Santé profonde (health.js) : 200, ou 503 si la base ne répond pas, si le planificateur est figé ou pendant l'arrêt.
+api.get('/health', (_req, res) => {
+  const h = evaluateHealth({ db: dbPing(), scheduler: schedulerState() });
+  res.status(h.ok ? 200 : 503).json({ ok: h.ok, mail: mailMode, billing: billingMode, demo: DEMO, time: now(), checks: h.checks });
+});
 api.get('/config', (_req, res) => res.json({ plans: PLANS, billing: billingMode, mail: mailMode, demo: DEMO, mandate_version: MANDATE_VERSION, brokers: q.get('SELECT COUNT(*) AS c FROM brokers WHERE active = 1 AND custom = 0').c, announcement: currentAnnouncement() }));
 
 /* ---------- Authentification ---------- */
@@ -202,7 +208,9 @@ api.post('/sites', requireAuth, rateLimit({ windowMs: 60 * 60000, max: 30 }), (r
   const b = r.broker;
   res.status(r.status === 'already' ? 200 : 201).json({ status: r.status, registry: r.registry, request_id: r.request.id, broker: { id: b.id, name: b.name, domain: b.domain, custom: !!b.custom }, url: r.site.url });
 });
-api.get('/dashboard', requireAuth, (req, res) => res.json(buildDashboard(fresh(req), isId(req.query.profile_id) ? req.query.profile_id : undefined)));
+// Interrogé toutes les 6 s par chaque onglet ouvert : ETag fort calculé sur le JSON, 304 sans corps si If-None-Match
+// correspond (le client renvoie l'ETag reçu). Cache-Control reste no-store, comme toute l'API.
+api.get('/dashboard', requireAuth, (req, res) => sendJsonConditional(req, res, buildDashboard(fresh(req), isId(req.query.profile_id) ? req.query.profile_id : undefined)));
 const ownRequest = (req, cols = '*') => (isId(req.params.id) ? q.get(`SELECT ${cols} FROM requests WHERE id = ? AND user_id = ?`, req.params.id, req.user.id) : null);
 api.post('/requests/:id/resolve', requireAuth, wrap(async (req, res) => {
   const r = ownRequest(req);
